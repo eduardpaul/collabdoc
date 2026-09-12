@@ -77,23 +77,23 @@ COLLABDOC_DISABLE_GPU=1 npm run dev
 
 ### Scripts
 
-| Command | What it does |
-| --- | --- |
-| `npm run dev` | Dev server + Electron with HMR |
-| `npm start` | Preview the production renderer build |
-| `npm run typecheck` | Main/preload + renderer TypeScript |
-| `npm run lint` | ESLint |
-| `npm run format` | Prettier |
+| Command             | What it does                          |
+| ------------------- | ------------------------------------- |
+| `npm run dev`       | Dev server + Electron with HMR        |
+| `npm start`         | Preview the production renderer build |
+| `npm run typecheck` | Main/preload + renderer TypeScript    |
+| `npm run lint`      | ESLint                                |
+| `npm run format`    | Prettier                              |
 
 ## Build
 
 Build installers on the matching OS:
 
-| Command | Run on | Output |
-| --- | --- | --- |
-| `npm run build:linux` | WSL / Linux | AppImage + deb in `dist/` |
-| `npm run build:win` | Windows | NSIS installer + portable exe in `dist/` |
-| `npm run build:mac` | macOS | dmg |
+| Command               | Run on      | Output                                   |
+| --------------------- | ----------- | ---------------------------------------- |
+| `npm run build:linux` | WSL / Linux | AppImage + deb in `dist/`                |
+| `npm run build:win`   | Windows     | NSIS installer + portable exe in `dist/` |
+| `npm run build:mac`   | macOS       | dmg                                      |
 
 Windows installers from WSL need Wine and extra electron-builder binaries; prefer `npm run build:win` on Windows.
 

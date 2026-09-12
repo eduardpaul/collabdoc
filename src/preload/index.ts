@@ -1,9 +1,12 @@
 import { contextBridge } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
+// Support both process.argv flag passed by main process and environment variable
+const isWsl = process.argv.includes('--is-wsl=true') || Boolean(process.env.WSL_DISTRO_NAME)
+
 const api = {
   platform: process.platform,
-  isWsl: Boolean(process.env.WSL_DISTRO_NAME)
+  isWsl
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

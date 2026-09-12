@@ -15,7 +15,10 @@ function hostLabel(): string {
 }
 
 function App(): React.JSX.Element {
-  const ipcHandle = (): void => window.electron.ipcRenderer.send('ping')
+  const ipcHandle = async (): Promise<void> => {
+    const res = await window.electron.ipcRenderer.invoke('ping')
+    console.log(`IPC reply: ${res}`)
+  }
 
   return (
     <>

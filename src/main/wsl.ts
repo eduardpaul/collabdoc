@@ -1,18 +1,28 @@
 import { readFileSync } from 'fs'
 import { app } from 'electron'
 
+let cachedIsWsl: boolean | null = null
+
 export function isWsl(): boolean {
+  if (cachedIsWsl !== null) {
+    return cachedIsWsl
+  }
+
   if (process.env.WSL_DISTRO_NAME) {
+    cachedIsWsl = true
     return true
   }
 
   if (process.platform !== 'linux') {
+    cachedIsWsl = false
     return false
   }
 
   try {
-    return readFileSync('/proc/version', 'utf8').toLowerCase().includes('microsoft')
+    cachedIsWsl = readFileSync('/proc/version', 'utf8').toLowerCase().includes('microsoft')
+    return cachedIsWsl
   } catch {
+    cachedIsWsl = false
     return false
   }
 }
