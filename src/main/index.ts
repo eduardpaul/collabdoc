@@ -3,6 +3,7 @@ import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import { openDocument, readDocument, saveDocument, type DocumentSavePayload } from './documents'
 import { applyWslChromiumFlags, isWsl } from './wsl'
 
 let mainWindow: BrowserWindow | null = null
@@ -31,12 +32,14 @@ applyWslChromiumFlags()
 function createWindow(): BrowserWindow {
   // Create the browser window with optimized visual, security, and process flags.
   const win = new BrowserWindow({
-    width: 900,
-    height: 670,
+    width: 1320,
+    height: 860,
+    minWidth: 900,
+    minHeight: 620,
     show: false,
     autoHideMenuBar: true,
     // Match dark theme background to prevent visual white flashes on launch and resize
-    backgroundColor: '#1b1b1f',
+    backgroundColor: '#0f0f10',
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -116,9 +119,26 @@ if (!gotTheLock) {
       optimizer.watchWindowShortcuts(window)
     })
 
-    // IPC handlers: support both asynchronous invoke/handle and fire-and-forget send
-    ipcMain.on('ping', () => console.log('pong'))
-    ipcMain.handle('ping', () => 'pong')
+    ipcMain.handle('documents:open', async (event) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (!win) {
+        return { ok: false, error: 'No window' }
+      }
+      return openDocument(win)
+    })
+    ipcMain.handle('documents:read', async (_event, filePath: string) => {
+      if (typeof filePath !== 'string' || filePath.length === 0) {
+        return { ok: false, error: 'Invalid path' }
+      }
+      return readDocument(filePath)
+    })
+    ipcMain.handle('documents:save', async (event, payload: DocumentSavePayload) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (!win) {
+        return { ok: false, error: 'No window' }
+      }
+      return saveDocument(win, payload)
+    })
 
     mainWindow = createWindow()
 

@@ -1,50 +1,93 @@
-import Versions from './components/Versions'
-import electronLogo from './assets/electron.svg'
+import { useEffect } from 'react'
+import { JoinDialog, NoticeBar, ShareDialog, UnsavedDialog } from './components/Dialogs'
+import { SettingsModal } from './components/SettingsModal'
+import { StartScreen } from './screens/StartScreen'
+import { Workspace } from './screens/Workspace'
+import { AppStateProvider, useAppState } from './state/AppState'
+import { useSessionActions } from './state/useSessionActions'
 
-function hostLabel(): string {
-  if (window.api.isWsl) {
-    return 'WSL'
-  }
-  if (window.api.platform === 'win32') {
-    return 'Windows'
-  }
-  if (window.api.platform === 'darwin') {
-    return 'macOS'
-  }
-  return 'Linux'
+function AppShell(): React.JSX.Element {
+  const { state, dispatch } = useAppState()
+  const actions = useSessionActions()
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        if (state.settingsOpen) {
+          dispatch({ type: 'close-settings' })
+          return
+        }
+        if (state.shareOpen) {
+          dispatch({ type: 'set-share-open', open: false })
+          return
+        }
+        if (state.joinOpen) {
+          dispatch({ type: 'set-join-open', open: false })
+          return
+        }
+        if (state.unsavedIntent) {
+          dispatch({ type: 'clear-unsaved' })
+        }
+        return
+      }
+
+      const mod = event.metaKey || event.ctrlKey
+      if (!mod) {
+        return
+      }
+      const key = event.key.toLowerCase()
+      if (key === 's') {
+        event.preventDefault()
+        if (state.session) {
+          void actions.saveDocument()
+        }
+        return
+      }
+      if (key === 'o') {
+        event.preventDefault()
+        void actions.openDocument()
+        return
+      }
+      if (key === 'n') {
+        event.preventDefault()
+        actions.newDocument()
+        return
+      }
+      if (event.key === ',') {
+        event.preventDefault()
+        dispatch({ type: 'open-settings' })
+      }
+    }
+
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [
+    actions,
+    dispatch,
+    state.joinOpen,
+    state.session,
+    state.settingsOpen,
+    state.shareOpen,
+    state.unsavedIntent
+  ])
+
+  return (
+    <div className="app">
+      {state.screen === 'start' ? <StartScreen /> : <Workspace />}
+      <SettingsModal />
+      <ShareDialog />
+      <JoinDialog />
+      <UnsavedDialog />
+      <NoticeBar />
+    </div>
+  )
 }
 
 function App(): React.JSX.Element {
-  const ipcHandle = async (): Promise<void> => {
-    const res = await window.electron.ipcRenderer.invoke('ping')
-    console.log(`IPC reply: ${res}`)
-  }
-
   return (
-    <>
-      <img alt="logo" className="logo" src={electronLogo} />
-      <div className="creator">CollabDoc · {hostLabel()}</div>
-      <div className="text">
-        Electron + <span className="react">React</span>
-        &nbsp;+ <span className="ts">TypeScript</span>
-      </div>
-      <p className="tip">
-        Please try pressing <code>F12</code> to open the devTool
-      </p>
-      <div className="actions">
-        <div className="action">
-          <a href="https://electron-vite.org/" target="_blank" rel="noreferrer">
-            Documentation
-          </a>
-        </div>
-        <div className="action">
-          <a target="_blank" rel="noreferrer" onClick={ipcHandle}>
-            Send IPC
-          </a>
-        </div>
-      </div>
-      <Versions></Versions>
-    </>
+    <AppStateProvider>
+      <AppShell />
+    </AppStateProvider>
   )
 }
 

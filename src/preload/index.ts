@@ -6,7 +6,17 @@ const isWsl = process.argv.includes('--is-wsl=true') || Boolean(process.env.WSL_
 
 const api = {
   platform: process.platform,
-  isWsl
+  isWsl,
+  documents: {
+    open: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:open'),
+    read: (filePath: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:read', filePath),
+    save: (payload: {
+      path: string | null
+      content: string
+      suggestedName?: string
+    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:save', payload)
+  }
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to
