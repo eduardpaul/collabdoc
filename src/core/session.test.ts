@@ -332,7 +332,7 @@ describe('DocumentSession · block tools', () => {
     }) as MutationResult
     expect(nested).toMatchObject({ ok: false, error: 'schema' })
     expect(!nested.ok && nested.message).toContain('after')
-    expect(getChildren(findBlock(a.doc, para)!.node).length).toBe(1)
+    expect(getChildren(findBlock(a.doc, para)!.node)).toHaveLength(1)
 
     const sibling = a.call('insert_blocks', {
       at: { relation: 'before', blockId: para },

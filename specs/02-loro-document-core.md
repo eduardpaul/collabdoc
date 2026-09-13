@@ -35,7 +35,7 @@ Implemented in `src/shared` (constants, types, tool definitions, ids, handles, b
 ## Decisions made while implementing
 
 - **`forbidden` is its own error kind.** A tool outside `allowedTools` returns `{ ok:false, error:"forbidden" }`; `schema` is reserved for bad arguments and disallowed node/mark types. An MCP client or agent can tell "you may not" from "you asked wrong".
-- **Author registration is a separate `sys:author` commit** issued right before a session's first real commit, not `subscribeFirstCommitFromPeer`: ops written in that callback land in the *next* pending transaction, so the first exported update would carry no attribution. `sys:` origins are excluded from undo, so undoing the first edit cannot drop the author entry. History hides the registration (no message, no details).
+- **Author registration is a separate `sys:author` commit** issued right before a session's first real commit, not `subscribeFirstCommitFromPeer`: ops written in that callback land in the _next_ pending transaction, so the first exported update would carry no attribution. `sys:` origins are excluded from undo, so undoing the first edit cannot drop the author entry. History hides the registration (no message, no details).
 - **An empty paragraph has no `LoroText` child** — the same shape `loro-prosemirror` writes for `<p></p>`. `ensureText` adds one on first write from a tool.
 - **`imageFigure` has no agent text** (`text: ""`): the caption is `attrs.caption` for every figure type; `insert_text`/`replace_text` on an image return `schema`. Syntax figures expose the source as `text`.
 - **Reviewers get `get_presence` but not `set_presence`**: they can see who is where, they never claim blocks.

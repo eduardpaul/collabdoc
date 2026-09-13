@@ -1,5 +1,6 @@
 export * from './anchors'
 export * from './authors'
+export * from './collabdoc-file'
 export * from './comments'
 export * from './document'
 export * from './history'

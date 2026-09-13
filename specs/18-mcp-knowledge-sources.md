@@ -4,7 +4,7 @@
 
 ## Summary
 
-Let personas use tools from external MCP servers — the Scope names Microsoft Learn and local file mapping — alongside the document tools. CollabDoc acts as an MCP *client* (via `@langchain/mcp-adapters`) for the agent runtime; each source is configured once and attached to personas, with tools namespaced so they can never be confused with document tools.
+Let personas use tools from external MCP servers — the Scope names Microsoft Learn and local file mapping — alongside the document tools. CollabDoc acts as an MCP _client_ (via `@langchain/mcp-adapters`) for the agent runtime; each source is configured once and attached to personas, with tools namespaced so they can never be confused with document tools.
 
 ## Current state (collabdoc)
 

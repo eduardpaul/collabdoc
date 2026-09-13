@@ -98,7 +98,10 @@ export function Workspace(): React.JSX.Element | null {
           <div className="topbar__title">
             <strong>{session.title}</strong>
             <span className="muted">
-              {session.dirty ? 'Unsaved' : (session.path ?? 'Not saved')} · {hostLabel()}
+              {session.dirty
+                ? 'Unsaved'
+                : (session.path ?? (session.isDraft ? 'Draft' : 'Not saved'))}{' '}
+              · {hostLabel()}
             </span>
           </div>
         </div>

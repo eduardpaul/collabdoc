@@ -4,7 +4,7 @@
 
 ## Summary
 
-Let a persona run on the user's locally installed Claude Code or Codex instead of an API key: CollabDoc launches the CLI headlessly for one turn, points it at its own MCP server (16) so the document tools are the *only* document access, and treats the result like any other run. This is the second half of the Scope's "connect its own Claude or Codex" — the user's subscription/auth is reused, no key is entered in CollabDoc.
+Let a persona run on the user's locally installed Claude Code or Codex instead of an API key: CollabDoc launches the CLI headlessly for one turn, points it at its own MCP server (16) so the document tools are the _only_ document access, and treats the result like any other run. This is the second half of the Scope's "connect its own Claude or Codex" — the user's subscription/auth is reused, no key is entered in CollabDoc.
 
 ## Current state (collabdoc)
 
@@ -24,7 +24,7 @@ Let a persona run on the user's locally installed Claude Code or Codex instead o
 - Backend interface (in 12): `AgentBackend { id, kind: "claude-code" | "codex" | "custom-cli", label, detect(): Promise<Availability>, run(job, { systemPrompt, mcp: { url, token, docId }, signal }): AsyncIterable<RunEvent> }`.
 - **Claude Code backend**: prefer `@anthropic-ai/claude-agent-sdk` (`query({ prompt, options: { mcpServers: { collabdoc: { type: "http", url, headers } }, allowedTools: ["mcp__collabdoc__*"], permissionMode: "bypassPermissions" or a scoped preset, cwd: scratchDir, maxTurns } })`) which yields structured messages (tool calls, result) — this gives per-step events for the run record. Fallback: spawn `claude -p --output-format stream-json --mcp-config <file> --allowedTools …` and parse the stream.
 - **Codex backend**: spawn `codex exec --json --sandbox read-only -c mcp_servers.collabdoc.url=… "<prompt>"` (verify flag names against the installed version at implementation time; pin the minimum CLI version and detect it) and parse the JSON event stream.
-- The run's actor identity is the *persona* (name/color/handle), not "Claude Code": the backend passes an `actorId` header to the MCP server so the session is created for the persona, and role gating applies (reviewer personas on a backend still cannot write).
+- The run's actor identity is the _persona_ (name/color/handle), not "Claude Code": the backend passes an `actorId` header to the MCP server so the session is created for the persona, and role gating applies (reviewer personas on a backend still cannot write).
 - Prompt: 13's assembled system prompt goes in the CLI's system/append-system-prompt option; the job input is the user prompt.
 - Settings → "Backends" (replaces the Local MCP client list): rows for Claude Code and Codex with Detect (path, version, auth status via `claude auth status` / `codex login status`), plus a custom CLI row with a command template.
 - Streaming: tool-call events map to run steps; the final assistant text is the run summary; process exit ≠ 0 → `error` with stderr tail.

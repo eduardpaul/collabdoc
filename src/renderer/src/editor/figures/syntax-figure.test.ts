@@ -62,6 +62,7 @@ describe('syntax figures', () => {
     editors.pop()
     finish?.()
     await new Promise((r) => setTimeout(r, 20))
+    expect(editor.isDestroyed).toBe(true)
   })
 
   it('renders identical sources once', async () => {

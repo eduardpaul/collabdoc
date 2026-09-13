@@ -1,167 +1,167 @@
 - generic [ref=e54]:
-  - banner [ref=e55]:
-    - generic [ref=e56]:
-      - button "Back to documents" [ref=e57] [cursor=pointer]:
-        - img [ref=e58]
-      - button "Toggle sidebar" [ref=e61] [cursor=pointer]:
-        - img [ref=e62]
-      - generic [ref=e64]:
-        - strong [ref=e65]: Untitled
-        - generic [ref=e66]: Unsaved · Browser
-    - generic [ref=e67]:
-      - button "AI off" [ref=e68] [cursor=pointer]: AI off
-      - button "Share" [ref=e70] [cursor=pointer]:
-        - img [ref=e71]
-        - text: Share
-      - button "Save" [ref=e77] [cursor=pointer]
-      - button "Settings" [ref=e78] [cursor=pointer]:
-        - img [ref=e79]
-      - button "Toggle agents" [ref=e82] [cursor=pointer]:
-        - img [ref=e83]
-  - complementary [ref=e86]:
-    - generic [ref=e87]:
-      - heading "Documents" [level=2] [ref=e88]
-      - button "New" [ref=e89] [cursor=pointer]:
-        - img [ref=e90]
-        - text: New
-    - list [ref=e91]:
-      - listitem [ref=e92]:
-        - button "Untitled Editing" [ref=e244] [cursor=pointer]:
-          - img [ref=e94]
-          - generic [ref=e97]:
-            - strong [ref=e98]: Untitled
-            - generic [ref=e99]: Editing
-    - heading "In this session" [level=2] [ref=e101]
-    - list [ref=e102]:
-      - listitem [ref=e103]:
-        - generic [ref=e106]:
-          - strong [ref=e107]: You
-          - generic [ref=e108]: Local
-  - main [ref=e109]:
-    - generic [ref=e110]:
-      - toolbar "Formatting" [ref=e111]:
-        - button "Undo" [ref=e112] [cursor=pointer]:
-          - img [ref=e113]
-        - button "Redo" [disabled] [ref=e115]:
-          - img [ref=e116]
-        - separator [ref=e118]
-        - generic [ref=e119]:
-          - generic [ref=e120]: Block type
-          - combobox "Block type" [ref=e121]:
-            - option "Paragraph"
-            - option "Heading 1" [selected]
-            - option "Heading 2"
-            - option "Heading 3"
-            - option "Heading 4"
-            - option "Quote"
-            - option "Code"
-        - button "Divider" [ref=e122] [cursor=pointer]:
-          - img [ref=e123]
-        - separator [ref=e124]
-        - button "Bold" [pressed] [ref=e125] [cursor=pointer]:
-          - img [ref=e126]
-        - button "Italic" [ref=e129] [cursor=pointer]:
-          - img [ref=e130]
-        - button "Underline" [ref=e132] [cursor=pointer]:
-          - img [ref=e133]
-        - button "Strikethrough" [ref=e135] [cursor=pointer]:
-          - img [ref=e136]
-        - button "Inline code" [ref=e138] [cursor=pointer]:
-          - img [ref=e139]
-        - button "Highlight" [ref=e143] [cursor=pointer]:
-          - img [ref=e145]
-        - button "Link" [ref=e148] [cursor=pointer]:
-          - img [ref=e149]
-        - button "Superscript" [ref=e153] [cursor=pointer]:
-          - img [ref=e154]
-        - button "Subscript" [ref=e158] [cursor=pointer]:
-          - img [ref=e159]
-        - separator [ref=e163]
-        - button "Bullet list" [ref=e164] [cursor=pointer]:
-          - img [ref=e165]
-        - button "Ordered list" [ref=e166] [cursor=pointer]:
-          - img [ref=e167]
-        - button "Task list" [ref=e170] [cursor=pointer]:
-          - img [ref=e171]
-        - separator [ref=e174]
-        - button "Align left" [ref=e175] [cursor=pointer]:
-          - img [ref=e176]
-        - button "Align center" [ref=e177] [cursor=pointer]:
-          - img [ref=e178]
-        - button "Align right" [ref=e179] [cursor=pointer]:
-          - img [ref=e180]
-        - button "Justify" [ref=e181] [cursor=pointer]:
-          - img [ref=e182]
-        - separator [ref=e183]
-        - button "Find and replace" [pressed] [ref=e184] [cursor=pointer]:
-          - img [ref=e185]
-        - button "Mention" [disabled] [ref=e188]:
-          - img [ref=e189]
-        - button "Comment" [disabled] [ref=e193]:
-          - img [ref=e194]
-      - search "Find and replace" [ref=e253]:
-        - textbox "Find" [active] [ref=e254]: hello
-        - textbox "Replace" [ref=e255]
-        - generic [ref=e256]:
-          - checkbox "Aa" [ref=e257]
-          - text: Aa
-        - generic [ref=e258]: 1/1
-        - button "Previous match" [ref=e259] [cursor=pointer]: Prev
-        - button "Next match" [ref=e260] [cursor=pointer]: Next
-        - button "Replace one" [ref=e261] [cursor=pointer]: Replace
-        - button "Replace all" [ref=e262] [cursor=pointer]: All
-        - button "Close search" [ref=e263] [cursor=pointer]: ×
-      - article [ref=e196]:
-        - textbox "Document title" [ref=e197]: Untitled
-        - generic [ref=e198]:
-          - generic "Document body" [ref=e200]:
-            - heading "Hello world" [level=1] [ref=e252]:
-              - strong [ref=e251]: Hello world
-          - generic [ref=e245]:
-            - button "Bold" [pressed] [ref=e246] [cursor=pointer]: B
-            - button "Italic" [ref=e247] [cursor=pointer]: I
-            - button "Link" [ref=e248] [cursor=pointer]
-            - button "Comment" [disabled] [ref=e249]
-            - button "Ask agent" [disabled] [ref=e250]
-  - complementary [ref=e202]:
-    - tablist [ref=e203]:
-      - button "Agents" [ref=e204] [cursor=pointer]
-      - button "Activity" [ref=e205] [cursor=pointer]
-    - generic [ref=e206]:
-      - paragraph [ref=e207]: Agents are participants. Invite them into this document, then ask them to draft or review.
-      - list [ref=e208]:
-        - listitem [ref=e209]:
-          - generic [ref=e210]:
-            - generic [ref=e211]: writer
-            - strong [ref=e212]: Writer
-          - paragraph [ref=e214]: Turns outlines into clear prose in the author voice. Attributes every insertion. Never silently overwrites.
-          - generic [ref=e215]:
-            - generic [ref=e216]: outline
-            - generic [ref=e217]: draft
-            - generic [ref=e218]: rewrite
-            - generic [ref=e219]: LLM
-          - generic [ref=e220]:
-            - button "Invite" [ref=e221] [cursor=pointer]
-            - button "Ask to draft" [ref=e222] [cursor=pointer]
-        - listitem [ref=e223]:
-          - generic [ref=e224]:
-            - generic [ref=e225]: reviewer
-            - strong [ref=e226]: Reviewer
-          - paragraph [ref=e228]: Leaves notes on structure, unsupported claims, and tone. Comments instead of rewriting unless asked.
-          - generic [ref=e229]:
-            - generic [ref=e230]: structure
-            - generic [ref=e231]: claims
-            - generic [ref=e232]: tone
-            - generic [ref=e233]: LLM
-          - generic [ref=e234]:
-            - button "Invite" [ref=e235] [cursor=pointer]
-            - button "Ask to review" [ref=e236] [cursor=pointer]
-      - generic [ref=e237]:
-        - generic [ref=e238]: Ask an invited agent
-        - textbox "Ask an invited agent" [ref=e239]:
-          - /placeholder: Configure a provider or MCP to enable this
-        - button "Send to agent" [ref=e240] [cursor=pointer]
-        - button "Set up a provider or MCP" [ref=e241] [cursor=pointer]
-      - button "Manage agents" [ref=e242] [cursor=pointer]:
-        - img [ref=e243]
-        - text: Manage agents
+    - banner [ref=e55]:
+        - generic [ref=e56]:
+            - button "Back to documents" [ref=e57] [cursor=pointer]:
+                - img [ref=e58]
+            - button "Toggle sidebar" [ref=e61] [cursor=pointer]:
+                - img [ref=e62]
+            - generic [ref=e64]:
+                - strong [ref=e65]: Untitled
+                - generic [ref=e66]: Unsaved · Browser
+        - generic [ref=e67]:
+            - button "AI off" [ref=e68] [cursor=pointer]: AI off
+            - button "Share" [ref=e70] [cursor=pointer]:
+                - img [ref=e71]
+                - text: Share
+            - button "Save" [ref=e77] [cursor=pointer]
+            - button "Settings" [ref=e78] [cursor=pointer]:
+                - img [ref=e79]
+            - button "Toggle agents" [ref=e82] [cursor=pointer]:
+                - img [ref=e83]
+    - complementary [ref=e86]:
+        - generic [ref=e87]:
+            - heading "Documents" [level=2] [ref=e88]
+            - button "New" [ref=e89] [cursor=pointer]:
+                - img [ref=e90]
+                - text: New
+        - list [ref=e91]:
+            - listitem [ref=e92]:
+                - button "Untitled Editing" [ref=e244] [cursor=pointer]:
+                    - img [ref=e94]
+                    - generic [ref=e97]:
+                        - strong [ref=e98]: Untitled
+                        - generic [ref=e99]: Editing
+        - heading "In this session" [level=2] [ref=e101]
+        - list [ref=e102]:
+            - listitem [ref=e103]:
+                - generic [ref=e106]:
+                    - strong [ref=e107]: You
+                    - generic [ref=e108]: Local
+    - main [ref=e109]:
+        - generic [ref=e110]:
+            - toolbar "Formatting" [ref=e111]:
+                - button "Undo" [ref=e112] [cursor=pointer]:
+                    - img [ref=e113]
+                - button "Redo" [disabled] [ref=e115]:
+                    - img [ref=e116]
+                - separator [ref=e118]
+                - generic [ref=e119]:
+                    - generic [ref=e120]: Block type
+                    - combobox "Block type" [ref=e121]:
+                        - option "Paragraph"
+                        - option "Heading 1" [selected]
+                        - option "Heading 2"
+                        - option "Heading 3"
+                        - option "Heading 4"
+                        - option "Quote"
+                        - option "Code"
+                - button "Divider" [ref=e122] [cursor=pointer]:
+                    - img [ref=e123]
+                - separator [ref=e124]
+                - button "Bold" [pressed] [ref=e125] [cursor=pointer]:
+                    - img [ref=e126]
+                - button "Italic" [ref=e129] [cursor=pointer]:
+                    - img [ref=e130]
+                - button "Underline" [ref=e132] [cursor=pointer]:
+                    - img [ref=e133]
+                - button "Strikethrough" [ref=e135] [cursor=pointer]:
+                    - img [ref=e136]
+                - button "Inline code" [ref=e138] [cursor=pointer]:
+                    - img [ref=e139]
+                - button "Highlight" [ref=e143] [cursor=pointer]:
+                    - img [ref=e145]
+                - button "Link" [ref=e148] [cursor=pointer]:
+                    - img [ref=e149]
+                - button "Superscript" [ref=e153] [cursor=pointer]:
+                    - img [ref=e154]
+                - button "Subscript" [ref=e158] [cursor=pointer]:
+                    - img [ref=e159]
+                - separator [ref=e163]
+                - button "Bullet list" [ref=e164] [cursor=pointer]:
+                    - img [ref=e165]
+                - button "Ordered list" [ref=e166] [cursor=pointer]:
+                    - img [ref=e167]
+                - button "Task list" [ref=e170] [cursor=pointer]:
+                    - img [ref=e171]
+                - separator [ref=e174]
+                - button "Align left" [ref=e175] [cursor=pointer]:
+                    - img [ref=e176]
+                - button "Align center" [ref=e177] [cursor=pointer]:
+                    - img [ref=e178]
+                - button "Align right" [ref=e179] [cursor=pointer]:
+                    - img [ref=e180]
+                - button "Justify" [ref=e181] [cursor=pointer]:
+                    - img [ref=e182]
+                - separator [ref=e183]
+                - button "Find and replace" [pressed] [ref=e184] [cursor=pointer]:
+                    - img [ref=e185]
+                - button "Mention" [disabled] [ref=e188]:
+                    - img [ref=e189]
+                - button "Comment" [disabled] [ref=e193]:
+                    - img [ref=e194]
+            - search "Find and replace" [ref=e253]:
+                - textbox "Find" [active] [ref=e254]: hello
+                - textbox "Replace" [ref=e255]
+                - generic [ref=e256]:
+                    - checkbox "Aa" [ref=e257]
+                    - text: Aa
+                - generic [ref=e258]: 1/1
+                - button "Previous match" [ref=e259] [cursor=pointer]: Prev
+                - button "Next match" [ref=e260] [cursor=pointer]: Next
+                - button "Replace one" [ref=e261] [cursor=pointer]: Replace
+                - button "Replace all" [ref=e262] [cursor=pointer]: All
+                - button "Close search" [ref=e263] [cursor=pointer]: ×
+            - article [ref=e196]:
+                - textbox "Document title" [ref=e197]: Untitled
+                - generic [ref=e198]:
+                    - generic "Document body" [ref=e200]:
+                        - heading "Hello world" [level=1] [ref=e252]:
+                            - strong [ref=e251]: Hello world
+                    - generic [ref=e245]:
+                        - button "Bold" [pressed] [ref=e246] [cursor=pointer]: B
+                        - button "Italic" [ref=e247] [cursor=pointer]: I
+                        - button "Link" [ref=e248] [cursor=pointer]
+                        - button "Comment" [disabled] [ref=e249]
+                        - button "Ask agent" [disabled] [ref=e250]
+    - complementary [ref=e202]:
+        - tablist [ref=e203]:
+            - button "Agents" [ref=e204] [cursor=pointer]
+            - button "Activity" [ref=e205] [cursor=pointer]
+        - generic [ref=e206]:
+            - paragraph [ref=e207]: Agents are participants. Invite them into this document, then ask them to draft or review.
+            - list [ref=e208]:
+                - listitem [ref=e209]:
+                    - generic [ref=e210]:
+                        - generic [ref=e211]: writer
+                        - strong [ref=e212]: Writer
+                    - paragraph [ref=e214]: Turns outlines into clear prose in the author voice. Attributes every insertion. Never silently overwrites.
+                    - generic [ref=e215]:
+                        - generic [ref=e216]: outline
+                        - generic [ref=e217]: draft
+                        - generic [ref=e218]: rewrite
+                        - generic [ref=e219]: LLM
+                    - generic [ref=e220]:
+                        - button "Invite" [ref=e221] [cursor=pointer]
+                        - button "Ask to draft" [ref=e222] [cursor=pointer]
+                - listitem [ref=e223]:
+                    - generic [ref=e224]:
+                        - generic [ref=e225]: reviewer
+                        - strong [ref=e226]: Reviewer
+                    - paragraph [ref=e228]: Leaves notes on structure, unsupported claims, and tone. Comments instead of rewriting unless asked.
+                    - generic [ref=e229]:
+                        - generic [ref=e230]: structure
+                        - generic [ref=e231]: claims
+                        - generic [ref=e232]: tone
+                        - generic [ref=e233]: LLM
+                    - generic [ref=e234]:
+                        - button "Invite" [ref=e235] [cursor=pointer]
+                        - button "Ask to review" [ref=e236] [cursor=pointer]
+            - generic [ref=e237]:
+                - generic [ref=e238]: Ask an invited agent
+                - textbox "Ask an invited agent" [ref=e239]:
+                    - /placeholder: Configure a provider or MCP to enable this
+                - button "Send to agent" [ref=e240] [cursor=pointer]
+                - button "Set up a provider or MCP" [ref=e241] [cursor=pointer]
+            - button "Manage agents" [ref=e242] [cursor=pointer]:
+                - img [ref=e243]
+                - text: Manage agents

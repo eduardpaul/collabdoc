@@ -269,6 +269,18 @@ export function outline(doc: LoroDoc, maxPreviewChars = 80): BlockOutline[] {
   return items
 }
 
+export const PREVIEW_CHARS = 120
+
+/** First visible characters, computed at save time for recents. */
+export function documentPreview(doc: LoroDoc, max = PREVIEW_CHARS): string {
+  const parts: string[] = []
+  for (const { node } of allBlocks(doc)) {
+    const text = blockPlainText(node).trim()
+    if (text) parts.push(text)
+  }
+  return parts.join(' ').replace(/\s+/g, ' ').slice(0, max)
+}
+
 /** Content-addressed asset hashes referenced by image figures, deduplicated. */
 export function listAssets(doc: LoroDoc): string[] {
   const out = new Set<string>()

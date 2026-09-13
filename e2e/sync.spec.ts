@@ -1,8 +1,17 @@
 import { expect, test, type Page } from '@playwright/test'
 import type { Editor } from '@tiptap/core'
 
-type DebugEntry = { docId: string; title: string; subscribers: string[]; changes: number; text: string }
-type CollabWindow = Window & { __collabEditor?: Editor; __collabDebug?: () => Promise<DebugEntry[]> }
+type DebugEntry = {
+  docId: string
+  title: string
+  subscribers: string[]
+  changes: number
+  text: string
+}
+type CollabWindow = Window & {
+  __collabEditor?: Editor
+  __collabDebug?: () => Promise<DebugEntry[]>
+}
 
 /**
  * Browser mode runs the same client code against an in-page hub over a real

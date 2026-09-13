@@ -273,7 +273,7 @@ describe('DocumentClient over a MessagePort', () => {
     // The rebuild's own write-back is filtered: the block survives in Loro.
     expect(editor.state.doc.childCount).toBe(1)
     expect(findBlock(hub.doc, 'b_foreign001')).not.toBeNull()
-    expect(getChildren(getRoot(hub.doc)).length).toBe(2)
+    expect(getChildren(getRoot(hub.doc))).toHaveLength(2)
     expect(client.dirty).toBe(true)
 
     // Known limit: the next local edit diffs the editor against Loro and drops

@@ -1,4 +1,5 @@
 import type { JSONContent } from '@tiptap/core'
+import { extForMime, restoreAssets, setAssetDocument } from '../editor/assets'
 import { DocumentClient } from './DocumentClient'
 import { documentHost } from './host'
 import { localProfile } from './identity'
@@ -27,6 +28,7 @@ export async function openClient(
   if (existing && existing.status !== 'detached') return existing
   const client = new DocumentClient(docId, localProfile())
   clients.set(docId, client)
+  setAssetDocument(docId)
   const port = await documentHost().attach(docId)
   client.bind(port)
   const live = await client.whenLive()
@@ -34,9 +36,25 @@ export async function openClient(
     clients.delete(docId)
     throw new Error('The document detached before it was ready.')
   }
+  if (!options.seed) await hydrateHostAssets(docId)
   if (options.seed) client.seed(options.seed)
   rememberCurrent(docId)
   return client
+}
+
+async function hydrateHostAssets(docId: string): Promise<void> {
+  const result = await window.api?.documents.getAssets?.(docId)
+  if (!result || !('ok' in result) || !result.ok) return
+  const records: Record<string, { sha256: string; mime: string; ext: string; data: string }> = {}
+  for (const asset of result.assets) {
+    records[asset.hash] = {
+      sha256: asset.hash,
+      mime: asset.mime,
+      ext: extForMime(asset.mime),
+      data: asset.base64
+    }
+  }
+  restoreAssets(records)
 }
 
 export async function createAndOpen(options: {

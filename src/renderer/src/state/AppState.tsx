@@ -10,6 +10,7 @@ import {
 import { clearAssets } from '../editor/assets'
 import { createId, createShareCode, shareUrlForCode } from '../lib/ids'
 import { loadPersisted, savePersisted } from '../lib/persist'
+import { getClient } from '../sync/clients'
 import type {
   ActivityEvent,
   Agent,
@@ -19,6 +20,7 @@ import type {
   LlmProvider,
   McpConnection,
   RecentDocument,
+  RecoveryOffer,
   RightTab,
   SettingsTab,
   ShareState
@@ -30,7 +32,15 @@ export type Action =
   | {
       /** A document is live in the host and attached; show it. */
       type: 'open-session'
-      session: { id: string; title: string; path: string | null; share?: ShareState }
+      session: {
+        id: string
+        title: string
+        path: string | null
+        share?: ShareState
+        isDraft?: boolean
+        hasDraft?: boolean
+        dirty?: boolean
+      }
       summary: string
       kind?: ActivityEvent['kind']
     }
@@ -39,6 +49,23 @@ export type Action =
   | { type: 'set-preview'; preview: string }
   | { type: 'remove-recent'; id: string }
   | { type: 'mark-saved'; path: string; preview: string }
+  | {
+      type: 'set-listing'
+      recents: RecentDocument[]
+      recoveries: RecoveryOffer[]
+    }
+  | {
+      type: 'apply-persist-state'
+      state: {
+        docId: string
+        title: string
+        path: string | null
+        isDraft: boolean
+        dirty: boolean
+        hasDraft: boolean
+      }
+    }
+  | { type: 'set-missing-recent'; id: string | null }
   | { type: 'open-settings'; tab?: SettingsTab }
   | { type: 'close-settings' }
   | { type: 'set-settings-tab'; tab: SettingsTab }
@@ -93,7 +120,7 @@ function toRecent(
 
 function upsertRecent(recents: RecentDocument[], doc: RecentDocument): RecentDocument[] {
   const rest = recents.filter((item) => item.id !== doc.id && (!doc.path || item.path !== doc.path))
-  return [doc, ...rest].slice(0, 20)
+  return [doc, ...rest].slice(0, 50)
 }
 
 function touchRecent(state: AppState, session: DocumentSession, preview?: string): AppState {
@@ -126,7 +153,9 @@ function createInitialState(): AppState {
       invited: false,
       status: 'idle'
     })),
-    recents: persisted?.recents ?? []
+    recents: [],
+    recoveries: [],
+    missingRecentId: null
   }
 }
 
@@ -149,7 +178,34 @@ function withSession(
   }
 }
 
+function persistReducer(state: AppState, action: Action): AppState | null {
+  switch (action.type) {
+    case 'set-listing':
+      return { ...state, recents: action.recents, recoveries: action.recoveries }
+    case 'apply-persist-state': {
+      if (!state.session || state.session.id !== action.state.docId) {
+        return state
+      }
+      const session = {
+        ...state.session,
+        title: action.state.title || state.session.title,
+        path: action.state.path,
+        dirty: action.state.dirty,
+        isDraft: action.state.isDraft,
+        hasDraft: action.state.hasDraft
+      }
+      return { ...state, session }
+    }
+    case 'set-missing-recent':
+      return { ...state, missingRecentId: action.id }
+    default:
+      return null
+  }
+}
+
 function reducer(state: AppState, action: Action): AppState {
+  const persisted = persistReducer(state, action)
+  if (persisted) return persisted
   switch (action.type) {
     case 'home':
       clearAssets()
@@ -161,6 +217,7 @@ function reducer(state: AppState, action: Action): AppState {
         joinOpen: false,
         unsavedIntent: null,
         pendingRecentId: null,
+        missingRecentId: null,
         activity: [],
         agents: resetSessionAgents(state.agents)
       }
@@ -170,7 +227,9 @@ function reducer(state: AppState, action: Action): AppState {
         id: action.session.id,
         title: action.session.title,
         path: action.session.path,
-        dirty: false,
+        dirty: action.session.dirty ?? false,
+        isDraft: action.session.isDraft ?? !action.session.path,
+        hasDraft: action.session.hasDraft ?? false,
         share: action.session.share ?? { active: false, url: null, code: null }
       }
       return withSession(state, session, {
@@ -205,7 +264,13 @@ function reducer(state: AppState, action: Action): AppState {
       if (!state.session) {
         return state
       }
-      const session = { ...state.session, path: action.path, dirty: false }
+      const session = {
+        ...state.session,
+        path: action.path,
+        dirty: false,
+        isDraft: false,
+        hasDraft: false
+      }
       return {
         ...touchRecent(state, session, action.preview),
         notice: 'Document saved',
@@ -299,6 +364,13 @@ function reducer(state: AppState, action: Action): AppState {
     case 'push-activity':
       return { ...state, activity: [activity(action.event), ...state.activity].slice(0, 50) }
     default: {
+      if (
+        action.type === 'set-listing' ||
+        action.type === 'apply-persist-state' ||
+        action.type === 'set-missing-recent'
+      ) {
+        return state
+      }
       const _exhaustive: never = action
       return _exhaustive
     }
@@ -312,10 +384,44 @@ export function AppStateProvider({ children }: { children: ReactNode }): React.J
     savePersisted({
       provider: state.provider,
       mcp: state.mcp,
-      agents: state.agents,
-      recents: state.recents
+      agents: state.agents
     })
-  }, [state.provider, state.mcp, state.agents, state.recents])
+  }, [state.provider, state.mcp, state.agents])
+
+  useEffect(() => {
+    const api = window.api?.documents
+    if (!api?.onState) {
+      return
+    }
+    const stopState = api.onState((persistState) => {
+      if (!persistState.dirty) {
+        getClient(persistState.docId)?.markClean()
+      }
+      dispatch({ type: 'apply-persist-state', state: persistState })
+    })
+    const stopListing = api.onListing?.((listing) => {
+      dispatch({
+        type: 'set-listing',
+        recents: listing.recents.map((item) => ({
+          id: item.docId,
+          title: item.title,
+          path: item.path,
+          updatedAt: item.updatedAt,
+          preview: item.preview,
+          missing: item.missing
+        })),
+        recoveries: listing.recoveries.map((item) => ({
+          id: item.docId,
+          title: item.title,
+          updatedAt: item.updatedAt
+        }))
+      })
+    })
+    return () => {
+      stopState()
+      stopListing?.()
+    }
+  }, [])
 
   useEffect(() => {
     if (!state.notice) {

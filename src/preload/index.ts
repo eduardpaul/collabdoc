@@ -18,14 +18,21 @@ const api = {
   isWsl,
   documents: {
     open: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:open'),
-    read: (filePath: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:read', filePath),
-    save: (payload: {
-      path: string | null
+    openPath: (filePath: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:openPath', filePath),
+    importMarkdown: (): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:importMarkdown'),
+    exportMarkdown: (payload: {
       content: string
       suggestedName?: string
       extras?: { relativePath: string; base64: string }[]
-    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:save', payload),
+    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:exportMarkdown', payload),
+    saveNow: (docId: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:saveNow', docId),
+    saveAs: (docId: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:saveAs', docId),
+    flush: (docId: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:flush', docId),
     saveBytes: (payload: {
       suggestedName: string
       mime?: string
@@ -39,7 +46,56 @@ const api = {
       electronAPI.ipcRenderer.invoke('documents:attach', docId),
     release: (docId: string): Promise<unknown> =>
       electronAPI.ipcRenderer.invoke('documents:release', docId),
-    debug: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:debug')
+    debug: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:debug'),
+    putAsset: (payload: {
+      docId: string
+      hash: string
+      mime: string
+      base64: string
+    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:putAsset', payload),
+    getAssets: (docId: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:getAssets', docId),
+    listing: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:listing'),
+    removeRecent: (docId: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:removeRecent', docId),
+    locateRecent: (docId: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:locateRecent', docId),
+    recover: (docId: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:recover', docId),
+    discardDraft: (docId: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:discardDraft', docId),
+    rememberRecent: (payload: {
+      docId: string
+      title: string
+      path: string | null
+      updatedAt: string
+      preview: string
+    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:rememberRecent', payload),
+    onState: (listener: (state: unknown) => void): (() => void) => {
+      const wrapped = (_event: unknown, state: unknown): void => listener(state)
+      ipcRenderer.on('documents:state', wrapped)
+      return () => {
+        ipcRenderer.removeListener('documents:state', wrapped)
+      }
+    },
+    onListing: (listener: (listing: unknown) => void): (() => void) => {
+      const wrapped = (_event: unknown, listing: unknown): void => listener(listing)
+      ipcRenderer.on('documents:listing', wrapped)
+      return () => {
+        ipcRenderer.removeListener('documents:listing', wrapped)
+      }
+    }
+  },
+  app: {
+    onCommand: (listener: (command: string) => void): (() => void) => {
+      const wrapped = (_event: unknown, command: unknown): void => {
+        if (typeof command === 'string') listener(command)
+      }
+      ipcRenderer.on('app:command', wrapped)
+      return () => {
+        ipcRenderer.removeListener('app:command', wrapped)
+      }
+    }
   },
   shell: {
     openExternal: (url: string): Promise<unknown> =>

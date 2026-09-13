@@ -207,7 +207,7 @@ export const ImageFigure = TiptapNode.create({
 
 export function exportImageSrc(src: string, singleFile: boolean): string {
   if (src.startsWith('data:')) {
-    return singleFile ? src : src
+    return src
   }
   const hash = hashFromSrc(src)
   if (!hash) {

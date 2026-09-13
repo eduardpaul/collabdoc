@@ -4,10 +4,12 @@ import eslintConfigPrettier from '@electron-toolkit/eslint-config-prettier'
 import eslintPluginReact from 'eslint-plugin-react'
 import eslintPluginReactHooks from 'eslint-plugin-react-hooks'
 import { reactRefresh } from 'eslint-plugin-react-refresh'
+import sonarjs from 'eslint-plugin-sonarjs'
 
 export default defineConfig(
   { ignores: ['**/node_modules', '**/dist', '**/out', '**/scripts', '**/e2e'] },
   tseslint.configs.recommended,
+  sonarjs.configs.recommended,
   eslintPluginReact.configs.flat.recommended,
   eslintPluginReact.configs.flat['jsx-runtime'],
   {
@@ -71,6 +73,24 @@ export default defineConfig(
           ]
         }
       ]
+    }
+  },
+  {
+    rules: {
+      'sonarjs/cognitive-complexity': 'warn',
+      'sonarjs/no-nested-conditional': 'off',
+      'sonarjs/void-use': 'off',
+      'sonarjs/redundant-type-aliases': 'off',
+      'sonarjs/pseudo-random': 'warn',
+      'sonarjs/no-nested-functions': 'off',
+      'sonarjs/no-nested-template-literals': 'warn',
+      'sonarjs/no-os-command-from-path': 'off'
+    }
+  },
+  {
+    files: ['**/*.test.{ts,tsx}'],
+    rules: {
+      'sonarjs/cognitive-complexity': 'off'
     }
   },
   eslintConfigPrettier

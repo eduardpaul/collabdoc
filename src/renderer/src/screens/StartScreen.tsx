@@ -68,26 +68,57 @@ export function StartScreen(): React.JSX.Element {
         </Button>
       </div>
 
+      {state.recoveries.length > 0 ? (
+        <section className="panel" data-testid="recover-drafts">
+          <header className="panel__head">
+            <h2>Recover</h2>
+          </header>
+          <ul className="recent-list">
+            {state.recoveries.map((doc) => (
+              <li key={doc.id}>
+                <div className="recent-row recent-row--recover">
+                  <Icon name="file" />
+                  <span className="recent-row__body">
+                    <strong>Recover &lsquo;{doc.title}&rsquo;</strong>
+                    <span className="muted">Unsaved draft · {relativeTime(doc.updatedAt)}</span>
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => void actions.recoverDocument(doc.id)}
+                  >
+                    Recover
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       <section className="panel">
         <header className="panel__head">
           <h2>Recent</h2>
         </header>
         {state.recents.length === 0 ? (
-          <p className="empty">No documents yet. Create one or open a Markdown file from disk.</p>
+          <p className="empty">No documents yet. Create one or open a file from disk.</p>
         ) : (
           <ul className="recent-list">
             {state.recents.map((doc) => (
               <li key={doc.id}>
                 <button
                   type="button"
-                  className="recent-row"
+                  className={`recent-row ${doc.missing ? 'is-missing' : ''}`}
                   onClick={() => void actions.openRecent(doc.id)}
                 >
                   <Icon name="file" />
                   <span className="recent-row__body">
-                    <strong>{doc.title}</strong>
+                    <strong>
+                      {doc.path || doc.missing ? doc.title : `Recover ‘${doc.title}’`}
+                    </strong>
                     <span className="muted">
-                      {doc.path ?? 'Not saved'} · {relativeTime(doc.updatedAt)}
+                      {doc.missing ? 'Moved or deleted' : (doc.path ?? 'Unsaved draft')} ·{' '}
+                      {relativeTime(doc.updatedAt)}
                     </span>
                   </span>
                   {doc.preview ? <span className="recent-row__preview">{doc.preview}</span> : null}
@@ -113,7 +144,7 @@ export function StartScreen(): React.JSX.Element {
             </div>
             <p>
               {state.provider.enabled
-                ? `${state.provider.label}${state.provider.model ? ` · ${state.provider.model}` : ''}`
+                ? `${state.provider.label}${state.provider.model ? ' · ' + state.provider.model : ''}`
                 : 'Endpoint and key. Not required to start writing.'}
             </p>
             <Button size="sm" onClick={() => dispatch({ type: 'open-settings', tab: 'provider' })}>

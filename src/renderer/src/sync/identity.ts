@@ -17,9 +17,10 @@ export function localProfile(): ActorProfile {
     stored = null
   }
   if (!stored?.userId) {
+    const colorIndex = crypto.getRandomValues(new Uint32Array(1))[0] % COLORS.length
     stored = {
       userId: crypto.randomUUID(),
-      color: COLORS[Math.floor(Math.random() * COLORS.length)]
+      color: COLORS[colorIndex]
     }
     try {
       localStorage.setItem(KEY, JSON.stringify(stored))

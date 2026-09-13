@@ -24,7 +24,7 @@ Replace the `setTimeout` stubs with a real runtime in the main process. Each age
 - The manual loop in `llm-agent.ts` is replaced by DeepAgents (`createDeepAgent`) with our tools bound via `tool()` from `@langchain/core/tools`. DeepAgents brings a planning tool, a virtual filesystem and subagents; **disable or sandbox the filesystem tools** — the document is the only thing an agent edits, and any scratch space must live under `userData/agents/<id>/`, never the user's disk (18 may open this up deliberately).
 - `MAX_STEPS = 12` was tuned for one paragraph. Make it per-role config (`writer 24`, `reviewer 12`) and expose "steps used" in the log.
 - Prompts say "Never reply with plain assistant text. Always call a tool." That worked with Azure GPT; with DeepAgents the final answer is a message. Treat the final message as the turn summary and require at least one `DOCUMENT_WRITE_TOOLS` call for writers (14).
-- Tool results in lorocollab are JSON strings truncated at 8 000 chars. Keep the cap but truncate *block views*, not the JSON mid-string.
+- Tool results in lorocollab are JSON strings truncated at 8 000 chars. Keep the cap but truncate _block views_, not the JSON mid-string.
 - `onLog` broadcast is per tool call — fine, but batch to the renderer at ≤ 10 events/100 ms.
 - No cancellation reaches the LLM call in lorocollab (`cancelled` is checked between steps). Use `AbortSignal` all the way into the model call.
 

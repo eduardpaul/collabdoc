@@ -22,22 +22,20 @@ export function SelectionBar({
       if (quote.length < 1) {
         return null
       }
-      let top = 24
-      let left = 24
       try {
         const end = current.view.coordsAtPos(Math.max(sel.from, sel.to - 1))
-        top = Math.max(8, end.top - 44)
-        left = Math.min(end.left, window.innerWidth - 360)
+        const top = Math.max(8, end.top - 44)
+        const left = Math.min(end.left, window.innerWidth - 360)
+        return {
+          quote,
+          top,
+          left,
+          bold: current.isActive('bold'),
+          italic: current.isActive('italic'),
+          link: current.isActive('link')
+        }
       } catch {
         return null
-      }
-      return {
-        quote,
-        top,
-        left,
-        bold: current.isActive('bold'),
-        italic: current.isActive('italic'),
-        link: current.isActive('link')
       }
     }
   })

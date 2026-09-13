@@ -1,20 +1,13 @@
 import { execFile } from 'child_process'
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, Menu, shell, BrowserWindow, ipcMain, type MenuItemConstructorOptions } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import {
-  openDocument,
-  readBytes,
-  readDocument,
-  saveBytes,
-  saveDocument,
-  type BytesSavePayload,
-  type DocumentSavePayload
-} from './documents'
+import { readBytes, saveBytes, type BytesSavePayload } from './documents'
 import { applyWslChromiumFlags, isWsl } from './wsl'
 import { DocumentRegistry } from '@core/registry'
-import { registerDocumentIpc } from './documents/ipc'
+import { broadcastListing, broadcastState, registerDocumentIpc, sendCommand } from './documents/ipc'
+import { DocumentStore } from './persist/store'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -22,6 +15,9 @@ let mainWindow: BrowserWindow | null = null
 const documents = new DocumentRegistry({
   warn: (message, detail) => console.warn(`[collabdoc] ${message}`, detail ?? '')
 })
+
+let persist: DocumentStore | null = null
+let quitting = false
 
 function openExternalUrl(url: string): void {
   // Validate URL protocol to prevent arbitrary scheme execution
@@ -92,6 +88,12 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
+  win.on('close', () => {
+    void persist?.flushAll().catch((error) => {
+      console.warn('[collabdoc] flush on close failed', error)
+    })
+  })
+
   win.on('closed', () => {
     mainWindow = null
   })
@@ -134,28 +136,17 @@ if (!gotTheLock) {
       optimizer.watchWindowShortcuts(window)
     })
 
-    registerDocumentIpc(documents)
+    persist = new DocumentStore({
+      registry: documents,
+      userData: app.getPath('userData'),
+      documentsDir: join(app.getPath('documents'), 'CollabDoc'),
+      sendState: broadcastState,
+      sendListing: broadcastListing
+    })
+    void persist.init()
+    registerDocumentIpc(documents, persist)
+    installAppMenu()
 
-    ipcMain.handle('documents:open', async (event) => {
-      const win = BrowserWindow.fromWebContents(event.sender)
-      if (!win) {
-        return { ok: false, error: 'No window' }
-      }
-      return openDocument(win)
-    })
-    ipcMain.handle('documents:read', async (_event, filePath: string) => {
-      if (typeof filePath !== 'string' || filePath.length === 0) {
-        return { ok: false, error: 'Invalid path' }
-      }
-      return readDocument(filePath)
-    })
-    ipcMain.handle('documents:save', async (event, payload: DocumentSavePayload) => {
-      const win = BrowserWindow.fromWebContents(event.sender)
-      if (!win) {
-        return { ok: false, error: 'No window' }
-      }
-      return saveDocument(win, payload)
-    })
     ipcMain.handle('documents:saveBytes', async (event, payload: BytesSavePayload) => {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) {
@@ -187,8 +178,17 @@ if (!gotTheLock) {
     })
   })
 
-  app.on('before-quit', () => {
-    documents.closeAll()
+  app.on('before-quit', (event) => {
+    if (quitting) return
+    event.preventDefault()
+    quitting = true
+    void (persist?.flushAll() ?? Promise.resolve())
+      .catch((error) => console.warn('[collabdoc] flush before quit failed', error))
+      .finally(() => {
+        persist?.dispose()
+        documents.closeAll()
+        app.exit()
+      })
   })
 
   // Quit when all windows are closed, except on macOS.
@@ -199,5 +199,29 @@ if (!gotTheLock) {
   })
 }
 
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and require them here.
+function installAppMenu(): void {
+  const send = (command: string): void => {
+    if (mainWindow) sendCommand(mainWindow, command)
+  }
+  const file: MenuItemConstructorOptions = {
+    label: 'File',
+    submenu: [
+      { label: 'New', accelerator: 'CmdOrCtrl+N', click: () => send('new') },
+      { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: () => send('open') },
+      { type: 'separator' },
+      { label: 'Import Markdown…', click: () => send('import-markdown') },
+      { label: 'Export Markdown…', click: () => send('export-markdown') },
+      { type: 'separator' },
+      { label: 'Save', accelerator: 'CmdOrCtrl+S', click: () => send('save') },
+      { label: 'Save As…', accelerator: 'CmdOrCtrl+Shift+S', click: () => send('save-as') }
+    ]
+  }
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      file,
+      { role: 'editMenu' },
+      { role: 'viewMenu' },
+      { role: 'windowMenu' }
+    ])
+  )
+}

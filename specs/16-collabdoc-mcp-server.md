@@ -8,7 +8,7 @@ Expose the open document's tool surface (02) as a Model Context Protocol server 
 
 ## Current state (collabdoc)
 
-- Settings → "Local MCP" lists `Claude (local MCP)` / `Codex (local MCP)` with `command: claude|codex`, `transport: stdio|sse`; `connectMcp` fakes a connection. The model in `types.ts` treats CollabDoc as an MCP *client* of those CLIs, which is backwards for this feature — the CLIs are clients of CollabDoc's document tools (17 covers CollabDoc driving the CLIs).
+- Settings → "Local MCP" lists `Claude (local MCP)` / `Codex (local MCP)` with `command: claude|codex`, `transport: stdio|sse`; `connectMcp` fakes a connection. The model in `types.ts` treats CollabDoc as an MCP _client_ of those CLIs, which is backwards for this feature — the CLIs are clients of CollabDoc's document tools (17 covers CollabDoc driving the CLIs).
 
 ## Reference (lorocollab)
 
@@ -18,7 +18,7 @@ Expose the open document's tool surface (02) as a Model Context Protocol server 
 
 ## Review before adopting
 
-- No MCP code exists in lorocollab; the tool schemas are the reusable part. Descriptions were written for GPT tool-calling; re-read each for an external agent that has *no* system prompt from us (Claude Code will see only the tool descriptions), and add a `get_instructions`/server `instructions` field explaining the workflow (`get_document` → `get_blocks` → edit with locators → comments).
+- No MCP code exists in lorocollab; the tool schemas are the reusable part. Descriptions were written for GPT tool-calling; re-read each for an external agent that has _no_ system prompt from us (Claude Code will see only the tool descriptions), and add a `get_instructions`/server `instructions` field explaining the workflow (`get_document` → `get_blocks` → edit with locators → comments).
 - The session's `allowedTools` by role must be settable per MCP client: a client registers as `writer` (default) or `reviewer`.
 - MCP clients may call tools very fast (Claude Code parallel tool calls); the session already serialises through Loro, but rate-limit per client (e.g. 20 writes/s) so a runaway agent cannot flood history.
 

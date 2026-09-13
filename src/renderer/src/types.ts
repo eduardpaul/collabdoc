@@ -59,6 +59,8 @@ export type DocumentSession = {
   title: string
   path: string | null
   dirty: boolean
+  isDraft: boolean
+  hasDraft: boolean
   share: ShareState
 }
 
@@ -68,6 +70,13 @@ export type RecentDocument = {
   path: string | null
   updatedAt: string
   preview: string
+  missing?: boolean
+}
+
+export type RecoveryOffer = {
+  id: string
+  title: string
+  updatedAt: string
 }
 
 export type ActivityKind = 'edit' | 'comment' | 'agent' | 'share' | 'join' | 'system'
@@ -101,6 +110,8 @@ export type AppState = {
   mcp: McpConnection[]
   agents: Agent[]
   recents: RecentDocument[]
+  recoveries: RecoveryOffer[]
+  missingRecentId: string | null
   session: DocumentSession | null
   activity: ActivityEvent[]
 }

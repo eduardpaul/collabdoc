@@ -84,6 +84,8 @@ export const emptyAppState: Omit<AppState, 'provider' | 'mcp' | 'agents' | 'rece
   rightTab: 'agents',
   leftCollapsed: false,
   rightCollapsed: false,
+  recoveries: [],
+  missingRecentId: null,
   session: null,
   activity: []
 }

@@ -118,16 +118,21 @@ export function UnsavedDialog(): React.JSX.Element | null {
   if (!state.unsavedIntent) {
     return null
   }
+  const draft = Boolean(state.session?.isDraft)
 
   return (
     <Modal
-      title="Unsaved changes"
-      subtitle={`${state.session?.title ?? 'This document'} has edits that are not on disk yet.`}
+      title={draft ? 'Discard this draft?' : 'Unsaved changes'}
+      subtitle={
+        draft
+          ? `“${state.session?.title ?? 'Untitled'}” has not been saved to a file. Don't save deletes the draft.`
+          : `${state.session?.title ?? 'This document'} has edits that are not on disk yet.`
+      }
       onClose={() => dispatch({ type: 'clear-unsaved' })}
     >
       <div className="modal__actions">
         <Button variant="primary" onClick={() => void confirmUnsaved('save')}>
-          Save
+          {draft ? 'Save as…' : 'Save'}
         </Button>
         <Button variant="danger" onClick={() => void confirmUnsaved('discard')}>
           Don&apos;t save
@@ -140,12 +145,26 @@ export function UnsavedDialog(): React.JSX.Element | null {
 
 export function NoticeBar(): React.JSX.Element | null {
   const { state } = useAppState()
-  if (!state.notice) {
+  const actions = useSessionActions()
+  const missing = state.missingRecentId
+    ? state.recents.find((item) => item.id === state.missingRecentId)
+    : undefined
+  if (!state.notice && !missing) {
     return null
   }
   return (
-    <div className="notice" role="status">
-      {state.notice}
+    <div className={`notice ${missing ? 'notice--actions' : ''}`} role="status">
+      <span>{missing ? `“${missing.title}” was moved or deleted.` : state.notice}</span>
+      {missing ? (
+        <span className="notice__actions">
+          <Button size="sm" onClick={() => void actions.locateRecent(missing.id)}>
+            Locate…
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => void actions.removeRecent(missing.id)}>
+            Remove from recents
+          </Button>
+        </span>
+      ) : null}
     </div>
   )
 }

@@ -71,15 +71,13 @@ describe('listHistory (AC-02.10)', () => {
       ]
     })
     expectOk(fig)
-    expectOk(nova.call('replace_text', { blockId: p, locator: { find: 'first' }, text: '' }))
     expectOk(
       nova.call('apply_marks', {
         blockId: p,
-        marks: [{ op: 'add', type: 'bold', range: { start: 0, end: 0, expected: '' } }]
-      }).ok
-        ? { ok: true }
-        : { ok: true }
+        marks: [{ op: 'add', type: 'bold', range: { start: 0, end: 5, expected: 'first' } }]
+      })
     )
+    expectOk(nova.call('replace_text', { blockId: p, locator: { find: 'first' }, text: '' }))
     const figureId = (fig as { blocks: Array<{ blockId: string }> }).blocks[0].blockId
     expectOk(nova.call('delete_blocks', { blockIds: [figureId] }))
 

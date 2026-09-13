@@ -30,7 +30,7 @@ Surface Loro's change log as a History panel: every change grouped per commit, a
 - Author filter chips (All, You, each guest, each agent). Search box filters by summary text.
 - Selecting an entry shows the diff in a panel under the editor or in the rail (reuse the `DiffBoard` behaviour).
 - **Checkpoints**: "Mark checkpoint" writes `{ name, frontiers, actorId, at }` into a `checkpoints` root list. Checkpoints appear as pinned rows and in the export menu.
-- **Time travel**: "View this version" forks the client doc, `checkout(frontiers)`, and renders it in a read-only editor overlay with a banner ("Viewing version from 14:02 by Reviewer · Restore · Close"). "Restore" applies the inverse as a *new* commit by the current user (never rewrites history): compute the block-level diff and apply it through the user's `DocumentSession` so it is attributed and undoable.
+- **Time travel**: "View this version" forks the client doc, `checkout(frontiers)`, and renders it in a read-only editor overlay with a banner ("Viewing version from 14:02 by Reviewer · Restore · Close"). "Restore" applies the inverse as a _new_ commit by the current user (never rewrites history): compute the block-level diff and apply it through the user's `DocumentSession` so it is attributed and undoable.
 - Attribution of agent edits inside the editor: a subtle left-gutter color bar per block for the last author (toggle in the toolbar), computed from Loro `getCursor`/change spans; if too costly, start with block-level "last edited by" from the history index.
 - Ephemeral/presence changes never appear in history.
 

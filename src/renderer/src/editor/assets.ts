@@ -28,13 +28,14 @@ const MIME_EXT: Record<string, string> = {
 
 const store = new Map<string, AssetRecord>()
 const objectUrls = new Map<string, string>()
+let activeDocId = 'current'
 
-export function setAssetDocument(_id?: string): void {
-  void _id
+export function setAssetDocument(id?: string): void {
+  activeDocId = id ?? 'current'
 }
 
 export function currentAssetDocument(): string {
-  return 'current'
+  return activeDocId
 }
 
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
@@ -79,7 +80,22 @@ export async function putBytes(
     data: bytesToBase64(bytes)
   }
   store.set(sha256, record)
+  void syncAssetToHost(record)
   return record
+}
+
+async function syncAssetToHost(record: AssetRecord): Promise<void> {
+  const put = window.api?.documents.putAsset
+  if (!put) return
+  const result = await put({
+    docId: activeDocId,
+    hash: record.sha256,
+    mime: record.mime,
+    base64: record.data
+  })
+  if (result && 'ok' in result && !result.ok) {
+    console.warn('[collabdoc] could not persist image asset', result.error)
+  }
 }
 
 export async function putFile(file: File): Promise<AssetRecord> {

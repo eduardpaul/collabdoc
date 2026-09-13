@@ -1,8 +1,6 @@
 import type { JSONContent } from '@tiptap/core'
-import { getAsset, hashFromSrc, putBytes, putDataUri, restoreAssets } from '../editor/assets'
+import { getAsset, hashFromSrc, putBytes, putDataUri } from '../editor/assets'
 import { parseDocument, serializeDocument, titleFromPath } from './document-file'
-import { hasNativeDocuments } from './host'
-import type { DocumentReadResult, DocumentSaveResult } from '../types'
 
 export type LoadedDocument = {
   path: string | null
@@ -10,7 +8,7 @@ export type LoadedDocument = {
   content: JSONContent
 }
 
-async function hydrateImages(doc: JSONContent, mdPath: string | null): Promise<JSONContent> {
+export async function hydrateImages(doc: JSONContent, mdPath: string | null): Promise<JSONContent> {
   const walk = async (node: JSONContent): Promise<JSONContent> => {
     const next: JSONContent = { ...node }
     if (node.type === 'imageFigure' && typeof node.attrs?.src === 'string') {
@@ -69,7 +67,7 @@ async function readRelativeBytes(mdPath: string, relative: string): Promise<Uint
   return bytes
 }
 
-function extrasFromDoc(doc: JSONContent): { relativePath: string; base64: string }[] {
+export function extrasFromDoc(doc: JSONContent): { relativePath: string; base64: string }[] {
   const extras: { relativePath: string; base64: string }[] = []
   const seen = new Set<string>()
   const visit = (node: JSONContent): void => {
@@ -87,15 +85,6 @@ function extrasFromDoc(doc: JSONContent): { relativePath: string; base64: string
   }
   visit(doc)
   return extras
-}
-
-async function asLoaded(
-  result: Extract<DocumentReadResult, { ok: true }>
-): Promise<LoadedDocument> {
-  const parsed = parseDocument(result.content, titleFromPath(result.name))
-  restoreAssets({})
-  const content = await hydrateImages(parsed.content, result.path)
-  return { path: result.path, title: parsed.title, content }
 }
 
 function pickFileInBrowser(): Promise<LoadedDocument | null> {
@@ -131,25 +120,12 @@ function downloadInBrowser(name: string, content: string): void {
 }
 
 export async function openDocumentFromHost(): Promise<LoadedDocument | null> {
-  if (!hasNativeDocuments()) {
-    return pickFileInBrowser()
-  }
-  const result = await window.api!.documents.open()
-  if (!result.ok) {
-    throw new Error(result.error)
-  }
-  return asLoaded(result)
+  return pickFileInBrowser()
 }
 
-export async function readDocumentFromHost(filePath: string): Promise<LoadedDocument> {
-  if (!hasNativeDocuments()) {
-    throw new Error('Native file access is only available in the desktop app')
-  }
-  const result = await window.api!.documents.read(filePath)
-  if (!result.ok) {
-    throw new Error(result.error)
-  }
-  return asLoaded(result)
+export async function readDocumentFromHost(_filePath: string): Promise<LoadedDocument> {
+  void _filePath
+  throw new Error('Native file access is only available in the desktop app')
 }
 
 export async function saveDocumentToHost(input: {
@@ -157,23 +133,8 @@ export async function saveDocumentToHost(input: {
   title: string
   content: JSONContent
 }): Promise<{ path: string; title: string } | null> {
-  const native = hasNativeDocuments()
-  const serialized = serializeDocument(input.title, input.content, { singleFile: !native })
+  const serialized = serializeDocument(input.title, input.content, { singleFile: true })
   const suggestedName = `${input.title.trim() || 'Untitled'}.md`
-
-  if (!native) {
-    downloadInBrowser(suggestedName, serialized)
-    return { path: input.path ?? suggestedName, title: input.title }
-  }
-
-  const result: DocumentSaveResult = await window.api!.documents.save({
-    path: input.path,
-    content: serialized,
-    suggestedName,
-    extras: extrasFromDoc(input.content)
-  })
-  if (!result.ok) {
-    throw new Error(result.error)
-  }
-  return { path: result.path, title: input.title }
+  downloadInBrowser(suggestedName, serialized)
+  return { path: input.path ?? suggestedName, title: input.title }
 }

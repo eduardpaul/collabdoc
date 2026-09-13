@@ -169,7 +169,7 @@ export function SettingsModal(): React.JSX.Element | null {
           <div className="modal__actions">
             <span className="muted">
               {state.provider.enabled
-                ? `Ready · ${state.provider.label}${state.provider.model ? ` · ${state.provider.model}` : ''}`
+                ? `Ready · ${state.provider.label}${state.provider.model ? ' · ' + state.provider.model : ''}`
                 : 'Not configured — you can still write locally'}
             </span>
             <Button

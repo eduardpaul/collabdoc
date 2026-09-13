@@ -7,7 +7,7 @@
 Replace the `<textarea>` in `Workspace.tsx` with a Tiptap 3 editor that supports the block types and marks agents will later be allowed to produce, exposes stable block ids, and keeps the current CollabDoc toolbar/rail look. Two capabilities are **must-haves in this feature**, not later polish:
 
 1. **Markdown** as a first-class import/export format (open `.md`, save `.md`, paste Markdown, copy as Markdown) with a lossless mapping for every supported node — including figures.
-2. **Illustrations**: Mermaid diagrams, AntV Infographics, and images — each a block with an optional caption, editable in place, rendered offline, and addressable by agents as *source text* so a Writer can draw and a Reviewer can comment on a diagram.
+2. **Illustrations**: Mermaid diagrams, AntV Infographics, and images — each a block with an optional caption, editable in place, rendered offline, and addressable by agents as _source text_ so a Writer can draw and a Reviewer can comment on a diagram.
 
 This feature is editor-only: content still lives in React state as ProseMirror JSON until 03 connects it to Loro.
 
@@ -20,6 +20,7 @@ This feature is editor-only: content still lives in React state as ProseMirror J
 ## Reference (lorocollab)
 
 Editor core:
+
 - `client/editor/schema-extensions.ts` — the extension list (StarterKit subset, Heading 1–4, lists, task list, Highlight, Link, Underline, Subscript/Superscript, TextAlign, Typography).
 - `client/extensions/block-id.ts`, `client/block-id-plugin.ts` — `blockId` attrs on block nodes.
 - `client/components/EditorToolbar.tsx` (682 lines), `SearchReplace.tsx`, `SelectionBar.tsx` — behaviour to keep, markup to redo.
@@ -27,10 +28,11 @@ Editor core:
 - `client/editor/text-style-parity.ts` + test.
 
 Illustrations (port after review):
+
 - `client/extensions/mermaid-figure.ts` — `mermaidFigure` node: `attrs { source, style }`, caption as inline content, node view with lazy render, error state, source textarea, caption toggle; `Mod-Alt-m`.
 - `client/extensions/infographic-figure.ts` — `infographicFigure`, same shape over `@antv/infographic`.
 - `client/extensions/figure-caption.ts` — caption chrome, pointer guards, `SyntaxFigureCaptionKeys` (typing into a selected figure goes to the caption).
-- `core/tree.ts#isSyntaxFigure / syntaxSourceOf / setSyntaxSource / blockAgentText` — agents read/edit the *source* of a figure; `caption` is exposed as `attrs.caption` in block views. This is what makes diagrams part of the agent tool surface for free.
+- `core/tree.ts#isSyntaxFigure / syntaxSourceOf / setSyntaxSource / blockAgentText` — agents read/edit the _source_ of a figure; `caption` is exposed as `attrs.caption` in block views. This is what makes diagrams part of the agent tool surface for free.
 - `server/llm-agent.ts` writer prompt — the `insert_blocks { type: mermaidFigure, text: "flowchart LR …" }` convention.
 - `EditorToolbar.tsx#insertImage` — `readAsDataURL` with a 2 MB cap; `@pentestpad/tiptap-extension-figure` (`imageFigure` with resize + caption).
 
@@ -39,12 +41,14 @@ Markdown: **nothing to port** — lorocollab has no Markdown support.
 ## Review before adopting
 
 Editor core:
+
 - `EditorToolbar.tsx` is one 680-line component with its own icon set and inline styles. Rebuild with `components/ui.tsx` primitives; do not import lorocollab CSS.
-- `block-id-plugin.ts`: verify ids are unique after paste-of-self and list split/join, and that copy/paste inside the same document yields a *new* id (comments must not follow the copy).
+- `block-id-plugin.ts`: verify ids are unique after paste-of-self and list split/join, and that copy/paste inside the same document yields a _new_ id (comments must not follow the copy).
 - `schema-extensions.ts` disables Tiptap `History` because Loro owns undo. Keep History enabled behind a flag until 03.
 - Link `autolink: true`; `openOnClick` must be off — links go through `openExternalUrl` in main.
 
 Illustrations:
+
 - **Images are base64 data URIs in node attrs.** In a CRDT that means every 2 MB image is in the document, every snapshot, every history diff, and every guest's initial sync. Change to **assets**: `imageFigure.attrs.src = "asset:<sha256>"`; bytes live in the document's asset store (04 amends the `.collabdoc` container; 08 transfers assets to guests on demand). Data URIs are accepted on paste/import and converted to assets immediately. Keep the 2 MB per-image cap and add a 25 MB per-document cap for v1.
 - `mermaid` is 84 MB on disk / several MB bundled and `@antv/infographic` ~14 MB. Both must be **dynamically imported** on first figure render; the editor must be interactive before either loads, and a document with no figures must never load them.
 - `@antv/infographic` is **0.2.x** with a custom DSL. Pin an exact version, wrap render in a try/catch that shows the source with the error, and isolate it behind `SyntaxFigure` so removing it later needs no document migration (the node type and source string stay; only the renderer changes).
@@ -75,8 +79,8 @@ Illustrations:
 ### Markdown
 
 - Library: `@tiptap/markdown` (Tiptap 3) with custom serializer/parser rules registered per node:
-  - `mermaidFigure` ↔ fenced ```` ```mermaid ```` block with the caption in the fence **info string** (` ```mermaid caption="Release flow" `). Alternatives considered: a trailing `<!-- caption -->` comment (invisible on GitHub, easy to orphan) and a following italic line (ambiguous on parse). The info string survives GitHub rendering, is one line, and parses back unambiguously.
-  - `infographicFigure` ↔ ```` ```infographic caption="…" ```` fence with the DSL as body.
+  - `mermaidFigure` ↔ fenced ` ```mermaid ` block with the caption in the fence **info string** (` ```mermaid caption="Release flow" `). Alternatives considered: a trailing `<!-- caption -->` comment (invisible on GitHub, easy to orphan) and a following italic line (ambiguous on parse). The info string survives GitHub rendering, is one line, and parses back unambiguously.
+  - `infographicFigure` ↔ ` ```infographic caption="…" ` fence with the DSL as body.
   - `imageFigure` ↔ `![alt](path "caption")` where `path` is `assets/<sha256>.<ext>` on export (the exporter writes the asset files next to the `.md`; the importer reads relative paths and embeds them as assets) and a data URI when exporting "single file".
   - `taskItem` ↔ `- [ ] / - [x]`; `highlight` ↔ `==text==`; `underline` ↔ `<u>` (no Markdown syntax; documented); `superscript/subscript` ↔ `^x^` / `~x~`; `mention` (10) ↔ `@handle`.
 - Surfaces: Open `.md` (import), Save as `.md` / Export Markdown (04 keeps `.collabdoc` as the storage format), **Paste Markdown** (clipboard text that parses as Markdown with ≥ 1 block construct is offered as rich content; plain text otherwise), **Copy as Markdown** on any selection, and a read-only **Markdown source** view in the rail for the current block (agents and humans then speak the same language when comparing).
@@ -92,6 +96,7 @@ Illustrations:
 ## Acceptance criteria
 
 Editor core:
+
 - [ ] AC-01.1 The workspace shows a Tiptap editor; typing, Enter, Backspace and plain-text paste behave as a standard rich-text editor. The `<textarea>` is gone.
 - [ ] AC-01.2 Supported blocks: paragraph, heading 1–4, blockquote, code block, bullet/ordered/task lists, horizontal rule, image figure, Mermaid figure, Infographic figure. Marks: bold, italic, underline, strike, code, link, highlight, superscript, subscript. Nothing else can be produced via UI, paste or import (unknown HTML is stripped, not preserved).
 - [ ] AC-01.3 Every block node in `BLOCK_ID_TYPES` (figures included) carries a `blockId` that is unique, stable across in-block edits, and regenerated for pasted/duplicated blocks.
@@ -103,7 +108,8 @@ Editor core:
 - [ ] AC-01.10 Title input, dirty indicator, window title and unsaved dialog keep working.
 
 Markdown:
-- [ ] AC-01.6 Opening an existing `.md` renders headings, lists (incl. task lists), emphasis, links, code blocks, images and ```` ```mermaid ```` fences as rich content; saving back produces Markdown that round-trips open → save → open with no structural change for the supported set.
+
+- [ ] AC-01.6 Opening an existing `.md` renders headings, lists (incl. task lists), emphasis, links, code blocks, images and ` ```mermaid ` fences as rich content; saving back produces Markdown that round-trips open → save → open with no structural change for the supported set.
 - [ ] AC-01.11 Round-trip property test: for a generated corpus covering every node/mark (including all three figure types with and without captions, nested lists, marks spanning links), `parse(serialize(doc))` equals `doc` modulo block ids and asset hashes; ≥ 500 random documents, runs in CI.
 - [ ] AC-01.12 Figures serialise as fences with the caption in the info string (` ```mermaid caption="…" `, ` ```infographic caption="…" `) and images as `![alt](assets/<hash>.<ext> "caption")` with asset files written beside the `.md`; the "single file" export embeds data URIs instead; both re-import to identical documents.
 - [ ] AC-01.13 Paste Markdown: pasting text with at least one block construct (heading, list, fence, image) inserts rich content; plain prose pastes as paragraphs; a paste can be forced to plain text with `Mod+Shift+V`.
@@ -111,6 +117,7 @@ Markdown:
 - [ ] AC-01.15 The rail "Markdown source" view shows the current block's Markdown, updating live, and is read-only.
 
 Illustrations:
+
 - [ ] AC-01.16 Insert Mermaid → a default flowchart renders inline within 1 s on first use (library loads lazily; the editor was interactive before) and within 100 ms for subsequent figures; a document without figures never loads `mermaid` or `@antv/infographic` (assert on loaded chunks).
 - [ ] AC-01.17 Edit source: changing the source in the panel live-previews; a syntax error shows the message and line and does not replace the last good render; Apply commits exactly one transaction; Cancel/`Esc` restores; the Loro/JSON shape after Apply is `attrs.source` = new text.
 - [ ] AC-01.18 Captions: Caption +/− toggles an inline-editable caption; typing while a figure is selected goes to the caption, never replaces the figure; captions appear in `get_blocks` as `attrs.caption` (verified once 02 lands, stubbed test until then).

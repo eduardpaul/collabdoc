@@ -8,16 +8,16 @@ The host's main process joins a Hyperswarm topic derived from a per-session secr
 
 ## Why Hyperswarm instead of localtunnel (decision, 2026-09-13)
 
-| | localtunnel | Hyperswarm |
-| --- | --- | --- |
-| Topology | Relay through `loca.lt` (third-party server) | Direct peer-to-peer over UDP; DHT only for discovery |
-| Encryption / auth | TLS terminated at the relay; we would add E2E crypto + bearer auth ourselves | Noise (XX) handshake per connection, mutually authenticated by keypairs, built in |
-| Attack surface on host | HTTP + WebSocket server reachable from any web page on the host (`127.0.0.1`) and from the internet through the relay | No listening TCP/HTTP port; connections only from peers that pass the Noise handshake |
-| Maintenance | Last publish 2023; free relay is best-effort, rate-limited, shows an interstitial | Actively released (Sept 2026); used in production by Holepunch apps |
-| NAT traversal | Not needed (relay) — always works if the relay is up | Hole-punching; fails on some symmetric NATs — must be handled |
-| External dependency | The relay for the whole session | Public DHT bootstrap nodes for discovery only (configurable) |
-| Browser guests | Possible later by serving a web build | Not possible (UDP) — already out of scope |
-| Native code in Electron | None | `sodium-native`, `udx-native` (N-API prebuilds; must be verified per OS) |
+|                         | localtunnel                                                                                                           | Hyperswarm                                                                            |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Topology                | Relay through `loca.lt` (third-party server)                                                                          | Direct peer-to-peer over UDP; DHT only for discovery                                  |
+| Encryption / auth       | TLS terminated at the relay; we would add E2E crypto + bearer auth ourselves                                          | Noise (XX) handshake per connection, mutually authenticated by keypairs, built in     |
+| Attack surface on host  | HTTP + WebSocket server reachable from any web page on the host (`127.0.0.1`) and from the internet through the relay | No listening TCP/HTTP port; connections only from peers that pass the Noise handshake |
+| Maintenance             | Last publish 2023; free relay is best-effort, rate-limited, shows an interstitial                                     | Actively released (Sept 2026); used in production by Holepunch apps                   |
+| NAT traversal           | Not needed (relay) — always works if the relay is up                                                                  | Hole-punching; fails on some symmetric NATs — must be handled                         |
+| External dependency     | The relay for the whole session                                                                                       | Public DHT bootstrap nodes for discovery only (configurable)                          |
+| Browser guests          | Possible later by serving a web build                                                                                 | Not possible (UDP) — already out of scope                                             |
+| Native code in Electron | None                                                                                                                  | `sodium-native`, `udx-native` (N-API prebuilds; must be verified per OS)              |
 
 Decision: **Hyperswarm for v1.** The transport stays behind a `PeerTransport` interface so a relay-based transport can be added later for environments where hole-punching fails.
 
@@ -35,9 +35,9 @@ Decision: **Hyperswarm for v1.** The transport stays behind a `PeerTransport` in
 
 ## Review before adopting
 
-- lorocollab has **no authentication**. Hyperswarm authenticates *keypairs*, not *people*: anyone who learns the topic hash from the DHT can complete a Noise handshake with the host. The join secret must therefore be proven at the application layer, **in both directions**, bound to the connection (see Design → Handshake).
+- lorocollab has **no authentication**. Hyperswarm authenticates _keypairs_, not _people_: anyone who learns the topic hash from the DHT can complete a Noise handshake with the host. The join secret must therefore be proven at the application layer, **in both directions**, bound to the connection (see Design → Handshake).
 - The `ws` broadcast loop has no backpressure. Hyperswarm connections are `streamx` duplexes; respect `write()` return values / `drain`, and drop `ephemeral` frames first when a peer is slow.
-- "Server restarted onto a fresh document" leaves ops pending forever in lorocollab. In CollabDoc a guest reconnecting to a host that now has a *different* `docId` on the same session must receive an explicit `error: doc-mismatch` frame.
+- "Server restarted onto a fresh document" leaves ops pending forever in lorocollab. In CollabDoc a guest reconnecting to a host that now has a _different_ `docId` on the same session must receive an explicit `error: doc-mismatch` frame.
 - Guest-side persistence: guests keep a local `.collabdoc` copy (04) so they can read after the host leaves, but must not "reshare" as if they were the origin without an explicit "Fork as my own document" action.
 - Verify on real networks before relying on it: (a) `udx-native`/`sodium-native` prebuilds load inside Electron 44 on Windows, macOS (arm64 + x64) and Linux without rebuild (`npmRebuild: false` is already set; native `.node` files must be unpacked from asar); (b) hole-punch success behind two home NATs, a mobile hotspot, and a corporate NAT; (c) whether HyperDHT relaying (`relayThrough`) rescues the symmetric-NAT case with the pinned `hyperdht` version. Record results in this spec's Open questions.
 
@@ -51,7 +51,7 @@ Decision: **Hyperswarm for v1.** The transport stays behind a `PeerTransport` in
   1. Host → guest: `hello { protocolVersion, docId, title, hostName, nonceH }`.
   2. Guest → host: `auth { nonceG, proof: HMAC(sessionSecret, handshakeHash ‖ nonceH ‖ "guest") , profile }`, where `handshakeHash` is `@hyperswarm/secret-stream`'s handshake hash (channel binding — a proof cannot be replayed on another connection).
   3. Host → guest: `auth-ok { proof: HMAC(sessionSecret, handshakeHash ‖ nonceG ‖ "host") }` then `snapshot`.
-  Any failure → `error { code: wrong-code | version-mismatch | doc-mismatch | full | removed }` and destroy. 5 failed proofs from one remote public key or from any peer within 60 s → host stops accepting for 60 s and shows it.
+     Any failure → `error { code: wrong-code | version-mismatch | doc-mismatch | full | removed }` and destroy. 5 failed proofs from one remote public key or from any peer within 60 s → host stops accepting for 60 s and shows it.
 - **Framing**: `[u32 length][u8 tag][payload]`; tags `hello/auth/auth-ok/error/control` (JSON) and `snapshot/update/ephemeral` (Loro bytes). Max frame 16 MB; oversize → destroy connection.
 - **Sync**: after `auth-ok` the connection is registered as a hub subscriber (03) exactly like a `MessagePort`; `update`/`ephemeral` relay both ways; presence (07) rides on `ephemeral`; control messages `peer-joined`, `peer-left`, `host-ending`.
 - **Assets**: image bytes (01/04) are not in the Loro document. A peer that sees an `asset:<hash>` it does not have sends `asset-request { hash }`; the owner replies with `asset { hash, type, bytes }` (chunked at 256 KB, lower priority than `update`); received assets are verified against the hash and stored locally. Figures show a placeholder until the asset arrives.

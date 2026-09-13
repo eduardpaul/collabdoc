@@ -20,7 +20,7 @@ Anchored comment threads on a text span or a whole block, stored as a Loro sidec
 
 ## Review before adopting
 
-- **lorocollab's model is agent-only**: comments carry `agentId/agentName`, the human's only moves are Accept/Reject/one reply, and the status machine (`open → accepted → applying → applied`) describes an agent *suggestion*, not a conversation. CollabDoc needs a thread model first (author = any participant, replies from anyone, `open | resolved`), and "suggestion handling" as an optional action on a thread.
+- **lorocollab's model is agent-only**: comments carry `agentId/agentName`, the human's only moves are Accept/Reject/one reply, and the status machine (`open → accepted → applying → applied`) describes an agent _suggestion_, not a conversation. CollabDoc needs a thread model first (author = any participant, replies from anyone, `open | resolved`), and "suggestion handling" as an optional action on a thread.
 - Agents can only `add_comment`; they cannot reply or resolve. Add `reply_comment` and `resolve_comment` tools so an agent can answer a question in its own thread and close it (see Tool changes).
 - Anchoring is `blockId + quote + start/end`; when the quoted text is edited the decoration falls back to the whole block. Use Loro `Cursor`s for stable positions and keep the quote for display and orphan detection.
 - Records are whole JSON values in a `LoroMap` (LWW on the entire record). Store each thread as a nested `LoroMap` with a `replies` `LoroList` so concurrent reply + resolve both land.
@@ -58,7 +58,7 @@ Anchored comment threads on a text span or a whole block, stored as a Loro sidec
 - [ ] AC-09.3 Resolve/Reopen work from any participant (human via UI, agent via `resolve_comment`); the state machine in core (`open ↔ resolved`; `suggestion: pending → applying → applied | declined`) rejects illegal transitions with `{ ok:false }` and has unit tests per edge; resolving declines a pending suggestion.
 - [ ] AC-09.4 Only the author can edit or delete their body/reply; an agent's attempt to edit a human's body (and vice versa) is rejected by core; deletion is a soft-delete that keeps the thread's structure.
 - [ ] AC-09.5 Concurrent changes to different fields of one thread (one peer replies while another resolves) both land with no loss (unit test with two sessions).
-- [ ] AC-09.6 Editing text *before* a span keeps the highlight on the same words; editing *inside* keeps it on the surviving characters; deleting the span marks the thread `orphaned` and lists it under "Resolved / orphaned" — never silently dropped.
+- [ ] AC-09.6 Editing text _before_ a span keeps the highlight on the same words; editing _inside_ keeps it on the surviving characters; deleting the span marks the thread `orphaned` and lists it under "Resolved / orphaned" — never silently dropped.
 - [ ] AC-09.7 A `@handle` in a comment body or reply is rendered as a mention chip and produces a mention event (10) for that participant — for a person a notification, for an agent a scoped run (14/15); an unknown handle stays plain text.
 - [ ] AC-09.8 `list_comments { mentioning: "me" }` returns only threads/replies that mention the calling agent, including replies added since its last run; `list_comments` output includes replies and status so agents do not repeat notes.
 - [ ] AC-09.9 Unread indicators: a thread with replies since the user last opened it shows a dot and counts toward the Comments tab badge; opening the card clears it; unread state is per user and not synced.

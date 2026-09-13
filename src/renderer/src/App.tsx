@@ -11,16 +11,20 @@ function AppShell(): React.JSX.Element {
   const { state, dispatch } = useAppState()
   const actions = useSessionActions()
   const resumeRef = useRef(actions.resumeDocument)
+  const hydrateRef = useRef(actions.hydratePersist)
   useEffect(() => {
     resumeRef.current = actions.resumeDocument
+    hydrateRef.current = actions.hydratePersist
   })
 
   // A reload (HMR, Ctrl+R) keeps the document alive in the host; re-attach.
   useEffect(() => {
-    const docId = currentDocId()
-    if (docId) {
-      void resumeRef.current(docId)
-    }
+    void hydrateRef.current().then(() => {
+      const docId = currentDocId()
+      if (docId) {
+        void resumeRef.current(docId)
+      }
+    })
   }, [])
 
   useEffect(() => {
@@ -52,7 +56,7 @@ function AppShell(): React.JSX.Element {
       if (key === 's') {
         event.preventDefault()
         if (state.session) {
-          void actions.saveDocument()
+          void (event.shiftKey ? actions.saveDocumentAs() : actions.saveDocument())
         }
         return
       }
@@ -83,6 +87,18 @@ function AppShell(): React.JSX.Element {
     state.shareOpen,
     state.unsavedIntent
   ])
+
+  useEffect(() => {
+    const stop = window.api?.app?.onCommand?.((command) => {
+      if (command === 'new') actions.newDocument()
+      if (command === 'open') void actions.openDocument()
+      if (command === 'save') void actions.saveDocument()
+      if (command === 'save-as') void actions.saveDocumentAs()
+      if (command === 'import-markdown') actions.importMarkdown()
+      if (command === 'export-markdown') actions.exportMarkdown()
+    })
+    return () => stop?.()
+  }, [actions])
 
   return (
     <div className="app">

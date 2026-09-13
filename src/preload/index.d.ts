@@ -1,8 +1,5 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 
-type DocumentReadResult =
-  { ok: true; path: string; name: string; content: string } | { ok: false; error: string }
-
 type DocumentSaveResult = { ok: true; path: string; name: string } | { ok: false; error: string }
 
 type DocumentCreateResult =
@@ -19,18 +16,66 @@ type DocumentDebugEntry = {
 type DocumentDebugResult =
   { ok: true; documents: DocumentDebugEntry[] } | { ok: false; error: string }
 
+type OpenDocResult =
+  | {
+      ok: true
+      kind: 'collabdoc'
+      docId: string
+      title: string
+      path: string
+      warnings: string[]
+    }
+  | {
+      ok: true
+      kind: 'markdown'
+      docId: string
+      title: string
+      markdown: string
+      sourcePath: string
+    }
+  | { ok: false; error: string }
+
+type SaveDocResult =
+  | { ok: true; path: string; name: string }
+  | { ok: false; error: string; canceled?: boolean }
+
+type PersistState = {
+  docId: string
+  title: string
+  path: string | null
+  isDraft: boolean
+  dirty: boolean
+  hasDraft: boolean
+}
+
+type RecentListing = {
+  docId: string
+  title: string
+  path: string | null
+  updatedAt: string
+  preview: string
+  missing?: boolean
+}
+
+type RecoveryOffer = { docId: string; title: string; updatedAt: string }
+
+type PersistListing = { recents: RecentListing[]; recoveries: RecoveryOffer[] }
+
 type HostApi = {
   platform: NodeJS.Platform
   isWsl: boolean
   documents: {
-    open: () => Promise<DocumentReadResult>
-    read: (filePath: string) => Promise<DocumentReadResult>
-    save: (payload: {
-      path: string | null
+    open: () => Promise<OpenDocResult>
+    openPath: (filePath: string) => Promise<OpenDocResult>
+    importMarkdown: () => Promise<OpenDocResult>
+    exportMarkdown: (payload: {
       content: string
       suggestedName?: string
       extras?: { relativePath: string; base64: string }[]
-    }) => Promise<DocumentSaveResult>
+    }) => Promise<SaveDocResult>
+    saveNow: (docId: string) => Promise<SaveDocResult>
+    saveAs: (docId: string) => Promise<SaveDocResult>
+    flush: (docId: string) => Promise<SaveDocResult>
     saveBytes: (payload: {
       suggestedName: string
       mime?: string
@@ -39,14 +84,37 @@ type HostApi = {
     readBytes: (
       filePath: string
     ) => Promise<{ ok: true; base64: string } | { ok: false; error: string }>
-    /** Create an empty document in main; attach to it to receive its port. */
     create: (payload: { title?: string }) => Promise<DocumentCreateResult>
-    /** Ask main for a MessagePort; it arrives as a `collabdoc:port` window message. */
     attach: (docId: string) => Promise<DocumentAttachResult>
-    /** Detach and, when nobody else holds the document, dispose it now. */
     release: (docId: string) => Promise<DocumentReleaseResult>
-    /** Development only: every open hub in main. */
     debug: () => Promise<DocumentDebugResult>
+    putAsset: (payload: {
+      docId: string
+      hash: string
+      mime: string
+      base64: string
+    }) => Promise<{ ok: true } | { ok: false; error: string }>
+    getAssets: (docId: string) => Promise<
+      | { ok: true; assets: { hash: string; mime: string; base64: string }[] }
+      | { ok: false; error: string }
+    >
+    listing: () => Promise<{ ok: true } & PersistListing>
+    removeRecent: (docId: string) => Promise<{ ok: true } | { ok: false; error: string }>
+    locateRecent: (docId: string) => Promise<OpenDocResult>
+    recover: (docId: string) => Promise<OpenDocResult>
+    discardDraft: (docId: string) => Promise<{ ok: true } | { ok: false; error: string }>
+    rememberRecent: (payload: {
+      docId: string
+      title: string
+      path: string | null
+      updatedAt: string
+      preview: string
+    }) => Promise<{ ok: true } | { ok: false; error: string }>
+    onState: (listener: (state: PersistState) => void) => () => void
+    onListing: (listener: (listing: PersistListing) => void) => () => void
+  }
+  app: {
+    onCommand: (listener: (command: string) => void) => () => void
   }
   shell: {
     openExternal: (url: string) => Promise<{ ok: boolean }>
@@ -59,3 +127,5 @@ declare global {
     api?: HostApi
   }
 }
+
+export {}
