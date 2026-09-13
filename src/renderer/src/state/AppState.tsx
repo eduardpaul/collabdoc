@@ -79,6 +79,7 @@ export type Action =
   | { type: 'remove-mcp'; id: string }
   | { type: 'add-agent'; agent: Agent }
   | { type: 'update-agent'; id: string; patch: Partial<Agent> }
+  | { type: 'set-mention-autosend'; seconds: number }
   | { type: 'remove-agent'; id: string }
   | { type: 'set-share-open'; open: boolean }
   | { type: 'set-join-open'; open: boolean }
@@ -154,6 +155,7 @@ function createInitialState(): AppState {
     profile,
     profileSetupOpen: !profile.setupComplete,
     provider: { ...defaultProvider, ...persisted?.provider },
+    mentionAutoSendSeconds: persisted?.mentionAutoSendSeconds ?? 0,
     mcp: mergeMcp(defaultMcp, persisted?.mcp),
     agents: agents.map((agent) => ({
       ...agent,
@@ -188,6 +190,8 @@ function withSession(
 
 function persistReducer(state: AppState, action: Action): AppState | null {
   switch (action.type) {
+    case 'set-mention-autosend':
+      return { ...state, mentionAutoSendSeconds: Math.max(0, Math.floor(action.seconds)) }
     case 'set-listing':
       return { ...state, recents: action.recents, recoveries: action.recoveries }
     case 'apply-persist-state': {
@@ -363,7 +367,8 @@ function reducer(state: AppState, action: Action): AppState {
       if (
         action.type === 'set-listing' ||
         action.type === 'apply-persist-state' ||
-        action.type === 'set-missing-recent'
+        action.type === 'set-missing-recent' ||
+        action.type === 'set-mention-autosend'
       ) {
         return state
       }
@@ -380,9 +385,10 @@ export function AppStateProvider({ children }: { children: ReactNode }): React.J
     savePersisted({
       provider: state.provider,
       mcp: state.mcp,
-      agents: state.agents
+      agents: state.agents,
+      mentionAutoSendSeconds: state.mentionAutoSendSeconds
     })
-  }, [state.provider, state.mcp, state.agents])
+  }, [state.provider, state.mcp, state.agents, state.mentionAutoSendSeconds])
 
   useEffect(() => {
     const api = window.api?.documents

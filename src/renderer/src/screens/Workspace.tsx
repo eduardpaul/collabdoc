@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { HistoryEntry } from '@core/history'
+import type { MentionState } from '@shared/types'
 import { CommentsPanel, type CommentDraft } from '../components/CommentsPanel'
 import { DocumentEditor } from '../components/DocumentEditor'
 import { HistoryPanel } from '../components/HistoryPanel'
+import { InboxBell } from '../components/InboxBell'
 import { Button, Icon, StatusDot, TextArea, TextInput } from '../components/ui'
 import { hostLabel } from '../lib/host'
 import { useAppState } from '../state/AppState'
@@ -11,6 +13,7 @@ import { useSessionActions } from '../state/useSessionActions'
 import { useComments } from '../sync/useComments'
 import { useDocumentClient } from '../sync/useDocumentClient'
 import { useHistory } from '../sync/useHistory'
+import { useMentions, type AgentDispatch } from '../sync/useMentions'
 import { usePresence } from '../sync/usePresence'
 import type { Agent } from '../types'
 
@@ -28,6 +31,7 @@ export function Workspace(): React.JSX.Element | null {
   const [selectedThread, setSelectedThread] = useState<string | null>(null)
   const [commentDraft, setCommentDraft] = useState<CommentDraft | null>(null)
   const revealRef = useRef<((threadId: string) => void) | null>(null)
+  const chipStateRef = useRef<((requestId: string, state: MentionState) => boolean) | null>(null)
   const [ask, setAsk] = useState('')
   const [blockMarkdown, setBlockMarkdown] = useState('')
   const [selectedHistory, setSelectedHistory] = useState<string | null>(null)
@@ -65,14 +69,53 @@ export function Workspace(): React.JSX.Element | null {
   const presence = usePresence(client)
   const participants = useMemo(
     () =>
-      presence.rows.map((row) => ({
+      presence.people.map((row) => ({
         id: row.id,
         handle: row.handle,
         name: row.name,
         color: row.color
       })),
-    [presence.rows]
+    [presence.people]
   )
+
+  // Agent requests run through the agent actions; the chip follows `status`.
+  const agentDispatch = useMemo<AgentDispatch>(
+    () => ({
+      invoke: (target, instruction) => {
+        const agent = state.agents.find((a) => a.id === target.id && a.invited)
+        if (!agent) {
+          dispatch({ type: 'notice', message: `${target.label} is no longer in this document.` })
+          return false
+        }
+        return actions.askAgent(agent, instruction)
+      },
+      working: new Set(state.agents.filter((a) => a.status === 'working').map((a) => a.id))
+    }),
+    // askAgent reads state through its own closure each call.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.agents, dispatch]
+  )
+  const me = useMemo(
+    () => ({
+      id: state.profile.userId,
+      name: state.profile.name,
+      color: state.profile.color,
+      handle: presence.localHandle
+    }),
+    [state.profile, presence.localHandle]
+  )
+  const mentions = useMentions({
+    client,
+    docTitle: session?.title ?? '',
+    me,
+    people: presence.people,
+    agents: agentDispatch,
+    authorOf: (blockId) => {
+      const author = history.index?.lastAuthor(blockId)
+      return author ? { id: author.actorId, name: author.name, color: author.color } : undefined
+    },
+    setChip: (requestId, state) => chipStateRef.current?.(requestId, state) ?? false
+  })
 
   useEffect(() => {
     if (presence.handleNotice) {
@@ -118,6 +161,25 @@ export function Workspace(): React.JSX.Element | null {
           </div>
         </div>
         <div className="topbar__right">
+          <InboxBell
+            entries={mentions.inbox}
+            unread={mentions.unread}
+            onMarkRead={mentions.markRead}
+            onOpen={(entry) => {
+              mentions.markRead([entry.id])
+              if (entry.docId !== session.id) {
+                void actions.openRecent(entry.docId)
+                return
+              }
+              if (entry.threadId) {
+                setSelectedThread(entry.threadId)
+                dispatch({ type: 'set-right-tab', tab: 'comments' })
+                revealRef.current?.(entry.threadId)
+              } else if (entry.blockId) {
+                presence.scrollTo(entry.blockId)
+              }
+            }}
+          />
           <button
             type="button"
             className={`ai-indicator ${ready ? 'is-ready' : ''}`}
@@ -256,6 +318,10 @@ export function Workspace(): React.JSX.Element | null {
                 dispatch({ type: 'set-right-tab', tab: 'comments' })
               }}
               revealRef={revealRef}
+              people={presence.people}
+              onSendMention={mentions.send}
+              mentionAutoSendSeconds={state.mentionAutoSendSeconds}
+              chipStateRef={chipStateRef}
               onNotice={(message) => dispatch({ type: 'notice', message })}
               onMarkdown={setBlockMarkdown}
               title={

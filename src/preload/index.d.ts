@@ -1,4 +1,5 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
+import type { InboxEntry } from '../shared/types'
 
 type DocumentSaveResult = { ok: true; path: string; name: string } | { ok: false; error: string }
 
@@ -151,30 +152,42 @@ type HostApi = {
         installPublicKey: string
       }
       expectedDocId?: string
-    }) => Promise<
-      | { ok: true; docId: string; title: string }
-      | { ok: false; error: string }
-    >
+    }) => Promise<{ ok: true; docId: string; title: string } | { ok: false; error: string }>
     leave: () => Promise<{ ok: true }>
-    onState: (listener: (state: {
-      active: boolean
-      announcing: boolean
-      code: string | null
-      link: string | null
-      role: 'host' | 'guest' | null
-      guests: Array<{
-        id: string
-        name: string
-        color: string
-        handle: string
-        connection: 'direct' | 'holepunched' | 'relay' | 'local'
-      }>
-      status: string
-      lockedUntil: number
-      hostEnded: boolean
-      readOnly: boolean
-    }) => void) => () => void
+    onState: (
+      listener: (state: {
+        active: boolean
+        announcing: boolean
+        code: string | null
+        link: string | null
+        role: 'host' | 'guest' | null
+        guests: Array<{
+          id: string
+          name: string
+          color: string
+          handle: string
+          connection: 'direct' | 'holepunched' | 'relay' | 'local'
+        }>
+        status: string
+        lockedUntil: number
+        hostEnded: boolean
+        readOnly: boolean
+      }) => void
+    ) => () => void
     onActivity: (listener: (summary: string) => void) => () => void
+  }
+  inbox: {
+    list: (
+      userId: string
+    ) => Promise<{ ok: true; entries: InboxEntry[] } | { ok: false; error: string }>
+    add: (payload: {
+      userId: string
+      entries: InboxEntry[]
+    }) => Promise<{ ok: true; entries: InboxEntry[]; added: number } | { ok: false; error: string }>
+    markRead: (payload: {
+      userId: string
+      ids: string[] | 'all'
+    }) => Promise<{ ok: true; entries: InboxEntry[] } | { ok: false; error: string }>
   }
   profile: {
     get: () => Promise<{

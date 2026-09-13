@@ -18,10 +18,7 @@ const isWsl = process.argv.includes('--is-wsl=true') || Boolean(process.env.WSL_
 const invoke = (channel: string, ...args: unknown[]): Promise<unknown> =>
   ipcRenderer.invoke(channel, ...args)
 
-const onChannel = (
-  channel: string,
-  listener: (payload: unknown) => void
-): (() => void) => {
+const onChannel = (channel: string, listener: (payload: unknown) => void): (() => void) => {
   const wrapped = (_event: unknown, payload: unknown): void => listener(payload)
   ipcRenderer.on(channel, wrapped)
   return () => {
@@ -101,6 +98,13 @@ const api = {
       onChannel('share:activity', (summary) => {
         if (typeof summary === 'string') listener(summary)
       })
+  },
+  inbox: {
+    list: (userId: string): Promise<unknown> => invoke('inbox:list', userId),
+    add: (payload: { userId: string; entries: unknown[] }): Promise<unknown> =>
+      invoke('inbox:add', payload),
+    markRead: (payload: { userId: string; ids: string[] | 'all' }): Promise<unknown> =>
+      invoke('inbox:markRead', payload)
   },
   profile: {
     get: (): Promise<unknown> => invoke('profile:get'),

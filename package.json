@@ -29,6 +29,8 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
+    "@tiptap/extension-mention": "^3.31.3",
+    "@tiptap/suggestion": "^3.31.3",
     "hyperswarm": "^4.17.1",
     "loro-crdt": "^1.16.1"
   },

@@ -134,6 +134,8 @@ export type AppState = {
   provider: LlmProvider
   mcp: McpConnection[]
   agents: Agent[]
+  /** Seconds of idleness before an agent request is sent on its own; 0 = off (10). */
+  mentionAutoSendSeconds: number
   recents: RecentDocument[]
   recoveries: RecoveryOffer[]
   missingRecentId: string | null

@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { readAuthors } from '@core/authors'
-import { buildParticipantRegistry, sessionRows, type SessionRow } from '@core/participants'
+import {
+  buildParticipantRegistry,
+  sessionRows,
+  type RegistryPerson,
+  type SessionRow
+} from '@core/participants'
 import { Cursor } from 'loro-crdt'
 import { BLOCK_ID_ATTR } from '@shared/constants'
 import type { Presence } from '@shared/types'
@@ -61,6 +66,10 @@ function paragraphLabel(client: DocumentClient, blockId: string): string {
 
 export function usePresence(client: DocumentClient | null): {
   rows: SessionRow[]
+  /** Everyone addressable here, offline collaborators included (07, 10). */
+  people: RegistryPerson[]
+  /** The user's handle as it resolves in this document. */
+  localHandle: string
   handleNotice: string | null
   scrollTo: (blockId: string) => void
 } {
@@ -76,7 +85,14 @@ export function usePresence(client: DocumentClient | null): {
 
   const built = useMemo(() => {
     void tick
-    if (!client) return { rows: [] as SessionRow[], handleNotice: null as string | null }
+    if (!client) {
+      return {
+        rows: [] as SessionRow[],
+        people: [] as RegistryPerson[],
+        localHandle: state.profile.handle,
+        handleNotice: null as string | null
+      }
+    }
     const presence = readLivePresence(client)
     const onlineIds = new Set(presence.map((row) => row.actorId))
     onlineIds.add(state.profile.userId)
@@ -95,6 +111,8 @@ export function usePresence(client: DocumentClient | null): {
     })
     return {
       rows,
+      people: registry.people,
+      localHandle: registry.localHandle,
       handleNotice: registry.handleChanged
         ? `Your handle in this document is @${registry.localHandle} because @${state.profile.handle} is taken.`
         : null

@@ -77,7 +77,8 @@ export function useSessionActions(): {
   hydratePersist: () => Promise<void>
   connectMcp: (id: string) => void
   disconnectMcp: (id: string) => void
-  askAgent: (agent: Agent, prompt: string) => void
+  /** Start a turn; false when no provider or MCP server can run it. */
+  askAgent: (agent: Agent, prompt: string) => boolean
 } {
   const { state, dispatch } = useAppState()
 
@@ -497,14 +498,14 @@ export function useSessionActions(): {
     dispatch({ type: 'update-mcp', id, patch: { status: 'disconnected', error: undefined } })
   }
 
-  const askAgent = (agent: Agent, prompt: string): void => {
+  const askAgent = (agent: Agent, prompt: string): boolean => {
     if (!agentCanRun(state, agent)) {
       dispatch({
         type: 'notice',
         message: 'Connect an LLM provider or a local MCP server before asking agents to work.'
       })
       dispatch({ type: 'open-settings', tab: agent.routing === 'mcp' ? 'mcp' : 'provider' })
-      return
+      return false
     }
     const trimmed = prompt.trim()
     const fallback =
@@ -533,6 +534,7 @@ export function useSessionActions(): {
         }
       })
     }, 1400)
+    return true
   }
 
   return {

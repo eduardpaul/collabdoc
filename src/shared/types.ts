@@ -234,3 +234,45 @@ export type ToolName =
   | 'reply_comment'
   | 'resolve_comment'
   | 'list_comments'
+
+// ---- Mentions (10) ---------------------------------------------------------
+
+export type MentionKind = 'person' | 'agent'
+
+/** Who a chip points at. Stored on the node so renames keep resolving by id. */
+export type MentionTarget = { kind: MentionKind; id: string; handle: string; label: string }
+
+/** Request state carried by a chip: person → sent/seen; agent → the run. */
+export type MentionState = 'sent' | 'seen' | 'queued' | 'working' | 'done' | 'failed'
+
+export type MentionAttrs = MentionTarget & {
+  requestId?: string
+  sentAt?: number
+  state?: MentionState
+}
+
+/** A request addressed to a participant, from the document or a comment. */
+export type MentionRequest = {
+  requestId: string
+  docId: string
+  origin: 'document' | 'comment'
+  blockId?: string
+  threadId?: string
+  target: MentionTarget
+  from: { id: string; name: string; color: string }
+  text: string
+  at: number
+}
+
+/** One line in a person's inbox: per install, never synced. */
+export type InboxEntry = {
+  id: string
+  docId: string
+  docTitle: string
+  blockId?: string
+  threadId?: string
+  from: { id: string; name: string; color: string }
+  text: string
+  at: number
+  read: boolean
+}

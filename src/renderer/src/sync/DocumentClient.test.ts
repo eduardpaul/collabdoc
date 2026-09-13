@@ -2,6 +2,8 @@ import { Editor } from '@tiptap/core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getThread } from '@core/comments'
 import { listHistory } from '@core/history'
+import { mentionSites } from '@core/mentions'
+import type { RegistryPerson } from '@core/participants'
 import { DocumentRegistry } from '@core/registry'
 import { human, addParagraph, textOf, writer } from '@core/test-helpers'
 import { blockPlainText, findBlock, getChildren, getRoot, allBlocks } from '@core/tree'
@@ -9,6 +11,15 @@ import { LoroList, LoroMap, LoroText } from 'loro-crdt'
 import type { CommentThread } from '@shared/types'
 import { editorExtensions } from '../editor/extensions'
 import { LoroCollab, commitMessageKey } from '../editor/loro-collab'
+import {
+  MentionDecorations,
+  MentionRequests,
+  mentionNode,
+  pickerItems,
+  toTarget,
+  type MentionRequestOptions,
+  type SendRequest
+} from '../editor/mentions'
 import {
   closeClient,
   createAndOpen,
@@ -29,7 +40,10 @@ function tick(ms = 0): Promise<void> {
 }
 
 /** A Tiptap editor bound to a client, initialised (the sync plugin inits on a timeout). */
-async function bindEditor(client: DocumentClient): Promise<Editor> {
+async function bindEditor(
+  client: DocumentClient,
+  mentions?: MentionRequestOptions
+): Promise<Editor> {
   const element = document.createElement('div')
   document.body.appendChild(element)
   const editor = new Editor({
@@ -41,7 +55,14 @@ async function bindEditor(client: DocumentClient): Promise<Editor> {
         presence: client.presence,
         undoManager: client.undoManager,
         profile: client.profile
-      })
+      }),
+      ...(mentions
+        ? [
+            mentionNode(mentions.roster),
+            MentionDecorations.configure({ roster: mentions.roster }),
+            MentionRequests.configure(mentions)
+          ]
+        : [])
     ]
   })
   editors.push(editor)
@@ -638,6 +659,147 @@ describe('comments from the renderer (09)', () => {
     expect([...unreadThreads(threads, {}, 'ana')]).toEqual(['t1'])
     expect([...unreadThreads(threads, { t1: 1 }, 'ana')]).toEqual([])
     expect([...unreadThreads(threads, { t1: 1 }, 'rex')]).toEqual(['t2'])
+  })
+})
+
+describe('mentions in the editor (10)', () => {
+  const people: RegistryPerson[] = [
+    { id: 'u-ana', handle: 'ana', name: 'Ana', color: '#c45c26', role: 'human', online: false },
+    {
+      id: 'ag-writer',
+      handle: 'writer',
+      name: 'Writer',
+      color: '#2563eb',
+      role: 'agent',
+      online: true
+    }
+  ]
+
+  it('groups the picker People first, then Agents, and matches handle or name (AC-10.1)', () => {
+    expect(pickerItems(people, '').map((p) => p.handle)).toEqual(['ana', 'writer'])
+    expect(pickerItems(people, 'wri').map((p) => p.handle)).toEqual(['writer'])
+    expect(pickerItems(people, 'AN').map((p) => p.handle)).toEqual(['ana'])
+    expect(pickerItems(people, 'zzz')).toEqual([])
+  })
+
+  it('Enter sends a request paragraph exactly once and stamps the chip (AC-10.3, AC-10.5)', async () => {
+    const client = await createAndOpen({ title: 'Mentions' })
+    const sent: SendRequest[] = []
+    const editor = await bindEditor(client, {
+      roster: () => people,
+      onSend: (request) => {
+        sent.push(request)
+        return true
+      },
+      autoSendSeconds: () => 0
+    })
+    editor.commands.insertContent([
+      { type: 'mention', attrs: toTarget(people[1]) },
+      { type: 'text', text: ' draft an intro' }
+    ])
+    await tick(20)
+    expect(editor.getText()).toContain('draft an intro')
+    expect(editor.commands.keyboardShortcut('Enter')).toBe(true)
+    await tick(20)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({
+      target: { kind: 'agent', id: 'ag-writer', handle: 'writer' },
+      text: '@writer draft an intro'
+    })
+    const chip = editor.state.doc.firstChild!.firstChild!
+    expect(chip.attrs).toMatchObject({ requestId: sent[0].requestId, state: 'queued' })
+    expect(typeof chip.attrs.sentAt).toBe('number')
+    // Enter again is an ordinary Enter now: no second request.
+    editor.commands.keyboardShortcut('Enter')
+    await tick(20)
+    expect(sent).toHaveLength(1)
+    // The stamp is document content: the hub has it, so a reload would too.
+    const hub = registry.get(client.docId)!.hub
+    expect(mentionSites(hub.doc)[0].attrs).toMatchObject({ requestId: sent[0].requestId })
+    expect(hubText(client.docId).trim()).toBe('@writer draft an intro')
+  })
+
+  it('a mention mid-sentence is not a request; a removed agent cannot be sent to (AC-10.8)', async () => {
+    const client = await createAndOpen({ title: 'No request' })
+    const sent: SendRequest[] = []
+    let roster = people
+    const editor = await bindEditor(client, {
+      roster: () => roster,
+      onSend: (request) => {
+        sent.push(request)
+        return true
+      },
+      autoSendSeconds: () => 0
+    })
+    editor.commands.insertContent([
+      { type: 'text', text: 'as ' },
+      { type: 'mention', attrs: toTarget(people[0]) },
+      { type: 'text', text: ' said' }
+    ])
+    await tick(20)
+    editor.commands.keyboardShortcut('Enter')
+    await tick(20)
+    expect(sent).toHaveLength(0)
+    expect(editor.state.doc.childCount).toBe(2)
+
+    editor.commands.setContent({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'mention', attrs: toTarget(people[1]) },
+            { type: 'text', text: ' write' }
+          ]
+        }
+      ]
+    })
+    await tick(20)
+    roster = [people[0]]
+    editor.commands.keyboardShortcut('Enter')
+    await tick(20)
+    expect(sent).toHaveLength(0)
+    expect(editor.state.doc.firstChild!.firstChild!.attrs.sentAt).toBeNull()
+  })
+
+  it('idle auto-send fires once for agent requests only (AC-10.11)', async () => {
+    const client = await createAndOpen({ title: 'Idle' })
+    const sent: SendRequest[] = []
+    const editor = await bindEditor(client, {
+      roster: () => people,
+      onSend: (request) => {
+        sent.push(request)
+        return true
+      },
+      autoSendSeconds: () => 0.2
+    })
+    editor.commands.insertContent([
+      { type: 'mention', attrs: toTarget(people[0]) },
+      { type: 'text', text: ' a person' }
+    ])
+    await tick(350)
+    expect(sent).toHaveLength(0)
+    editor.commands.setContent({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'mention', attrs: toTarget(people[1]) },
+            { type: 'text', text: ' an agent' }
+          ]
+        }
+      ]
+    })
+    await tick(120)
+    editor.commands.insertContentAt(editor.state.doc.content.size - 1, ' still typing')
+    await tick(120)
+    expect(sent).toHaveLength(0)
+    await tick(200)
+    expect(sent).toHaveLength(1)
+    expect(sent[0].text).toBe('@writer an agent still typing')
+    await tick(350)
+    expect(sent).toHaveLength(1)
   })
 })
 

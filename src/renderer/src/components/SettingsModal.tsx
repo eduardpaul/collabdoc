@@ -293,6 +293,23 @@ export function SettingsModal(): React.JSX.Element | null {
             Writers draft. Reviewers comment. Both show up in the session as participants and every
             change they make will be attributed.
           </p>
+          <Field
+            label="Auto-send agent requests after idle"
+            hint="An @agent paragraph left untouched this long is sent once. 0 keeps requests explicit (Enter). Never applies to people."
+          >
+            <Select
+              aria-label="Auto-send agent requests"
+              value={String(state.mentionAutoSendSeconds)}
+              onChange={(event) =>
+                dispatch({ type: 'set-mention-autosend', seconds: Number(event.target.value) })
+              }
+            >
+              <option value="0">Off</option>
+              <option value="5">5 s</option>
+              <option value="8">8 s</option>
+              <option value="15">15 s</option>
+            </Select>
+          </Field>
           <ul className="settings-list">
             {state.agents.map((agent) => (
               <li key={agent.id} className="settings-row settings-row--stack">

@@ -5,6 +5,12 @@ import type { AttributionSource } from './attribution'
 import { editorExtensions } from './extensions'
 import { CommentMarks } from './comment-marks'
 import { LoroCollab } from './loro-collab'
+import {
+  MentionDecorations,
+  MentionRequests,
+  mentionNode,
+  type MentionRequestOptions
+} from './mentions'
 import { hrefFromClickTarget, isSafeHttpUrl, openExternalUrl } from './open-link'
 import type { DocumentClient } from '../sync/DocumentClient'
 
@@ -17,7 +23,8 @@ export function useCollabEditor(
   editable = true,
   attribution?: () => AttributionSource,
   onSelectThread?: (threadId: string) => void,
-  onComment?: () => void
+  onComment?: () => void,
+  mentions?: MentionRequestOptions
 ): Editor {
   const editor = useEditor(
     {
@@ -34,7 +41,14 @@ export function useCollabEditor(
         CommentMarks.configure({
           onSelect: (id) => onSelectThread?.(id),
           onComment: () => onComment?.()
-        })
+        }),
+        ...(mentions
+          ? [
+              mentionNode(mentions.roster),
+              MentionDecorations.configure({ roster: mentions.roster }),
+              MentionRequests.configure(mentions)
+            ]
+          : [])
       ],
       immediatelyRender: true,
       shouldRerenderOnTransaction: false,

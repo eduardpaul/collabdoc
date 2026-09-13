@@ -1927,3 +1927,230 @@ kbd {
     background: color-mix(in srgb, var(--thread-color, var(--accent)) 24%, transparent);
   }
 }
+
+/* ---- Mentions (10) ------------------------------------------------------ */
+
+.mention {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--thread-color, var(--accent)) 22%, transparent);
+  color: var(--text);
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* The live label from the roster wins over the stored one (renames). */
+.mention[data-live-label] .mention__text {
+  display: none;
+}
+
+.mention[data-live-label]::before {
+  content: '@' attr(data-live-label);
+}
+
+.mention.is-gone {
+  opacity: 0.55;
+  text-decoration: line-through;
+  text-decoration-color: var(--text-faint);
+}
+
+.mention[data-state]::after {
+  content: attr(data-state);
+  margin-left: 5px;
+  font-size: 9px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.mention.is-working::after {
+  color: var(--accent);
+}
+
+.mention.is-failed {
+  cursor: pointer;
+}
+
+.mention.is-failed::after {
+  content: 'failed · retry';
+  color: #c0392b;
+}
+
+.mention.is-done::after,
+.mention.is-seen::after {
+  color: #1f8a70;
+}
+
+.mention-picker {
+  min-width: 220px;
+  max-height: 260px;
+  overflow: auto;
+  background: var(--panel, #1c1a17);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  padding: 4px;
+  z-index: 40;
+}
+
+.mention-picker__group,
+.mention-picker__empty {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  padding: 6px 8px 2px;
+}
+
+.mention-picker__empty {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.mention-picker__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mention-picker__item.is-active,
+.mention-picker__item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.presence-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  opacity: 0.35;
+  flex-shrink: 0;
+}
+
+.presence-dot.is-online {
+  opacity: 1;
+}
+
+.inbox {
+  position: relative;
+}
+
+.inbox__bell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.inbox__bell:hover,
+.inbox__bell.has-unread {
+  color: var(--text);
+}
+
+.inbox__badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 9px;
+  line-height: 14px;
+  text-align: center;
+}
+
+.inbox__panel {
+  position: absolute;
+  right: 0;
+  top: 36px;
+  width: 320px;
+  max-height: 60vh;
+  overflow: auto;
+  background: var(--panel, #1c1a17);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  padding: 10px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inbox__panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.inbox__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.inbox__list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.inbox__list li.is-unread {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.inbox__item {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 6px;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.inbox__item p {
+  margin: 2px 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.mention-area {
+  position: relative;
+}
+
+.mention-picker--inline {
+  position: absolute;
+  left: 0;
+  top: 100%;
+  margin-top: 2px;
+}

@@ -3,6 +3,7 @@ import { threadMentions } from '@core/comments'
 import type { CommentReply, CommentThread } from '@shared/types'
 import type { CommentActionResult } from '../sync/comments-api'
 import type { CommentsView } from '../sync/useComments'
+import { MentionTextArea } from './MentionTextArea'
 import { Button, Select, TextArea } from './ui'
 
 export type Participant = { id: string; handle: string; name: string; color: string }
@@ -96,6 +97,7 @@ export function CommentsPanel({
       {draft && api && !readOnly ? (
         <Composer
           draft={draft}
+          participants={participants}
           onCancel={onCloseDraft}
           onSubmit={(body) => {
             const result = api.add({ ...draft, body })
@@ -196,10 +198,12 @@ function FilterChip({
 
 function Composer({
   draft,
+  participants,
   onSubmit,
   onCancel
 }: {
   draft: CommentDraft
+  participants: Participant[]
   onSubmit: (body: string) => void
   onCancel: () => void
 }): React.JSX.Element {
@@ -218,13 +222,14 @@ function Composer({
       }}
     >
       <p className="comment-quote">{draft.start == null ? 'Whole block' : <q>{draft.quote}</q>}</p>
-      <TextArea
+      <MentionTextArea
         ref={ref}
+        participants={participants}
         aria-label="New comment"
         placeholder="Comment… use @handle to mention someone"
         rows={3}
         value={body}
-        onChange={(event) => setBody(event.target.value)}
+        onValueChange={setBody}
         onKeyDown={(event) => {
           if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
             event.preventDefault()
@@ -359,12 +364,13 @@ function ThreadCard({
                 setReply('')
               }}
             >
-              <TextArea
+              <MentionTextArea
+                participants={participants}
                 aria-label="Reply"
                 placeholder="Reply… @handle to mention"
                 rows={2}
                 value={reply}
-                onChange={(event) => setReply(event.target.value)}
+                onValueChange={setReply}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
                     event.preventDefault()

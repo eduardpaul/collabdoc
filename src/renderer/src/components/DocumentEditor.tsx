@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type MutableRefObject,
@@ -10,6 +11,8 @@ import { EditorContent, useEditorState } from '@tiptap/react'
 import { NodeSelection } from '@tiptap/pm/state'
 import { currentSpan } from '@core/comments'
 import type { HistoryBlock, HistoryEntry } from '@core/history'
+import type { RegistryPerson } from '@core/participants'
+import type { MentionState } from '@shared/types'
 import { previewAt } from '@core/history'
 import { attributionKey } from '../editor/attribution'
 import { AssetError, bytesToBase64, putFile, setAssetDocument } from '../editor/assets'
@@ -18,6 +21,12 @@ import { currentBlockId, currentBlockMarkdown } from '../editor/current-block'
 import { configureFigureHost } from '../editor/figure-host'
 import { exportSelectedFigure } from '../editor/figures/export'
 import { blockAnchor, commitMessageKey } from '../editor/loro-collab'
+import {
+  refreshMentions,
+  setChipState,
+  type MentionRequestOptions,
+  type SendRequest
+} from '../editor/mentions'
 import { useCollabEditor } from '../editor/useCollabEditor'
 import type { DocumentClient } from '../sync/DocumentClient'
 import type { CommentsView } from '../sync/useComments'
@@ -45,7 +54,11 @@ export function DocumentEditor({
   selectedThread = null,
   onSelectThread,
   onDraftComment,
-  revealRef
+  revealRef,
+  people = [],
+  onSendMention,
+  mentionAutoSendSeconds = 0,
+  chipStateRef
 }: {
   client: DocumentClient
   title: ReactNode
@@ -64,6 +77,12 @@ export function DocumentEditor({
   onDraftComment?: (draft: CommentDraft) => void
   /** Filled in with a function that scrolls the editor to a thread's span. */
   revealRef?: MutableRefObject<((threadId: string) => void) | null>
+  /** Everyone mentionable here (offline collaborators included). */
+  people?: RegistryPerson[]
+  onSendMention?: (request: SendRequest) => boolean
+  mentionAutoSendSeconds?: number
+  /** Filled in with a function that writes a request's state onto its chip. */
+  chipStateRef?: MutableRefObject<((requestId: string, state: MentionState) => boolean) | null>
 }): React.JSX.Element {
   const [attribution, setAttribution] = useState(false)
   const attributionRef = useRef({
@@ -75,7 +94,23 @@ export function DocumentEditor({
   const selectThread = useCallback((id: string) => selectThreadRef.current?.(id), [])
   const draftRef = useRef<() => void>(() => undefined)
   const commentShortcut = useCallback(() => draftRef.current(), [])
-  const editor = useCollabEditor(client, !readOnly, attributionFn, selectThread, commentShortcut)
+  const mentionRef = useRef({ people, onSendMention, mentionAutoSendSeconds })
+  const mentionOptions = useMemo<MentionRequestOptions>(
+    () => ({
+      roster: () => mentionRef.current.people,
+      onSend: (request) => mentionRef.current.onSendMention?.(request) ?? false,
+      autoSendSeconds: () => mentionRef.current.mentionAutoSendSeconds
+    }),
+    []
+  )
+  const editor = useCollabEditor(
+    client,
+    !readOnly,
+    attributionFn,
+    selectThread,
+    commentShortcut,
+    mentionOptions
+  )
   const docId = client.docId
   const [searchOpen, setSearchOpen] = useState(false)
   const [source, setSource] = useState<{ kind: SourceKind; text: string } | null>(null)
@@ -114,6 +149,11 @@ export function DocumentEditor({
     noticeRef.current = onNotice
     selectThreadRef.current = onSelectThread
   }, [editor, onNotice, onSelectThread])
+
+  useEffect(() => {
+    mentionRef.current = { people, onSendMention, mentionAutoSendSeconds }
+    refreshMentions(editor)
+  }, [editor, people, onSendMention, mentionAutoSendSeconds])
 
   useEffect(() => {
     setAssetDocument(docId)
@@ -192,6 +232,15 @@ export function DocumentEditor({
       revealRef.current = null
     }
   }, [editor, revealRef])
+
+  useEffect(() => {
+    if (!chipStateRef) return
+    chipStateRef.current = (requestId, state) =>
+      setChipState(editor, client.undoManager, requestId, state)
+    return () => {
+      chipStateRef.current = null
+    }
+  }, [editor, client, chipStateRef])
 
   // A comment on the selection, or on the block the caret is in.
   const draftComment = useCallback((): void => {
@@ -286,6 +335,7 @@ export function DocumentEditor({
         attribution={attribution}
         onToggleAttribution={() => setAttribution((value) => !value)}
         onComment={readOnly ? undefined : draftComment}
+        onMention={readOnly ? undefined : () => editor.chain().focus().insertContent('@').run()}
       />
       <SearchReplace editor={editor} open={searchOpen} onClose={() => setSearchOpen(false)} />
       <FigureControls

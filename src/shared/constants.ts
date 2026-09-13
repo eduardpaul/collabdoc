@@ -50,6 +50,14 @@ export const ORPHAN_ORIGIN = 'sys:orphan'
 /** Per-user, unsynced: which replies the user has seen (09). */
 export const COMMENTS_SEEN_KEY = 'collabdoc.comments.seen'
 
+/** Mentions (10): the inline node, and the origin of state marks on chips. */
+export const MENTION_NODE = 'mention'
+export const MENTION_STATE_ORIGIN = 'sys:mention'
+/** Per-install inbox fallback when there is no main process (browser mode). */
+export const INBOX_STORAGE_KEY = 'collabdoc.inbox'
+/** Idle auto-send for agent requests is off unless the person turns it on. */
+export const MENTION_AUTOSEND_DEFAULT_S = 0
+
 /** Undo stacks are bounded per participant (06). */
 export const UNDO_MAX_STEPS = 200
 /**

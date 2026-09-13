@@ -8,6 +8,7 @@ import { applyWslChromiumFlags, isWsl } from './wsl'
 import { DocumentRegistry } from '@core/registry'
 import { broadcastListing, broadcastState, registerDocumentIpc, sendCommand } from './documents/ipc'
 import { DocumentStore } from './persist/store'
+import { addToInbox, readInbox, setInboxRead } from './inbox'
 import { readProfile, writeProfile } from './profile'
 import { ShareService } from './share/service'
 import { broadcastShare, broadcastShareActivity, registerShareIpc } from './share/ipc'
@@ -175,6 +176,26 @@ if (!gotTheLock) {
         payload as Parameters<typeof writeProfile>[1]
       )
       return { ok: true, profile }
+    })
+    ipcMain.handle('inbox:list', async (_event, userId: unknown) => {
+      if (typeof userId !== 'string') return { ok: false, error: 'userId is required' }
+      return { ok: true, entries: await readInbox(app.getPath('userData'), userId) }
+    })
+    ipcMain.handle('inbox:add', async (_event, payload: unknown) => {
+      const { userId, entries } = (payload ?? {}) as { userId?: unknown; entries?: unknown }
+      if (typeof userId !== 'string' || !Array.isArray(entries)) {
+        return { ok: false, error: 'userId and entries are required' }
+      }
+      const result = await addToInbox(app.getPath('userData'), userId, entries)
+      return { ok: true, ...result }
+    })
+    ipcMain.handle('inbox:markRead', async (_event, payload: unknown) => {
+      const { userId, ids } = (payload ?? {}) as { userId?: unknown; ids?: unknown }
+      if (typeof userId !== 'string' || (ids !== 'all' && !Array.isArray(ids))) {
+        return { ok: false, error: 'userId and ids are required' }
+      }
+      const entries = await setInboxRead(app.getPath('userData'), userId, ids as string[] | 'all')
+      return { ok: true, entries }
     })
     ipcMain.handle('shell:openExternal', async (_event, url: string) => {
       if (typeof url !== 'string') {

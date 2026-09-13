@@ -23,7 +23,8 @@ export function EditorToolbar({
   onToggleSearch,
   attribution,
   onToggleAttribution,
-  onComment
+  onComment,
+  onMention
 }: {
   editor: Editor
   searchOpen: boolean
@@ -31,6 +32,7 @@ export function EditorToolbar({
   attribution?: boolean
   onToggleAttribution?: () => void
   onComment?: () => void
+  onMention?: () => void
 }): React.JSX.Element {
   const state = useEditorState({
     editor,
@@ -230,7 +232,7 @@ export function EditorToolbar({
           onClick={onToggleAttribution}
         />
       ) : null}
-      <ToolButton label="Mention" icon="at" disabled onClick={() => undefined} />
+      <ToolButton label="Mention" icon="at" disabled={!onMention} onClick={() => onMention?.()} />
       <ToolButton
         label="Comment"
         icon="comment"

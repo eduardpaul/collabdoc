@@ -6,6 +6,8 @@ export type Persisted = {
   provider: LlmProvider
   mcp: McpConnection[]
   agents: Agent[]
+  /** Idle seconds before an agent request paragraph is sent on its own; 0 = off (10). */
+  mentionAutoSendSeconds?: number
 }
 
 export type LegacyRecent = RecentDocument & { content?: string }
@@ -19,7 +21,9 @@ export function loadPersisted(): Persisted | null {
     return {
       provider: parsed.provider,
       mcp: parsed.mcp,
-      agents: parsed.agents
+      agents: parsed.agents,
+      mentionAutoSendSeconds:
+        typeof parsed.mentionAutoSendSeconds === 'number' ? parsed.mentionAutoSendSeconds : 0
     }
   } catch {
     return null
@@ -34,7 +38,8 @@ export function savePersisted(data: Persisted): void {
       status: 'disconnected',
       error: undefined
     })),
-    agents: data.agents.map((agent) => ({ ...agent, status: 'idle', invited: false }))
+    agents: data.agents.map((agent) => ({ ...agent, status: 'idle', invited: false })),
+    mentionAutoSendSeconds: data.mentionAutoSendSeconds ?? 0
   }
   localStorage.setItem(KEY, JSON.stringify(sanitized))
 }
