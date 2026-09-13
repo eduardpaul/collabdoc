@@ -57,6 +57,10 @@ warnIfWindowsMount()
 
 const env = { ...process.env }
 
+// VS Code / Claude terminals export ELECTRON_RUN_AS_NODE=1 (and WSLENV forwards it
+// from Windows). Electron would then start as plain Node and `app` is undefined.
+delete env.ELECTRON_RUN_AS_NODE
+
 if (isWsl()) {
   env.NO_SANDBOX = '1'
   env.ELECTRON_OZONE_PLATFORM_HINT ??= 'x11'

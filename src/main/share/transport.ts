@@ -4,6 +4,8 @@ export type PeerConnection = {
   readonly remotePublicKey: Uint8Array
   readonly handshakeHash: Uint8Array
   readonly connectionType: ConnectionType
+  /** `host:port` of the other end when the transport knows it (diagnostics). */
+  readonly remoteAddress?: string
   readonly bufferedAmount: number
   write(bytes: Uint8Array): boolean
   onData(listener: (chunk: Uint8Array) => void): void

@@ -52,6 +52,7 @@ type HyperswarmSocket = {
   remotePublicKey: Uint8Array
   handshakeHash?: Uint8Array
   rawBytesWritten?: number
+  rawStream?: { remoteHost?: string; remotePort?: number }
   write: (data: Uint8Array) => boolean
   on: (event: string, listener: (...args: never[]) => void) => void
   destroy: () => void
@@ -78,10 +79,17 @@ function wrapSocket(
   socket: HyperswarmSocket,
   connectionType: PeerConnection['connectionType']
 ): PeerConnection {
+  // A peer dropping off the network surfaces as an 'error' (ECONNRESET) on
+  // the secret stream before 'close'. With no listener that is an uncaught
+  // exception in the main process — the host would die with its guest.
+  socket.on('error', (() => undefined) as never)
   return {
     remotePublicKey: new Uint8Array(socket.remotePublicKey),
     handshakeHash: new Uint8Array(socket.handshakeHash ?? socket.remotePublicKey),
     connectionType,
+    remoteAddress: socket.rawStream?.remoteHost
+      ? `${socket.rawStream.remoteHost}:${socket.rawStream.remotePort ?? '?'}`
+      : undefined,
     get bufferedAmount() {
       return socket.rawBytesWritten ?? 0
     },

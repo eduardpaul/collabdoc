@@ -17,6 +17,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "share:probe": "vite-node scripts/share-probe.ts",
     "start": "node scripts/run-electron-vite.mjs preview",
     "dev": "node scripts/run-electron-vite.mjs dev",
     "build": "npm run typecheck && electron-vite build",
