@@ -28,7 +28,7 @@ Nothing. Document content is a string.
 - `actors.ts` hard-codes `HUMAN_ACTOR = { actorId: "you", name: "You" }` and `VOICE_ACTOR`. Replace with an identity passed in by 07; remove voice.
 - `history.ts` walks `doc.getAllChanges()` on every settle and forks the doc to diff. Measure on a 5 000-change document; add an incremental cache keyed by frontier if it exceeds 100 ms.
 - Claims are advisory and only enforced when `enforceClaims` is on; the human session has it off. Keep that, but document it in the tool description so agents do not rely on claims as locks.
-- Tool descriptions mention mermaid/infographic. Remove until those node types exist.
+- Tool descriptions mention mermaid/infographic. Keep them — 01 ships those node types — but move the figure conventions (`text` = diagram source, `attrs.caption`) into one shared paragraph reused by every tool description instead of repeating it.
 - `MutationErr.error` kinds are fine; make sure every tool path returns one instead of throwing (grep for `throw new Error` inside tool bodies).
 - Per-tool caps live in constants; make them configurable per session so 20 can tighten them for external MCP clients.
 
@@ -40,6 +40,7 @@ Nothing. Document content is a string.
 - Document metadata root map `meta`: `title`, `createdAt`, `schemaVersion`, `docId`.
 - Tool surface = the fifteen tools in `shared/types.ts` plus the thread tools added by 09 (`reply_comment`, `resolve_comment`), role-gated. Everything an agent or MCP client can do to a document goes through `DocumentSession.call(toolName, args)` which returns `MutationResult | ReadResult`; this single choke point is where logging and limits live.
 - `TEXT_STYLE_CONFIG` is applied via `doc.configTextStyle` on every `LoroDoc` we create (hub, forks, guests) — never forget the guest side.
+- Figures: `blockAgentText` returns the diagram source for `mermaidFigure`/`infographicFigure` and the caption is exposed as `attrs.caption`; `imageFigure.src` is an asset reference (`asset:<sha256>`), and the core exposes `listAssets(doc)` so persistence (04) and sync (08) know which assets a document references.
 
 ## Acceptance criteria
 
@@ -55,6 +56,7 @@ Nothing. Document content is a string.
 - [ ] AC-02.10 `listHistory(doc)` attributes every change to the author recorded in the `authors` map, falling back to `{ name: "Unknown peer <id>" }` rather than guessing "human".
 - [ ] AC-02.11 Unit test coverage for `src/core` and `src/shared` is ≥ 85 % lines (vitest `--coverage`), and `npm test` runs them in under 10 s.
 - [ ] AC-02.12 The seed text and fixed seed ids from lorocollab do not exist anywhere in the codebase.
+- [ ] AC-02.13 `get_blocks` on a Mermaid figure returns the source as `text` and the caption as `attrs.caption`; `replace_text` with a `find` locator edits the source; `insert_blocks { type: "mermaidFigure", text, attrs: { caption } }` creates a figure; the same holds for `infographicFigure`; an `imageFigure` cannot be created by agents with a data URI (`schema`), only with an existing `asset:` reference.
 
 ## Out of scope
 

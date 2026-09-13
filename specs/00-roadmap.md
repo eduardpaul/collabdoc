@@ -9,7 +9,7 @@ Written 2026-09-13 against `collabdoc` commit `0875431` and `../lorocollab` (Sep
 | Electron shell | **Done.** Electron 44, React 19, Vite, WSL/Windows launcher, sandbox + contextIsolation, single-instance lock | `src/main/index.ts`, `src/main/wsl.ts`, `scripts/run-electron-vite.mjs` |
 | File I/O | **Basic.** Open/save Markdown via native dialogs, `# Title` header convention | `src/main/documents.ts`, `src/renderer/src/lib/files.ts` |
 | UI scaffold | **Done (visual only).** Start screen, workspace (sidebar / editor / rail), settings modal with provider/MCP/agents tabs, share/join/unsaved dialogs, notice bar, activity feed | `src/renderer/src/screens/*`, `components/*` |
-| Editor | **Placeholder.** A `<textarea>`; toolbar wraps Markdown syntax; "@ mention" and "Comment" buttons insert literal characters | `screens/Workspace.tsx` |
+| Editor | **Placeholder.** A `<textarea>`; toolbar wraps Markdown syntax; "@ mention" and "Comment" buttons insert literal characters; no Markdown library, no images/diagrams | `screens/Workspace.tsx` |
 | CRDT / versioning | **Absent.** Content is a string in a React reducer | `state/AppState.tsx` |
 | Sharing | **Mocked.** `toggle-share` fabricates a `CD-XXXXXX` code and a `https://<slug>.loca.lt` URL (localtunnel-style; superseded by the Hyperswarm decision in 08); join loads placeholder text | `state/AppState.tsx`, `lib/ids.ts` |
 | LLM provider | **Form only.** Settings persisted; API key sits in plain `localStorage` under `collabdoc.v1`; nothing calls the endpoint | `lib/persist.ts`, `components/SettingsModal.tsx` |
@@ -41,7 +41,7 @@ The split we need is **Electron renderer + Electron main**, and the mapping of *
 | `src/server/runtime.ts` (reviewer/writer/apply scheduling, caps) | Agent orchestration | **re-implement** the scheduling rules (coalescing, sweep caps, backlog) in main; the class itself is too entangled with Azure and voice to keep |
 | `src/server/llm-agent.ts` (Azure OpenAI tool loop) | LLM calls | **replace** → LangChain DeepAgents + provider abstraction + MCP backends |
 | `src/voice/*`, `VoiceBar` | Azure Voice Live | **drop** (out of scope) |
-| `infographic-figure.ts`, `mermaid-figure.ts` | Rich figures | **defer** — optional after 01 |
+| `mermaid-figure.ts`, `infographic-figure.ts`, `figure-caption.ts`, `core/tree.ts` figure helpers | Illustrations as agent-editable source blocks | **port after review** in 01 (must-have): assets instead of base64, lazy loading, sanitised attrs, shared source panel |
 
 Two principles run through every spec. First, **agents are participants, not features**: a person and an agent open comment threads, reply, resolve, get mentioned and are attributed through the same model — what differs is only how they answer (a person reads a notification, an agent runs). lorocollab is agent-centric in places (comments and mentions exist only for agents there); the specs correct that rather than copy it. Second, carried over because it is the idea and not a shortcut: **agents never touch Loro/CRDT APIs**. They see block ids, text locators and a small tool set; the host resolves, validates, attributes and commits. Reviewers cannot mutate text. That is what makes "every AI modification strictly version-controlled and attributed" cheap to guarantee.
 
@@ -77,7 +77,7 @@ Each feature is one file in this folder. "Depends on" is a hard ordering; everyt
 
 | # | Feature | Depends on |
 | --- | --- | --- |
-| [01](01-tiptap-editor.md) | Tiptap rich-text editor replaces the textarea | — |
+| [01](01-tiptap-editor.md) | Tiptap editor with Markdown import/export and illustrations (Mermaid, Infographic, images) | — |
 | [02](02-loro-document-core.md) | Loro document model + tool surface ported from lorocollab | — |
 | [03](03-document-hub-in-main.md) | SyncHub in main, renderer synced over MessagePort | 01, 02 |
 | [04](04-document-persistence.md) | `.collabdoc` snapshot format, autosave, Markdown import/export, recents | 03 |
@@ -126,7 +126,7 @@ Each feature is one file in this folder. "Depends on" is a hard ordering; everyt
 
 ## 6. Versions to target (checked 2026-09-13)
 
-`loro-crdt 1.16.1`, `loro-prosemirror 0.4.4`, `@tiptap/* 3.31.3`, `hyperswarm 4.17.1`, `hyperdht 6.34.0`, `sodium-native 5.1.0`, `udx-native 1.21.1`, `deepagents 1.13.4`, `@langchain/core 1.2.11`, `@langchain/langgraph 1.4.15`, `@langchain/openai 1.5.13`, `@langchain/anthropic 1.5.10`, `@langchain/mcp-adapters 1.1.4`, `@modelcontextprotocol/sdk 1.30.0`, `electron 44.3.0`, `electron-vite 5.0.0`, `vitest 5.0.0`.
+`loro-crdt 1.16.1`, `loro-prosemirror 0.4.4`, `@tiptap/* 3.31.3` (incl. `@tiptap/markdown`), `mermaid 12.0.0`, `@antv/infographic 0.2.20` (exact pin), `hyperswarm 4.17.1`, `hyperdht 6.34.0`, `sodium-native 5.1.0`, `udx-native 1.21.1`, `deepagents 1.13.4`, `@langchain/core 1.2.11`, `@langchain/langgraph 1.4.15`, `@langchain/openai 1.5.13`, `@langchain/anthropic 1.5.10`, `@langchain/mcp-adapters 1.1.4`, `@modelcontextprotocol/sdk 1.30.0`, `electron 44.3.0`, `electron-vite 5.0.0`, `vitest 5.0.0`.
 
 ## 7. Conventions used in the specs
 

@@ -23,7 +23,7 @@ Persist the Loro document — history included — as a `.collabdoc` file, autos
 
 ## Design
 
-- **File format** `.collabdoc`: a small container — 8-byte magic `CLBDOC01`, then a JSON header (`{ docId, title, schemaVersion, savedAt, app: "collabdoc/0.x" }`, length-prefixed), then the Loro snapshot bytes. Header lets the start screen list files without loading Loro. Version the magic; refuse newer versions with a clear error.
+- **File format** `.collabdoc`: a small container — 8-byte magic `CLBDOC01`, then a JSON header (`{ docId, title, schemaVersion, savedAt, app: "collabdoc/0.x", assets: [{ hash, type, size, offset }] }`, length-prefixed), then the Loro snapshot bytes, then the **asset section** (image bytes referenced by `asset:<sha256>` from 01, concatenated at the recorded offsets). Header lets the start screen list files without loading Loro. Version the magic; refuse newer versions with a clear error. Assets referenced by no block are dropped on save (garbage collected); assets are content-addressed so the same image is stored once.
 - **Where**: user chooses on first save (native dialog, default `~/Documents/CollabDoc/<title>.collabdoc`). Untitled new documents autosave to `app.getPath('userData')/drafts/<docId>.collabdoc` until saved elsewhere, so nothing is ever only in memory.
 - **Autosave**: main debounces hub commits (2 s idle, max 30 s) and writes atomically (`write tmp → fsync → rename`). Also on window close, before quit, and before sharing (08). Manual `Mod+S` forces a write and, for drafts, opens Save As.
 - **Dirty state**: `savedVersion` (Loro version vector) per hub; `dirty = !doc.version().equals(savedVersion)`. Main pushes `documents:state` events; the reducer mirrors it.
@@ -46,11 +46,13 @@ Persist the Loro document — history included — as a `.collabdoc` file, autos
 - [ ] AC-04.10 Opening a `.collabdoc` with a newer `schemaVersion` or unknown magic fails with a readable error and does not overwrite the file.
 - [ ] AC-04.11 The unsaved-changes dialog only appears for drafts that have no chosen path (where "discard" means deleting the draft); documents with a path never prompt because they are autosaved.
 - [ ] AC-04.12 Existing `collabdoc.v1` recents are migrated to drafts on first launch and the old key is removed; migration is idempotent.
+- [ ] AC-04.13 Assets: a document with three image figures (one duplicated) saves two assets in the asset section; reopening renders all figures; deleting a figure and saving drops its asset on the next save; a `.collabdoc` whose asset section is truncated opens with placeholder images and a warning rather than failing.
 
 ## Out of scope
 
-Cloud/sync storage; multiple files per document (assets); encryption at rest.
+Cloud/sync storage; encryption at rest; assets other than images (video/audio).
 
 ## Open questions
 
 - Should Markdown export include comments as footnotes or HTML comments? Default: omit; add an "include comments" checkbox later (09).
+- Markdown export writes image assets beside the `.md` as `assets/<hash>.<ext>` (01 AC-01.12); the "single file" option embeds data URIs.
