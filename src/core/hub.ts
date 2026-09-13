@@ -1,6 +1,6 @@
 import { EphemeralStore, LoroDoc, VersionVector } from 'loro-crdt'
 import { HUB_ORIGIN, PRESENCE_TIMEOUT_MS } from '../shared/constants'
-import { createDocument, openDocument } from './document'
+import { commitTimestamp, createDocument, openDocument } from './document'
 
 export type HubEvent =
   | { type: 'update'; from: string; bytes: Uint8Array }
@@ -41,7 +41,7 @@ export class SyncHub {
   }
 
   commitLocal(message: string, origin: string = HUB_ORIGIN): void {
-    this.doc.commit({ origin, message, timestamp: Date.now() })
+    this.doc.commit({ origin, message, timestamp: commitTimestamp() })
   }
 
   snapshot(): Uint8Array {

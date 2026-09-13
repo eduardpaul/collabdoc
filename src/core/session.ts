@@ -249,15 +249,11 @@ export class DocumentSession implements SessionContext {
       // Whatever landed before the throw must not stay pending: commit it
       // under a message that says so, then let `call()` report the error.
       closeGroup(this.undoManager)
-      commitBoundary(this.doc, {
-        origin: this.origin,
-        message: `failed: ${message}`,
-        timestamp: Date.now()
-      })
+      commitBoundary(this.doc, { origin: this.origin, message: `failed: ${message}` })
       throw err
     }
     closeGroup(this.undoManager)
-    commitBoundary(this.doc, { origin: this.origin, message, timestamp: Date.now() })
+    commitBoundary(this.doc, { origin: this.origin, message })
   }
 
   undoState(): UndoState {

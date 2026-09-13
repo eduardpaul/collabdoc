@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { diffChange } from '@core/history-diff'
+import type { HistoryAuthor } from '@core/authors'
 import type { HistoryEntry } from '@core/history'
 import { authorCounts, filterHistory } from '@core/history'
 import type { Checkpoint } from '@core/checkpoints'
@@ -15,7 +16,8 @@ export function HistoryPanel({
   selectedId,
   onSelect,
   onView,
-  onRestore
+  onRestore,
+  readOnly = false
 }: {
   client: DocumentClient
   history: HistoryView
@@ -24,6 +26,8 @@ export function HistoryPanel({
   onSelect: (id: string | null) => void
   onView: (entry: HistoryEntry) => void
   onRestore: (entry: HistoryEntry) => void
+  /** A guest whose host ended: viewing stays, restore and checkpoints go. */
+  readOnly?: boolean
 }): React.JSX.Element {
   const [authorId, setAuthorId] = useState<string>('all')
   const [query, setQuery] = useState('')
@@ -49,6 +53,14 @@ export function HistoryPanel({
     })
     return list
   }, [history.entries, youId])
+
+  // Checkpoints store an actorId; the name and colour come from that actor's commits.
+  const authorOf = (actorId: string): HistoryAuthor =>
+    history.entries.find((entry) => entry.author.actorId === actorId)?.author ?? {
+      actorId,
+      name: actorId === youId ? 'You' : 'Unknown',
+      color: '#8a7d6d'
+    }
 
   const visible = useMemo(
     () =>
@@ -97,7 +109,11 @@ export function HistoryPanel({
       {history.checkpoints.length ? (
         <ul className="history-pins">
           {history.checkpoints.map((cp) => (
-            <CheckpointRow key={cp.id} checkpoint={cp} onView={() => onView(checkpointEntry(cp))} />
+            <CheckpointRow
+              key={cp.id}
+              checkpoint={cp}
+              onView={() => onView(checkpointEntry(cp, authorOf(cp.actorId)))}
+            />
           ))}
         </ul>
       ) : null}
@@ -131,30 +147,34 @@ export function HistoryPanel({
             <Button size="sm" onClick={() => onView(selected)}>
               View this version
             </Button>
-            <Button size="sm" variant="primary" onClick={() => onRestore(selected)}>
-              Restore
-            </Button>
+            {readOnly ? null : (
+              <Button size="sm" variant="primary" onClick={() => onRestore(selected)}>
+                Restore
+              </Button>
+            )}
           </div>
         </div>
       ) : null}
-      <form
-        className="checkpoint-form"
-        onSubmit={(event) => {
-          event.preventDefault()
-          history.markCheckpoint(checkpointName)
-          setCheckpointName('')
-        }}
-      >
-        <TextInput
-          aria-label="Checkpoint name"
-          placeholder="Checkpoint name"
-          value={checkpointName}
-          onChange={(event) => setCheckpointName(event.target.value)}
-        />
-        <Button type="submit" size="sm">
-          Mark checkpoint
-        </Button>
-      </form>
+      {readOnly ? null : (
+        <form
+          className="checkpoint-form"
+          onSubmit={(event) => {
+            event.preventDefault()
+            history.markCheckpoint(checkpointName)
+            setCheckpointName('')
+          }}
+        >
+          <TextInput
+            aria-label="Checkpoint name"
+            placeholder="Checkpoint name"
+            value={checkpointName}
+            onChange={(event) => setCheckpointName(event.target.value)}
+          />
+          <Button type="submit" size="sm">
+            Mark checkpoint
+          </Button>
+        </form>
+      )}
     </div>
   )
 }
@@ -179,7 +199,7 @@ function CheckpointRow({
   )
 }
 
-function checkpointEntry(cp: Checkpoint): HistoryEntry {
+function checkpointEntry(cp: Checkpoint, author: HistoryAuthor): HistoryEntry {
   return {
     id: cp.id,
     peer: cp.actorId,
@@ -192,7 +212,7 @@ function checkpointEntry(cp: Checkpoint): HistoryEntry {
     details: [],
     added: 0,
     removed: 0,
-    author: { actorId: cp.actorId, name: cp.name, color: '#c45c26' },
+    author,
     frontiers: cp.frontiers,
     parentFrontiers: [],
     blockIds: []

@@ -3,7 +3,7 @@ import {
   ATTRIBUTES_KEY,
   BLOCK_ID_ATTR,
   CHILDREN_KEY,
-  HUMAN_COMMIT_MERGE_S,
+  CHANGE_MERGE_INTERVAL,
   INIT_ORIGIN,
   META_KEY,
   NODE_NAME_KEY,
@@ -27,8 +27,22 @@ export type DocumentMeta = {
 export function configureDocument(doc: LoroDoc): void {
   doc.setRecordTimestamp(true)
   doc.configTextStyle(TEXT_STYLE_CONFIG)
-  // Consecutive local commits within this many seconds become one history entry.
-  doc.setChangeMergeInterval(HUMAN_COMMIT_MERGE_S)
+  doc.setChangeMergeInterval(CHANGE_MERGE_INTERVAL)
+}
+
+/**
+ * The timestamp for every commit this app makes.
+ *
+ * Loro documents its timestamps as seconds; ours are milliseconds, and that
+ * is deliberate, not an oversight to fix: Loro forces timestamps to ascend,
+ * so a seconds value committed after any millisecond one is clamped up to it
+ * and every later change reports the same frozen time. Existing documents
+ * (and `loro-prosemirror`'s own init commit) already hold milliseconds, so
+ * the whole app stamps in milliseconds through this one function and
+ * `normalizeTimestamp` in history accepts either unit when reading.
+ */
+export function commitTimestamp(): number {
+  return Date.now()
 }
 
 /**
@@ -58,7 +72,7 @@ export function createDocument(options: { docId?: string; title?: string } = {})
   // remove the container — and any text a collaborator typed into it.
   paragraph.getOrCreateContainer(CHILDREN_KEY, new LoroList()).insertContainer(0, new LoroText())
 
-  doc.commit({ origin: INIT_ORIGIN, message: 'create document', timestamp: Date.now() })
+  doc.commit({ origin: INIT_ORIGIN, message: 'create document', timestamp: commitTimestamp() })
   return doc
 }
 
@@ -87,15 +101,15 @@ export function readMeta(doc: LoroDoc): DocumentMeta {
 /** Titles are short and conflicts rare, so a plain last-writer-wins value. */
 export function setTitle(doc: LoroDoc, title: string, origin: string): void {
   doc.getMap(META_KEY).set('title', title)
-  commitBoundary(doc, { origin, message: `rename to “${title}”`, timestamp: Date.now() })
+  commitBoundary(doc, { origin, message: `rename to “${title}”` })
 }
 
-/** Commit that must not merge with the previous change (agent tools, checkpoints). */
-export function commitBoundary(
-  doc: LoroDoc,
-  options: { origin?: string; timestamp?: number; message?: string }
-): void {
-  doc.setChangeMergeInterval(0)
-  doc.commit(options)
-  doc.setChangeMergeInterval(HUMAN_COMMIT_MERGE_S)
+/**
+ * A commit that is its own history entry (agent tools, checkpoints, renames).
+ * Loro never merges changes whose messages differ, and the fresh stamp keeps
+ * it apart from a same-message neighbour. Human typing is cut differently —
+ * see `humanCommitCutter` in the editor.
+ */
+export function commitBoundary(doc: LoroDoc, options: { origin: string; message: string }): void {
+  doc.commit({ ...options, timestamp: commitTimestamp() })
 }

@@ -7,6 +7,7 @@ import { authorCounts, filterHistory, listHistory } from './history'
 import { HistoryIndex } from './history-index'
 import { SyncHub } from './hub'
 import { addParagraph, expectOk, human, writer } from './test-helpers'
+import { findBlock, firstText } from './tree'
 
 
 describe('HistoryIndex (AC-05.10)', () => {
@@ -21,6 +22,20 @@ describe('HistoryIndex (AC-05.10)', () => {
     const second = index.refresh()
     expect(second.slice(0, first.length).map((e) => e.id)).toEqual(first)
     expect(second.length).toBeGreaterThan(first.length)
+  })
+
+  it('indexes every peer, not only the DAG heads', () => {
+    const hub = SyncHub.create()
+    const ana = human(hub, 'ana')
+    const nova = writer(hub, 'nova')
+    addParagraph(ana, 'one')
+    addParagraph(nova, 'two')
+    // Nova's latest change is now an ancestor of Ana's, so Nova is not a frontier.
+    addParagraph(ana, 'three')
+    const index = new HistoryIndex(hub.doc)
+    const all = listHistory(hub.doc)
+    expect(index.list().map((e) => e.id).sort()).toEqual(all.map((e) => e.id).sort())
+    expect(index.list().some((e) => e.author.actorId === 'nova')).toBe(true)
   })
 
   it('records last author per block', () => {
@@ -71,7 +86,7 @@ describe('history filters (AC-05.3)', () => {
     expect(sum).toBe(history.length)
     const onlyAna = filterHistory(history, { actorId: 'ana' })
     expect(onlyAna.every((e) => e.author.actorId === 'ana')).toBe(true)
-    expect(onlyAna.length).toBe(counts.get('ana'))
+    expect(onlyAna).toHaveLength(counts.get('ana')!)
   })
 })
 
@@ -91,6 +106,38 @@ describe('diffChange (AC-05.4)', () => {
     expect(change?.parts.some((part) => part.type === 'add' && part.text.includes('there'))).toBe(
       true
     )
+  })
+
+  it('re-diffs a merged change once it has grown', () => {
+    const hub = SyncHub.create()
+    const ana = human(hub, 'ana')
+    const p = addParagraph(ana, 'start')
+    // Typing straight into the hub doc: unstamped commits merge into one change.
+    const text = firstText(findBlock(hub.doc, p)!.node)!
+    text.insert(text.length, ' alpha')
+    hub.doc.commit({ origin: 'actor:ana', timestamp: 1_800_000_000_000 })
+    const first = listHistory(hub.doc).find((e) => e.details.join().includes('alpha'))
+    expect(first).toBeDefined()
+    const before = diffChange(hub.doc, first!)
+    text.insert(text.length, ' beta')
+    hub.doc.commit({ origin: 'actor:ana' })
+    const grown = listHistory(hub.doc).find((e) => e.id === first!.id)
+    expect(grown?.length).toBeGreaterThan(first!.length)
+    const after = diffChange(hub.doc, grown!)
+    expect(after).not.toBe(before)
+    expect(JSON.stringify(after)).toContain('beta')
+  })
+
+  it('diffWords stays fast on a pasted wall of text', () => {
+    const words = Array.from({ length: 20_000 }, (_, i) => `w${i}`).join(' ')
+    const other = Array.from({ length: 20_000 }, (_, i) => `x${i}`).join(' ')
+    const start = performance.now()
+    const parts = diffWords(`same ${words} tail`, `same ${other} tail`)
+    expect(performance.now() - start).toBeLessThan(500)
+    expect(parts[0]).toEqual({ type: 'same', text: 'same ' })
+    expect(parts.some((p) => p.type === 'remove')).toBe(true)
+    expect(parts.some((p) => p.type === 'add')).toBe(true)
+    expect(parts[parts.length - 1]).toEqual({ type: 'same', text: ' tail' })
   })
 
   it('diffWords keeps unchanged words', () => {

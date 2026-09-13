@@ -1,4 +1,5 @@
 import type { LoroDoc } from 'loro-crdt'
+import { commitTimestamp } from './document'
 import { AUTHOR_ORIGIN, AUTHORS_KEY } from '../shared/constants'
 import type { AuthorRecord, ParticipantRole } from '../shared/types'
 
@@ -30,7 +31,7 @@ export function isAuthorRegistered(doc: LoroDoc): boolean {
 export function ensureAuthor(doc: LoroDoc, author: AuthorRecord): boolean {
   if (isAuthorRegistered(doc)) return false
   writeAuthor(doc, author)
-  doc.commit({ origin: AUTHOR_ORIGIN, timestamp: Date.now() })
+  doc.commit({ origin: AUTHOR_ORIGIN, timestamp: commitTimestamp() })
   return true
 }
 

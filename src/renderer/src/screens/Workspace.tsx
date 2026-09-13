@@ -397,6 +397,7 @@ export function Workspace(): React.JSX.Element | null {
                 setTravel(null)
                 setRestoreTo(entry)
               }}
+              readOnly={session.share.readOnly}
             />
           </div>
         ) : state.rightTab === 'markdown' ? (

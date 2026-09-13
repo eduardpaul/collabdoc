@@ -1,7 +1,7 @@
 import type { JSONContent } from '@tiptap/core'
 import { LoroDoc, UndoManager, type VersionVector } from 'loro-crdt'
 import { ensureAuthor, writeAuthor } from '@core/authors'
-import { configureDocument, readMeta } from '@core/document'
+import { commitTimestamp, configureDocument, readMeta } from '@core/document'
 import { PresenceStore } from './presence-store'
 import { AUTHOR_ORIGIN, META_KEY, SYSTEM_ORIGIN_PREFIX } from '@shared/constants'
 import { decodeDocFrame, encodeDocFrame, FrameError } from '@shared/protocol'
@@ -120,7 +120,7 @@ export class DocumentClient {
     this.doc.commit({
       origin: `actor:${this.profile.actorId}`,
       message: 'rename',
-      timestamp: Date.now()
+      timestamp: commitTimestamp()
     })
   }
 
@@ -159,7 +159,7 @@ export class DocumentClient {
       role: profile.role,
       handle: profile.handle
     })
-    this.doc.commit({ origin: AUTHOR_ORIGIN, timestamp: Date.now() })
+    this.doc.commit({ origin: AUTHOR_ORIGIN, timestamp: commitTimestamp() })
   }
 
   detach(): void {

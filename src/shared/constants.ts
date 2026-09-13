@@ -17,8 +17,14 @@ export const AUTHORS_KEY = 'authors'
 export const COMMENTS_KEY = 'comments'
 export const CHECKPOINTS_KEY = 'checkpoints'
 
+/**
+ * Loro merges consecutive local commits whose timestamps are within this many
+ * units and whose messages match. Our timestamps are milliseconds (see
+ * `commitTimestamp`), so this is 1 ms: a commit that carries its own stamp
+ * starts a new change, one that does not inherits the last stamp and merges.
+ */
+export const CHANGE_MERGE_INTERVAL = 1
 /** Human typing is one history entry until 1 s idle or a block switch (05). */
-export const HUMAN_COMMIT_MERGE_S = 1
 export const HUMAN_COMMIT_IDLE_MS = 1_000
 /** History UI waits this long after edits before recomputing (lorocollab). */
 export const HISTORY_SETTLE_MS = 400

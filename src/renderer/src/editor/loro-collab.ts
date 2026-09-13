@@ -22,7 +22,7 @@ import {
   undo,
   type LoroDocType
 } from 'loro-prosemirror'
-import { commitBoundary } from '@core/document'
+import { commitTimestamp } from '@core/document'
 import { ensureTextShape } from '@core/tree'
 import { BLOCK_ID_ATTR, HUMAN_COMMIT_IDLE_MS } from '@shared/constants'
 import type { ActorProfile } from '@shared/types'
@@ -152,30 +152,50 @@ function insertsBlocks(tr: Transaction): boolean {
 
 /**
  * Human typing is one Loro change until 1 s idle or the caret moves to
- * another block. LoroSyncPlugin commits every transaction; merge-interval
- * groups those, and this plugin forces a boundary on block switch / idle.
+ * another block.
+ *
+ * LoroSyncPlugin commits every transaction with no message and no timestamp,
+ * and Loro merges such a commit into the previous change from the same peer
+ * (the merge interval never separates them: an unstamped commit inherits the
+ * last timestamp). So a burst merges on its own; what needs doing is the cut.
+ * A cut is a fresh timestamp on the *next* commit, handed to Loro through
+ * `setNextCommitOptions` before the sync plugin commits — which is why this
+ * runs in `state.apply` on the editing transaction, ahead of the appended
+ * `doc-changed` one. An empty `commit()` after the fact would be swallowed.
+ *
+ * A transaction carrying `commitMessageKey` is always its own change, with
+ * that message: restore uses it.
  */
-export function humanCommitCutter(doc: LoroDoc, origin: () => string): Plugin {
-  return new Plugin({
-    appendTransaction(trs, oldState, newState) {
-      if (!trs.some((tr) => tr.docChanged)) return null
-      const prev = currentBlockId(oldState)
-      const next = currentBlockId(newState)
-      if (prev && next && prev !== next) {
-        doc.setChangeMergeInterval(0)
+export const commitMessageKey = new PluginKey<string>('loroCommitMessage')
+
+export function humanCommitCutter(doc: LoroDoc, origin: () => string): Plugin<string | null> {
+  let idleCut = false
+  let idle: ReturnType<typeof setTimeout> | null = null
+  return new Plugin<string | null>({
+    state: {
+      init: () => null,
+      // State: the block the caret was in after the last local edit.
+      apply(tr, lastBlock, oldState, newState) {
+        if (!tr.docChanged) return lastBlock
+        if (tr.getMeta(loroSyncPluginKey) || tr.getMeta('appendedTransaction')) return lastBlock
+        const message = tr.getMeta(commitMessageKey) as string | undefined
+        // Where this edit started — after any click or arrow key, which never
+        // reach here because they don't change the doc.
+        const before = currentBlockId(oldState)
+        const switched = before != null && lastBlock != null && before !== lastBlock
+        if (message || idleCut || switched) {
+          doc.setNextCommitOptions({ origin: origin(), timestamp: commitTimestamp(), message })
+        }
+        idleCut = false
+        if (idle) clearTimeout(idle)
+        idle = setTimeout(() => {
+          idleCut = true
+        }, HUMAN_COMMIT_IDLE_MS)
+        return currentBlockId(newState) ?? before
       }
-      return null
     },
     view() {
-      let idle: ReturnType<typeof setTimeout> | null = null
       return {
-        update(view, prev) {
-          if (view.state.doc === prev.doc) return
-          if (idle) clearTimeout(idle)
-          idle = setTimeout(() => {
-            commitBoundary(doc, { origin: origin(), timestamp: Date.now() })
-          }, HUMAN_COMMIT_IDLE_MS)
-        },
         destroy() {
           if (idle) clearTimeout(idle)
         }
@@ -193,7 +213,7 @@ export function textShapeKeeper(doc: LoroDoc): Plugin {
         const meta = tr.getMeta(loroSyncPluginKey) as { type?: string } | undefined
         if (meta?.type === 'doc-changed') {
           if (pending && ensureTextShape(doc) > 0) {
-            doc.commit({ origin: 'sys:shape', timestamp: Date.now() })
+            doc.commit({ origin: 'sys:shape', timestamp: commitTimestamp() })
           }
           return false
         }

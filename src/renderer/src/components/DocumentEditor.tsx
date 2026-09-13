@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { EditorContent, useEditorState } from '@tiptap/react'
 import { NodeSelection } from '@tiptap/pm/state'
-import { commitBoundary } from '@core/document'
 import type { HistoryBlock, HistoryEntry } from '@core/history'
 import { previewAt } from '@core/history'
-import { HUMAN_COMMIT_MERGE_S } from '@shared/constants'
 import { attributionKey } from '../editor/attribution'
 import { AssetError, bytesToBase64, putFile, setAssetDocument } from '../editor/assets'
 import { currentBlockMarkdown } from '../editor/current-block'
 import { configureFigureHost } from '../editor/figure-host'
 import { exportSelectedFigure } from '../editor/figures/export'
+import { commitMessageKey } from '../editor/loro-collab'
 import { useCollabEditor } from '../editor/useCollabEditor'
 import type { DocumentClient } from '../sync/DocumentClient'
 import type { HistoryView } from '../sync/useHistory'
@@ -133,34 +132,26 @@ export function DocumentEditor({
     editor.view.dispatch(editor.state.tr.setMeta(attributionKey, { refresh: true }))
   }, [editor, attribution, history?.version])
 
-  const applyRestore = (entry: HistoryEntry): void => {
-    const json = client.previewJson(entry.frontiers)
-    if (!json) return
-    client.doc.setChangeMergeInterval(0)
-    editor.commands.setContent(json)
-    client.doc.setChangeMergeInterval(HUMAN_COMMIT_MERGE_S)
-    commitBoundary(client.doc, {
-      origin: `actor:${client.profile.actorId}`,
-      message: 'Restore version',
-      timestamp: Date.now()
-    })
-  }
+  // One transaction, one Loro change: the cutter reads the message meta and
+  // stamps the sync plugin's commit with it (see `humanCommitCutter`).
+  const applyRestore = useCallback(
+    (entry: HistoryEntry): void => {
+      if (readOnly) {
+        noticeRef.current('This document is read-only; nothing to restore into.')
+        return
+      }
+      const json = client.previewJson(entry.frontiers)
+      if (!json) return
+      editor.chain().setMeta(commitMessageKey, 'Restore version').setContent(json).run()
+    },
+    [client, editor, readOnly]
+  )
 
   useEffect(() => {
     if (!restoreTo || editor.isDestroyed) return
-    const json = client.previewJson(restoreTo.frontiers)
-    if (json) {
-      client.doc.setChangeMergeInterval(0)
-      editor.commands.setContent(json)
-      client.doc.setChangeMergeInterval(HUMAN_COMMIT_MERGE_S)
-      commitBoundary(client.doc, {
-        origin: `actor:${client.profile.actorId}`,
-        message: 'Restore version',
-        timestamp: Date.now()
-      })
-    }
+    applyRestore(restoreTo)
     onRestored?.()
-  }, [client, editor, restoreTo, onRestored])
+  }, [applyRestore, editor, restoreTo, onRestored])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -257,10 +248,14 @@ export function DocumentEditor({
               entry={travel}
               blocks={previewAt(client.doc, travel.frontiers)}
               onClose={() => onCloseTravel?.()}
-              onRestore={() => {
-                applyRestore(travel)
-                onCloseTravel?.()
-              }}
+              onRestore={
+                readOnly
+                  ? undefined
+                  : () => {
+                      applyRestore(travel)
+                      onCloseTravel?.()
+                    }
+              }
             />
           ) : null}
           <EditorContent editor={editor} />
@@ -280,7 +275,7 @@ function TravelOverlay({
   entry: HistoryEntry
   blocks: HistoryBlock[]
   onClose: () => void
-  onRestore: () => void
+  onRestore?: () => void
 }): React.JSX.Element {
   const when = new Date(entry.timestamp).toLocaleTimeString([], {
     hour: '2-digit',
@@ -293,9 +288,11 @@ function TravelOverlay({
           Viewing version from {when} by {entry.author.name}
         </p>
         <div className="travel-banner__actions">
-          <Button size="sm" variant="primary" onClick={onRestore}>
-            Restore
-          </Button>
+          {onRestore ? (
+            <Button size="sm" variant="primary" onClick={onRestore}>
+              Restore
+            </Button>
+          ) : null}
           <Button size="sm" onClick={onClose}>
             Close
           </Button>

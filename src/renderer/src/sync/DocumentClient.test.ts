@@ -1,11 +1,12 @@
 import { Editor } from '@tiptap/core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { listHistory } from '@core/history'
 import { DocumentRegistry } from '@core/registry'
 import { human, addParagraph, textOf } from '@core/test-helpers'
 import { blockPlainText, findBlock, getChildren, getRoot, allBlocks } from '@core/tree'
 import { LoroList, LoroMap, LoroText } from 'loro-crdt'
 import { editorExtensions } from '../editor/extensions'
-import { LoroCollab } from '../editor/loro-collab'
+import { LoroCollab, commitMessageKey } from '../editor/loro-collab'
 import {
   closeClient,
   createAndOpen,
@@ -357,23 +358,75 @@ describe('DocumentClient over a MessagePort', () => {
     guest.detach()
   })
 
-  it('restore applies one new commit and keeps later history (AC-05.7)', async () => {
+  it('restore is one messaged commit that does not merge with the keystrokes before it (AC-05.7)', async () => {
     const client = await createAndOpen({ title: 'Restore' })
     const editor = await bindEditor(client)
     editor.commands.insertContent('first')
     await tick(20)
     const afterFirst = [...client.doc.frontiers()]
     editor.commands.insertContent(' second')
-    await tick(20)
+    // Past the UndoManager's own 500 ms merge window, as a real restore would be.
+    await tick(600)
     const json = client.previewJson(afterFirst)
     expect(json).toBeTruthy()
-    client.doc.setChangeMergeInterval(0)
-    editor.commands.setContent(json!)
+    editor.chain().setMeta(commitMessageKey, 'Restore version').setContent(json!).run()
     await tick(20)
     expect(editorText(editor).trim()).toBe('first')
-    expect(editor.can().undo()).toBe(true)
+    const mine = myHistory(client)
+    const restore = mine[mine.length - 1]
+    expect(restore.message).toBe('Restore version')
+    expect(mine[mine.length - 2].details.join(' ')).toContain('second')
+    // One undo steps back over the restore alone.
+    expect(editor.commands.undo()).toBe(true)
+    await tick(20)
+    expect(editorText(editor).trim()).toBe('first second')
+  })
+
+  it('typing is one commit per block visit: a caret move to another block cuts it (AC-05.1)', async () => {
+    const client = await createAndOpen({ title: 'Cut' })
+    const editor = await bindEditor(client)
+    editor.commands.setContent({
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'one' }] },
+        { type: 'paragraph', content: [{ type: 'text', text: 'two' }] }
+      ]
+    })
+    await tick(20)
+    editor.commands.setTextSelection(4)
+    editor.commands.insertContent('A')
+    editor.commands.insertContent('B')
+    // A plain caret move (no document change), then typing elsewhere.
+    editor.commands.setTextSelection(editor.state.doc.content.size - 1)
+    editor.commands.insertContent('C')
+    await tick(20)
+    const mine = myHistory(client)
+    const ab = mine.find((e) => e.details.join(' ').includes('“A”'))
+    const c = mine.find((e) => e.details.join(' ').includes('“C”'))
+    expect(ab?.details.join(' ')).toContain('“B”')
+    expect(c).toBeDefined()
+    expect(c?.id).not.toBe(ab?.id)
+  })
+
+  it('a pause of 1 s starts a new commit in the same block (AC-05.1)', async () => {
+    const client = await createAndOpen({ title: 'Idle' })
+    const editor = await bindEditor(client)
+    editor.commands.insertContent('A')
+    await tick(1_100)
+    editor.commands.insertContent('B')
+    await tick(20)
+    const mine = myHistory(client)
+    const a = mine.find((e) => e.details.join(' ').includes('“A”'))
+    const b = mine.find((e) => e.details.join(' ').includes('“B”'))
+    expect(a).toBeDefined()
+    expect(b).toBeDefined()
+    expect(a?.id).not.toBe(b?.id)
   })
 })
+
+function myHistory(client: DocumentClient): ReturnType<typeof listHistory> {
+  return listHistory(client.doc).filter((e) => e.peer === client.doc.peerIdStr)
+}
 
 function idOf(doc: import('loro-crdt').LoroDoc, index: number): string {
   const block = allBlocks(doc)[index]
