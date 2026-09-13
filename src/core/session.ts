@@ -1,10 +1,5 @@
-import { EphemeralStore, LoroDoc, LoroMap, UndoManager } from 'loro-crdt'
-import {
-  ACTOR_ORIGIN_PREFIX,
-  DEFAULT_LIMITS,
-  SYSTEM_ORIGIN_PREFIX,
-  type SessionLimits
-} from '../shared/constants'
+import { EphemeralStore, LoroDoc, LoroMap, type UndoManager } from 'loro-crdt'
+import { ACTOR_ORIGIN_PREFIX, DEFAULT_LIMITS, type SessionLimits } from '../shared/constants'
 import { isToolName } from '../shared/tools'
 import type {
   ActorProfile,
@@ -21,6 +16,7 @@ import type {
 } from '../shared/types'
 import { ensureAuthor } from './authors'
 import { commitBoundary, configureDocument } from './document'
+import { applyUndo, createUndoManager, type UndoKind } from './undo'
 import { EPHEMERAL_TIMEOUT_MS, type SyncHub } from './hub'
 import { asString, fail, isMutationResult, type SessionContext } from './tools/context'
 import { addComment, listComments, replyComment, resolveComment } from './tools/comments'
@@ -78,11 +74,8 @@ export class DocumentSession implements SessionContext {
     const ephemeralSnapshot = hub.ephemeralSnapshot()
     if (ephemeralSnapshot.byteLength > 0) this.ephemeral.apply(ephemeralSnapshot)
 
-    this.undoManager = new UndoManager(this.doc, {
-      maxUndoSteps: 100,
-      mergeInterval: 0,
-      excludeOriginPrefixes: [SYSTEM_ORIGIN_PREFIX]
-    })
+    // Every tool call is its own undo step.
+    this.undoManager = createUndoManager(this.doc, { mergeInterval: 0 })
 
     this.subscriptions.push(
       this.doc.subscribeLocalUpdates((bytes) => {
@@ -183,16 +176,22 @@ export class DocumentSession implements SessionContext {
     }
   }
 
+  /** Nothing to undo is not an error: the agent learns it from `applied`. */
   private undo(): MutationResult {
-    if (!this.undoManager.canUndo()) return fail('conflict', 'Nothing to undo.')
-    this.undoManager.undo()
-    return this.ok('undo', [])
+    return this.step('undo')
   }
 
   private redo(): MutationResult {
-    if (!this.undoManager.canRedo()) return fail('conflict', 'Nothing to redo.')
-    this.undoManager.redo()
-    return this.ok('redo', [])
+    return this.step('redo')
+  }
+
+  private step(kind: UndoKind): MutationResult {
+    const { applied, blockIds } = applyUndo(this.doc, this.undoManager, kind)
+    if (!applied) return this.ok(`nothing to ${kind}`, [])
+    const nodes = blockIds
+      .map((blockId) => findBlock(this.doc, blockId)?.node)
+      .filter((node): node is LoroMap => node != null)
+    return this.ok(kind, nodes)
   }
 
   // ---- SessionContext -----------------------------------------------------

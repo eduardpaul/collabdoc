@@ -1,5 +1,8 @@
 import type { FrameLink } from '@core/link'
 import { DocumentRegistry, type RegistryDebugEntry } from '@core/registry'
+import { DocumentSession } from '@core/session'
+import { WRITER_TOOLS } from '@shared/tools'
+import type { ToolResult } from '@shared/types'
 import { PORT_MESSAGE_TYPE } from './port-message'
 
 /**
@@ -15,6 +18,13 @@ export interface DocumentHost {
   attach(docId: string): Promise<MessagePort>
   release(docId: string): Promise<void>
   debug(): Promise<RegistryDebugEntry[]>
+  /** In-page only: a harness peer (an agent session) calling a tool on the hub. */
+  peerCall?(
+    docId: string,
+    actorId: string,
+    tool: string,
+    args?: Record<string, unknown>
+  ): ToolResult
 }
 
 const ATTACH_TIMEOUT_MS = 5000
@@ -81,6 +91,7 @@ function webPortLink(port: MessagePort): FrameLink {
 /** A registry in this page, with the same reload grace as main. */
 export function inPageHost(registry = new DocumentRegistry({ closeDelayMs: 5000 })): DocumentHost {
   const detachers = new Map<string, () => void>()
+  const peers = new Map<string, DocumentSession>()
   return {
     kind: 'in-page',
     async create(options) {
@@ -104,6 +115,27 @@ export function inPageHost(registry = new DocumentRegistry({ closeDelayMs: 5000 
     },
     async debug() {
       return registry.debug()
+    },
+    peerCall(docId, actorId, tool, args = {}) {
+      const entry = registry.get(docId)
+      if (!entry) throw new Error(`No document ${docId}`)
+      const key = `${docId}:${actorId}`
+      let session = peers.get(key)
+      if (!session) {
+        session = new DocumentSession(
+          entry.hub,
+          {
+            actorId,
+            name: actorId[0].toUpperCase() + actorId.slice(1),
+            color: '#2563eb',
+            role: 'agent',
+            handle: actorId
+          },
+          { enforceClaims: false, allowedTools: WRITER_TOOLS }
+        )
+        peers.set(key, session)
+      }
+      return session.call(tool, args)
     }
   }
 }
@@ -115,8 +147,11 @@ export function documentHost(): DocumentHost {
     const api = window.api
     current = api?.documents?.attach ? ipcHost(api) : inPageHost()
     if (current.kind === 'in-page') {
-      // Playwright and manual UI work read the hub through this in browser mode.
+      // Playwright and manual UI work read the hub through this in browser
+      // mode, and edit it as another participant.
       window.__collabDebug = () => current!.debug()
+      window.__collabPeer = (docId, actorId, tool, args) =>
+        current!.peerCall!(docId, actorId, tool, args)
     }
   }
   return current
@@ -129,5 +164,11 @@ export function setDocumentHostForTests(host: DocumentHost | null): void {
 declare global {
   interface Window {
     __collabDebug?: () => Promise<RegistryDebugEntry[]>
+    __collabPeer?: (
+      docId: string,
+      actorId: string,
+      tool: string,
+      args?: Record<string, unknown>
+    ) => ToolResult
   }
 }

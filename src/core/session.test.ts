@@ -568,10 +568,10 @@ describe('DocumentSession · attribution (AC-02.9)', () => {
     // b's undo only touches b's own insert; a's edit stays.
     expect(b.call('undo', {})).toMatchObject({ ok: true, undo: { canUndo: false, canRedo: true } })
     expect(textOf(a, blockId)).toBe('mine')
-    expect(b.call('undo', {})).toMatchObject({ ok: false, error: 'conflict' })
+    expect(b.call('undo', {})).toMatchObject({ ok: true, applied: 'nothing to undo' })
     expectOk(b.call('redo', {}))
     expect(textOf(a, blockId)).toBe('mine and yours')
-    expect(b.call('redo', {})).toMatchObject({ ok: false, error: 'conflict' })
+    expect(b.call('redo', {})).toMatchObject({ ok: true, applied: 'nothing to redo' })
     // a's undo removes a's block; the author entry it registered survives.
     expect(a.call('undo', {})).toMatchObject({ ok: true })
     expect((b.call('get_document', {}) as { blocks: unknown[] }).blocks).toHaveLength(1)

@@ -1,5 +1,5 @@
 import { LoroDoc, LoroMap } from 'loro-crdt'
-import { CHECKPOINTS_KEY } from '../shared/constants'
+import { CHECKPOINT_ORIGIN, CHECKPOINTS_KEY } from '../shared/constants'
 import { commitBoundary, commitTimestamp } from './document'
 import type { Frontier } from './history'
 
@@ -26,7 +26,7 @@ export function addCheckpoint(
   row.set('actorId', input.actorId)
   row.set('at', at)
   row.set('frontiers', JSON.stringify(frontiers))
-  commitBoundary(doc, { origin: `actor:${input.actorId}`, message: `checkpoint: ${name}` })
+  commitBoundary(doc, { origin: CHECKPOINT_ORIGIN, message: `checkpoint: ${name}` })
   return { id, name, frontiers, actorId: input.actorId, at }
 }
 

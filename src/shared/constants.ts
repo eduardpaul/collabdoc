@@ -43,6 +43,17 @@ export const SYSTEM_ORIGIN_PREFIX = 'sys:'
 export const INIT_ORIGIN = 'sys:init'
 export const HUB_ORIGIN = 'sys:hub'
 export const AUTHOR_ORIGIN = 'sys:author'
+/** Checkpoints are bookkeeping: never an undo step (06), still a history entry (05). */
+export const CHECKPOINT_ORIGIN = 'sys:checkpoint'
+
+/** Undo stacks are bounded per participant (06). */
+export const UNDO_MAX_STEPS = 200
+/**
+ * Loro's undo `mergeInterval` caps a step at this long after its first
+ * commit — it is not an idle timer. Human steps are cut by the editor instead
+ * (1 s idle or a block switch, like history), so the ceiling is wide.
+ */
+export const UNDO_STEP_MAX_MS = 60 * 60 * 1000
 
 /** Presence is ephemeral: 15 s without a heartbeat and the peer is gone. */
 export const PRESENCE_TIMEOUT_MS = 15_000

@@ -1,5 +1,4 @@
-import { Extension } from '@tiptap/core'
-import { keymap } from '@tiptap/pm/keymap'
+import { Extension, type CommandProps } from '@tiptap/core'
 import type { Node as PmNode } from '@tiptap/pm/model'
 import {
   Plugin,
@@ -8,6 +7,7 @@ import {
   type EditorState,
   type Transaction
 } from '@tiptap/pm/state'
+import type { EditorView } from '@tiptap/pm/view'
 import { ReplaceAroundStep, ReplaceStep } from '@tiptap/pm/transform'
 import type { LoroDoc, UndoManager } from 'loro-crdt'
 import {
@@ -17,14 +17,14 @@ import {
   LoroSyncPlugin,
   loroSyncPluginKey,
   LoroUndoPlugin,
+  loroUndoPluginKey,
   ROOT_DOC_KEY,
-  redo,
-  undo,
   type LoroDocType
 } from 'loro-prosemirror'
 import { commitTimestamp } from '@core/document'
+import { applyUndo, type UndoKind } from '@core/undo'
 import { ensureTextShape } from '@core/tree'
-import { BLOCK_ID_ATTR, HUMAN_COMMIT_IDLE_MS } from '@shared/constants'
+import { BLOCK_ID_ATTR, HUMAN_COMMIT_IDLE_MS, UNDO_STEP_MAX_MS } from '@shared/constants'
 import type { ActorProfile } from '@shared/types'
 import { attributionDecorations, type AttributionSource } from './attribution'
 import { claimDecorations } from './claims'
@@ -60,21 +60,23 @@ export const LoroCollab = Extension.create<LoroCollabOptions>({
     // Loro's undo re-renders the view from its own change event, inside the
     // call. Tiptap must not also dispatch the transaction it prepared for this
     // command against the state that just changed — hence `preventDispatch`.
+    const { doc, undoManager } = this.options
+    const step =
+      (kind: UndoKind) =>
+      () =>
+      ({ state, tr, dispatch, view }: CommandProps): boolean => {
+        if (!dispatch) return kind === 'undo' ? canUndo(state) : canRedo(state)
+        tr.setMeta('preventDispatch', true)
+        return undoInView(view, doc, undoManager, kind)
+      }
+    return { undo: step('undo'), redo: step('redo') }
+  },
+
+  addKeyboardShortcuts() {
     return {
-      undo:
-        () =>
-        ({ state, tr, dispatch }) => {
-          if (!dispatch) return canUndo(state)
-          tr.setMeta('preventDispatch', true)
-          return undo(state, dispatch)
-        },
-      redo:
-        () =>
-        ({ state, tr, dispatch }) => {
-          if (!dispatch) return canRedo(state)
-          tr.setMeta('preventDispatch', true)
-          return redo(state, dispatch)
-        }
+      'Mod-z': () => this.editor.commands.undo(),
+      'Mod-y': () => this.editor.commands.redo(),
+      'Mod-Shift-z': () => this.editor.commands.redo()
     }
   },
 
@@ -83,7 +85,7 @@ export const LoroCollab = Extension.create<LoroCollabOptions>({
     return [
       LoroSyncPlugin({ doc: doc as LoroDocType }),
       textShapeKeeper(doc),
-      humanCommitCutter(doc, () => `actor:${profile.actorId}`),
+      humanCommitCutter(doc, undoManager, () => `actor:${profile.actorId}`),
       remoteWritebackGuard(),
       remoteSelectionKeeper(),
       droppedBlockWatcher(doc),
@@ -105,8 +107,7 @@ export const LoroCollab = Extension.create<LoroCollabOptions>({
           }
         }
       }),
-      claimDecorations(presence),
-      keymap({ 'Mod-z': undo, 'Mod-y': redo, 'Mod-Shift-z': redo })
+      claimDecorations(presence)
     ]
   }
 })
@@ -168,7 +169,11 @@ function insertsBlocks(tr: Transaction): boolean {
  */
 export const commitMessageKey = new PluginKey<string>('loroCommitMessage')
 
-export function humanCommitCutter(doc: LoroDoc, origin: () => string): Plugin<string | null> {
+export function humanCommitCutter(
+  doc: LoroDoc,
+  undoManager: UndoManager,
+  origin: () => string
+): Plugin<string | null> {
   let idleCut = false
   let idle: ReturnType<typeof setTimeout> | null = null
   return new Plugin<string | null>({
@@ -176,8 +181,14 @@ export function humanCommitCutter(doc: LoroDoc, origin: () => string): Plugin<st
       init: () => null,
       // State: the block the caret was in after the last local edit.
       apply(tr, lastBlock, oldState, newState) {
-        if (!tr.docChanged) return lastBlock
-        if (tr.getMeta(loroSyncPluginKey) || tr.getMeta('appendedTransaction')) return lastBlock
+        const meta = tr.getMeta(loroSyncPluginKey) as { type?: string } | undefined
+        if (meta?.type === 'doc-changed') {
+          // The sync plugin has committed (this transaction carries no steps
+          // of its own); undo steps may group again.
+          undoManager.setMergeInterval(UNDO_STEP_MAX_MS)
+          return lastBlock
+        }
+        if (!tr.docChanged || meta || tr.getMeta('appendedTransaction')) return lastBlock
         const message = tr.getMeta(commitMessageKey) as string | undefined
         // Where this edit started — after any click or arrow key, which never
         // reach here because they don't change the doc.
@@ -186,6 +197,10 @@ export function humanCommitCutter(doc: LoroDoc, origin: () => string): Plugin<st
         if (message || idleCut || switched) {
           doc.setNextCommitOptions({ origin: origin(), timestamp: commitTimestamp(), message })
         }
+        // The undo stack cuts where history cuts: this commit must not merge
+        // into the last step. Loro's own interval is a ceiling, not an idle
+        // timer (see `UNDO_STEP_MAX_MS`).
+        if (message || idleCut || switched) undoManager.setMergeInterval(0)
         idleCut = false
         if (idle) clearTimeout(idle)
         idle = setTimeout(() => {
@@ -202,6 +217,29 @@ export function humanCommitCutter(doc: LoroDoc, origin: () => string): Plugin<st
       }
     }
   })
+}
+
+/**
+ * Undo/redo from the editor: Loro applies the step and the sync plugin
+ * rebuilds the view from the change event. `LoroUndoPlugin` restores the
+ * caret from cursors it stored with the step, a tick later; scrolling it
+ * into view is queued behind that.
+ */
+export function undoInView(
+  view: EditorView,
+  doc: LoroDoc,
+  undoManager: UndoManager,
+  kind: UndoKind
+): boolean {
+  const undoState = loroUndoPluginKey.getState(view.state) as
+    { isUndoing: { current: boolean } } | undefined
+  if (undoState) undoState.isUndoing.current = true
+  const { applied } = applyUndo(doc, undoManager, kind)
+  setTimeout(() => {
+    if (undoState) undoState.isUndoing.current = false
+    if (applied && !view.isDestroyed) view.dispatch(view.state.tr.scrollIntoView())
+  }, 0)
+  return applied
 }
 
 export function textShapeKeeper(doc: LoroDoc): Plugin {

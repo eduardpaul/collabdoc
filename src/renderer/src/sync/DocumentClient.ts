@@ -1,9 +1,10 @@
 import type { JSONContent } from '@tiptap/core'
-import { LoroDoc, UndoManager, type VersionVector } from 'loro-crdt'
+import { LoroDoc, type UndoManager, type VersionVector } from 'loro-crdt'
 import { ensureAuthor, writeAuthor } from '@core/authors'
 import { commitTimestamp, configureDocument, readMeta } from '@core/document'
+import { createUndoManager } from '@core/undo'
 import { PresenceStore } from './presence-store'
-import { AUTHOR_ORIGIN, META_KEY, SYSTEM_ORIGIN_PREFIX } from '@shared/constants'
+import { AUTHOR_ORIGIN, META_KEY, UNDO_STEP_MAX_MS } from '@shared/constants'
 import { decodeDocFrame, encodeDocFrame, FrameError } from '@shared/protocol'
 import type { ActorProfile } from '@shared/types'
 import type { Frontier } from '@core/history'
@@ -56,11 +57,9 @@ export class DocumentClient {
     configureDocument(this.doc)
     this.presence = new PresenceStore(this.doc.peerIdStr)
     this.presence.setUser(profile)
-    this.undoManager = new UndoManager(this.doc, {
-      maxUndoSteps: 200,
-      mergeInterval: 500,
-      excludeOriginPrefixes: [SYSTEM_ORIGIN_PREFIX]
-    })
+    // Undo steps are cut where history entries are — 1 s idle or a block
+    // switch — by the editor (see `humanCommitCutter`), not by Loro's clock.
+    this.undoManager = createUndoManager(this.doc, { mergeInterval: UNDO_STEP_MAX_MS })
 
     this.unsubscribe.push(
       this.doc.subscribeLocalUpdates((bytes) => this.send('update', bytes)),

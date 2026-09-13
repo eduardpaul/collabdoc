@@ -57,7 +57,8 @@ test('Mod+Z undoes the last local change through Loro', async ({ page }) => {
   await openEditor(page)
   await page.getByTestId('editor-body').click()
   await page.keyboard.type('keep ')
-  await page.waitForTimeout(700)
+  // Past the 1 s idle that starts a new undo step (06).
+  await page.waitForTimeout(1_100)
   await page.keyboard.type('drop')
   await expect.poll(async () => (await hubDocs(page))[0]?.text).toBe('keep drop')
   await page.keyboard.press('ControlOrMeta+z')

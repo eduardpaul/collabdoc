@@ -2,7 +2,7 @@ import { Editor } from '@tiptap/core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { listHistory } from '@core/history'
 import { DocumentRegistry } from '@core/registry'
-import { human, addParagraph, textOf } from '@core/test-helpers'
+import { human, addParagraph, textOf, writer } from '@core/test-helpers'
 import { blockPlainText, findBlock, getChildren, getRoot, allBlocks } from '@core/tree'
 import { LoroList, LoroMap, LoroText } from 'loro-crdt'
 import { editorExtensions } from '../editor/extensions'
@@ -421,6 +421,121 @@ describe('DocumentClient over a MessagePort', () => {
     expect(a).toBeDefined()
     expect(b).toBeDefined()
     expect(a?.id).not.toBe(b?.id)
+  })
+})
+
+describe('per-actor undo in the editor (06)', () => {
+  it('undoes bursts in order and redoes them back (AC-06.1)', async () => {
+    const client = await createAndOpen({ title: 'Bursts' })
+    const editor = await bindEditor(client)
+    editor.commands.insertContent('hello')
+    editor.commands.insertContent(' world')
+    await tick(1_100)
+    editor.commands.insertContent(' again')
+    await tick(20)
+    expect(editorText(editor)).toBe('hello world again')
+    expect(editor.commands.undo()).toBe(true)
+    await tick(10)
+    expect(editorText(editor)).toBe('hello world')
+    expect(editor.commands.undo()).toBe(true)
+    await tick(10)
+    expect(editorText(editor)).toBe('')
+    expect(editor.commands.redo()).toBe(true)
+    await tick(10)
+    expect(editorText(editor)).toBe('hello world')
+    expect(editor.commands.redo()).toBe(true)
+    await tick(10)
+    expect(editorText(editor)).toBe('hello world again')
+  })
+
+  it('a block switch starts a new undo step even inside the idle window (AC-06.1)', async () => {
+    const client = await createAndOpen({ title: 'Switch' })
+    const editor = await bindEditor(client)
+    editor.commands.setContent({
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'one' }] },
+        { type: 'paragraph', content: [{ type: 'text', text: 'two' }] }
+      ]
+    })
+    await tick(1_100)
+    editor.commands.setTextSelection(4)
+    editor.commands.insertContent('A')
+    editor.commands.setTextSelection(editor.state.doc.content.size - 1)
+    editor.commands.insertContent('B')
+    await tick(20)
+    expect(editorText(editor)).toBe('oneA\ntwoB')
+    expect(editor.commands.undo()).toBe(true)
+    await tick(10)
+    expect(editorText(editor)).toBe('oneA\ntwo')
+    expect(editor.commands.undo()).toBe(true)
+    await tick(10)
+    expect(editorText(editor)).toBe('one\ntwo')
+  })
+
+  it("undo reverts only this person's block while a peer edits another; history records it (AC-06.2)", async () => {
+    const client = await createAndOpen({ title: 'Two blocks' })
+    const editor = await bindEditor(client)
+    editor.commands.setContent({
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: 'A' }] },
+        { type: 'paragraph', content: [{ type: 'text', text: 'B' }] }
+      ]
+    })
+    await tick(1_100)
+    editor.commands.setTextSelection(2)
+    editor.commands.insertContent(' mine')
+    const hub = registry.get(client.docId)!.hub
+    const agent = writer(hub, 'nova')
+    agent.call('insert_text', { blockId: idOf(hub.doc, 1), text: ' agent' })
+    await tick(20)
+    expect(editorText(editor)).toBe('A mine\nB agent')
+    const before = myHistory(client).length
+    expect(editor.commands.undo()).toBe(true)
+    await tick(20)
+    expect(editorText(editor)).toBe('A\nB agent')
+    expect(hubText(client.docId)).toBe('A\nB agent')
+    const mine = myHistory(client)
+    expect(mine).toHaveLength(before + 1)
+    expect(mine[mine.length - 1]).toMatchObject({
+      message: 'undo',
+      author: { actorId: client.profile.actorId }
+    })
+  })
+
+  it('can().undo / can().redo follow every edit, undo and remote import (AC-06.4)', async () => {
+    const client = await createAndOpen({ title: 'Buttons' })
+    const editor = await bindEditor(client)
+    expect(editor.can().undo()).toBe(false)
+    expect(editor.can().redo()).toBe(false)
+    editor.commands.insertContent('x')
+    await tick(5)
+    expect(editor.can().undo()).toBe(true)
+    editor.commands.undo()
+    await tick(5)
+    expect(editor.can().undo()).toBe(false)
+    expect(editor.can().redo()).toBe(true)
+    const hub = registry.get(client.docId)!.hub
+    human(hub, 'guest').call('insert_text', { blockId: idOf(hub.doc, 0), text: 'theirs' })
+    await tick(5)
+    // A remote edit is never an undo candidate here, and does not drop our redo.
+    expect(editor.can().undo()).toBe(false)
+    expect(editor.can().redo()).toBe(true)
+  })
+
+  it('after undo the caret sits at the end of the reverted range (AC-06.5)', async () => {
+    const client = await createAndOpen({ title: 'Caret' })
+    const editor = await bindEditor(client)
+    editor.commands.insertContent('keep ')
+    await tick(1_100)
+    editor.commands.insertContent('drop')
+    await tick(20)
+    expect(editor.state.selection.from).toBe(10)
+    editor.commands.undo()
+    await tick(20)
+    expect(editorText(editor)).toBe('keep ')
+    expect(editor.state.selection.from).toBe(6)
   })
 })
 
