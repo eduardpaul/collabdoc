@@ -8,6 +8,7 @@ import { applyWslChromiumFlags, isWsl } from './wsl'
 import { DocumentRegistry } from '@core/registry'
 import { broadcastListing, broadcastState, registerDocumentIpc, sendCommand } from './documents/ipc'
 import { DocumentStore } from './persist/store'
+import { readProfile, writeProfile } from './profile'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -159,6 +160,17 @@ if (!gotTheLock) {
         return { ok: false, error: 'Invalid path' }
       }
       return readBytes(filePath)
+    })
+    ipcMain.handle('profile:get', async () => {
+      const profile = await readProfile(app.getPath('userData'))
+      return { ok: true, profile }
+    })
+    ipcMain.handle('profile:save', async (_event, payload: unknown) => {
+      const profile = await writeProfile(
+        app.getPath('userData'),
+        payload as Parameters<typeof writeProfile>[1]
+      )
+      return { ok: true, profile }
     })
     ipcMain.handle('shell:openExternal', async (_event, url: string) => {
       if (typeof url !== 'string') {

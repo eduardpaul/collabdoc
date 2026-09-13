@@ -1,11 +1,18 @@
 import { useEffect, useRef } from 'react'
-import { JoinDialog, NoticeBar, ShareDialog, UnsavedDialog } from './components/Dialogs'
+import {
+  JoinDialog,
+  NoticeBar,
+  ProfileSetupDialog,
+  ShareDialog,
+  UnsavedDialog
+} from './components/Dialogs'
 import { SettingsModal } from './components/SettingsModal'
 import { StartScreen } from './screens/StartScreen'
 import { Workspace } from './screens/Workspace'
 import { AppStateProvider, useAppState } from './state/AppState'
 import { useSessionActions } from './state/useSessionActions'
 import { currentDocId } from './sync/clients'
+import { loadProfile } from './sync/identity'
 
 function AppShell(): React.JSX.Element {
   const { state, dispatch } = useAppState()
@@ -44,6 +51,10 @@ function AppShell(): React.JSX.Element {
         }
         if (state.unsavedIntent) {
           dispatch({ type: 'clear-unsaved' })
+          return
+        }
+        if (state.profileSetupOpen) {
+          return
         }
         return
       }
@@ -85,8 +96,15 @@ function AppShell(): React.JSX.Element {
     state.session,
     state.settingsOpen,
     state.shareOpen,
-    state.unsavedIntent
+    state.unsavedIntent,
+    state.profileSetupOpen
   ])
+
+  useEffect(() => {
+    void loadProfile().then((profile) => {
+      dispatch({ type: 'set-profile', profile })
+    })
+  }, [dispatch])
 
   useEffect(() => {
     const stop = window.api?.app?.onCommand?.((command) => {
@@ -107,6 +125,7 @@ function AppShell(): React.JSX.Element {
       <ShareDialog />
       <JoinDialog />
       <UnsavedDialog />
+      <ProfileSetupDialog />
       <NoticeBar />
     </div>
   )

@@ -2,7 +2,7 @@ import type { JSONContent } from '@tiptap/core'
 import { extForMime, restoreAssets, setAssetDocument } from '../editor/assets'
 import { DocumentClient } from './DocumentClient'
 import { documentHost } from './host'
-import { localProfile } from './identity'
+import { asActorProfile, loadProfileSync } from './identity'
 
 /**
  * The documents this window has open, by id. The reducer keeps only ids and
@@ -26,7 +26,7 @@ export async function openClient(
 ): Promise<DocumentClient> {
   const existing = clients.get(docId)
   if (existing && existing.status !== 'detached') return existing
-  const client = new DocumentClient(docId, localProfile())
+  const client = new DocumentClient(docId, asActorProfile(loadProfileSync()))
   clients.set(docId, client)
   setAssetDocument(docId)
   const port = await documentHost().attach(docId)

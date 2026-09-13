@@ -3,7 +3,9 @@ import { createId } from '../lib/ids'
 import { useAppState } from '../state/AppState'
 import { newAgentDraft } from '../state/defaults'
 import { useSessionActions } from '../state/useSessionActions'
+import { saveProfile } from '../sync/identity'
 import type { Agent, AgentRole, AgentRouting, LlmKind, McpConnection } from '../types'
+import { ProfileFields } from './ProfileFields'
 import { Button, Field, Icon, Modal, Select, StatusDot, TextArea, TextInput } from './ui'
 
 const providerPresets: Record<LlmKind, { label: string; endpoint: string; model: string }> = {
@@ -93,7 +95,7 @@ export function SettingsModal(): React.JSX.Element | null {
       onClose={() => dispatch({ type: 'close-settings' })}
     >
       <div className="tabs" role="tablist">
-        {(['provider', 'mcp', 'agents'] as const).map((tab) => (
+        {(['you', 'provider', 'mcp', 'agents'] as const).map((tab) => (
           <button
             key={tab}
             type="button"
@@ -102,10 +104,32 @@ export function SettingsModal(): React.JSX.Element | null {
             className={`tabs__btn ${state.settingsTab === tab ? 'is-active' : ''}`}
             onClick={() => dispatch({ type: 'set-settings-tab', tab })}
           >
-            {tab === 'provider' ? 'LLM provider' : tab === 'mcp' ? 'Local MCP' : 'Agents'}
+            {tab === 'you'
+              ? 'You'
+              : tab === 'provider'
+                ? 'LLM provider'
+                : tab === 'mcp'
+                  ? 'Local MCP'
+                  : 'Agents'}
           </button>
         ))}
       </div>
+
+      {state.settingsTab === 'you' ? (
+        <div className="stack">
+          <p className="lede">Your name, handle and colour are how others see you in a session.</p>
+          <ProfileFields
+            name={state.profile.name}
+            handle={state.profile.handle}
+            color={state.profile.color}
+            onChange={(patch) => {
+              const next = { ...state.profile, ...patch, setupComplete: true }
+              dispatch({ type: 'set-profile', profile: next })
+              void saveProfile(next)
+            }}
+          />
+        </div>
+      ) : null}
 
       {state.settingsTab === 'provider' ? (
         <div className="stack">

@@ -13,7 +13,7 @@ import {
   openClient,
   resetClientsForTests
 } from './clients'
-import type { DocumentClient } from './DocumentClient'
+import { DocumentClient } from './DocumentClient'
 import { inPageHost, setDocumentHostForTests } from './host'
 
 let registry: DocumentRegistry
@@ -312,6 +312,49 @@ describe('DocumentClient over a MessagePort', () => {
     expect(editor.commands.undo()).toBe(true)
     await tick(5)
     expect(hubText(client.docId)).toBe('first\n theirs')
+  })
+
+  it('shows a remote caret with name and colour within 100 ms (AC-07.2)', async () => {
+    const host = await createAndOpen({ title: 'Cursors' })
+    const editor = await bindEditor(host)
+    const guest = new DocumentClient(host.docId, {
+      actorId: 'guest-ada',
+      name: 'Ada',
+      color: '#2563eb',
+      role: 'human',
+      handle: 'ada'
+    })
+    const channel = new MessageChannel()
+    const detach = registry.attach(host.docId, 'guest-ada', {
+      send: (frame) => channel.port1.postMessage(frame),
+      onMessage: (listener) => {
+        channel.port1.onmessage = (event) => listener(event.data)
+      },
+      onClose: (listener) => channel.port1.addEventListener('close', listener),
+      close: () => channel.port1.close()
+    })
+    channel.port1.start()
+    guest.bind(channel.port2)
+    await guest.whenLive()
+    const { cursorAt, allBlocks: blocks } = await import('@core/tree')
+    const cur = cursorAt(blocks(host.doc)[0].node, 0)
+    expect(cur).toBeTruthy()
+    const started = performance.now()
+    guest.presence.setLocal({
+      user: { name: 'Ada', color: '#2563eb' },
+      anchor: cur!,
+      focus: cur!
+    })
+    await expect
+      .poll(() => editor.view.dom.querySelector('.ProseMirror-loro-cursor')?.textContent ?? '', {
+        timeout: 200
+      })
+      .toContain('Ada')
+    expect(performance.now() - started).toBeLessThan(100)
+    const caret = editor.view.dom.querySelector('.ProseMirror-loro-cursor') as HTMLElement
+    expect(caret.style.borderColor.replace(/\s/g, '')).toMatch(/#2563eb|rgb\(37,99,235\)/)
+    detach()
+    guest.detach()
   })
 })
 

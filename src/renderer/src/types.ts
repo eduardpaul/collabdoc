@@ -90,14 +90,24 @@ export type ActivityEvent = {
 }
 
 export type AppScreen = 'start' | 'workspace'
-export type SettingsTab = 'provider' | 'mcp' | 'agents'
+export type SettingsTab = 'you' | 'provider' | 'mcp' | 'agents'
 export type RightTab = 'agents' | 'activity' | 'markdown'
 export type CloseIntent = 'home' | 'new' | 'open' | 'recent'
+
+export type UserProfile = {
+  userId: string
+  name: string
+  handle: string
+  color: string
+  setupComplete: boolean
+}
 
 export type AppState = {
   screen: AppScreen
   settingsOpen: boolean
   settingsTab: SettingsTab
+  profile: UserProfile
+  profileSetupOpen: boolean
   shareOpen: boolean
   joinOpen: boolean
   unsavedIntent: CloseIntent | null

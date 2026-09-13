@@ -72,20 +72,22 @@ export function newAgentDraft(): Agent {
   }
 }
 
-export const emptyAppState: Omit<AppState, 'provider' | 'mcp' | 'agents' | 'recents'> = {
-  screen: 'start',
-  settingsOpen: false,
-  settingsTab: 'provider',
-  shareOpen: false,
-  joinOpen: false,
-  unsavedIntent: null,
-  pendingRecentId: null,
-  notice: null,
-  rightTab: 'agents',
-  leftCollapsed: false,
-  rightCollapsed: false,
-  recoveries: [],
-  missingRecentId: null,
-  session: null,
-  activity: []
-}
+export const emptyAppState: Omit<AppState, 'provider' | 'mcp' | 'agents' | 'recents' | 'profile'> =
+  {
+    screen: 'start',
+    settingsOpen: false,
+    settingsTab: 'you',
+    profileSetupOpen: false,
+    shareOpen: false,
+    joinOpen: false,
+    unsavedIntent: null,
+    pendingRecentId: null,
+    notice: null,
+    rightTab: 'agents',
+    leftCollapsed: false,
+    rightCollapsed: false,
+    recoveries: [],
+    missingRecentId: null,
+    session: null,
+    activity: []
+  }

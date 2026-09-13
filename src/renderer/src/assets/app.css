@@ -1333,6 +1333,82 @@ kbd {
   gap: 8px;
 }
 
+.handle-tag {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 11px;
+}
+
+.color-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.color-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.color-swatch.is-active {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+
+.ProseMirror-loro-cursor {
+  position: relative;
+  margin-left: -1px;
+  margin-right: -1px;
+  border-left: 2px solid var(--accent);
+  word-break: normal;
+  pointer-events: none;
+}
+
+.ProseMirror-loro-cursor > div {
+  position: absolute;
+  top: -1.4em;
+  left: -2px;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 5px;
+  color: #fff;
+  white-space: nowrap;
+  border-radius: 3px 3px 3px 0;
+  animation: collab-label-fade 2s ease forwards;
+}
+
+@keyframes collab-label-fade {
+  0%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.loro-selection {
+  border-radius: 2px;
+}
+
+.is-claimed {
+  outline: 2px solid var(--claim-color, var(--accent));
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.claim-gutter {
+  display: block;
+  font-size: 10px;
+  color: var(--claim-color, var(--accent));
+  margin-bottom: 2px;
+  pointer-events: none;
+}
+
 .notice {
   position: fixed;
   left: 50%;

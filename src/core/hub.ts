@@ -1,5 +1,5 @@
 import { EphemeralStore, LoroDoc } from 'loro-crdt'
-import { HUB_ORIGIN } from '../shared/constants'
+import { HUB_ORIGIN, PRESENCE_TIMEOUT_MS } from '../shared/constants'
 import { createDocument, openDocument } from './document'
 
 export type HubEvent =
@@ -9,7 +9,7 @@ export type HubEvent =
 type Listener = (event: HubEvent) => void
 
 /** How long a peer's presence survives without a refresh. */
-export const EPHEMERAL_TIMEOUT_MS = 30_000
+export const EPHEMERAL_TIMEOUT_MS = PRESENCE_TIMEOUT_MS
 
 /**
  * The authoritative copy of one document plus the ephemeral (presence) store.

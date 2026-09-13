@@ -648,6 +648,18 @@ describe('DocumentSession · presence and claims', () => {
       offset: 5
     })
   })
+
+  it('does not assume a role when a peer published no user payload (AC-07.5)', () => {
+    const hub = SyncHub.create()
+    const a = human(hub, 'ana')
+    addParagraph(a, 'hello')
+    a.ephemeral.set('999', { anchor: null, focus: null, user: null })
+    const actors = (a.call('get_presence', {}) as { actors: Array<Record<string, unknown>> }).actors
+    const ghost = actors.find((p) => p.peerId === '999')
+    expect(ghost).toMatchObject({ peerId: '999', actorId: '999' })
+    expect(ghost?.role).toBeUndefined()
+    expect(actors.find((p) => p.actorId === 'ana')?.role).toBe('human')
+  })
 })
 
 describe('DocumentSession · figures (AC-02.13)', () => {

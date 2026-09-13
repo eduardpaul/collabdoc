@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { base64ToBytes, bytesToBase64 } from './base64'
-import { isValidHandle, mentionedHandles, normalizeHandle } from './handles'
+import { assignHandles, handleFromName, isValidHandle, mentionedHandles, normalizeHandle } from './handles'
 import { newBlockId, newDocId, newReplyId, newThreadId } from './ids'
 import {
   DOCUMENT_WRITE_TOOLS,
@@ -31,6 +31,14 @@ describe('handles', () => {
     expect(isValidHandle('a')).toBe(false)
     expect(isValidHandle('Ana')).toBe(false)
     expect(isValidHandle('a'.repeat(21))).toBe(false)
+    expect(handleFromName('You')).toBe('you')
+    expect(handleFromName('A')).toBe('auser')
+    const handles = assignHandles([
+      { id: 'a', name: 'Ana', handle: 'ana' },
+      { id: 'b', name: 'Ann', handle: 'ana' }
+    ])
+    expect(handles.get('a')).toBe('ana')
+    expect(handles.get('b')).toBe('ana-2')
   })
 
   it('finds mentions in text once each, ignoring emails and inner @', () => {

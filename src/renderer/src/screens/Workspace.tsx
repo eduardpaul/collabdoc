@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { DocumentEditor } from '../components/DocumentEditor'
 import { Button, Icon, StatusDot, TextArea, TextInput } from '../components/ui'
 import { hostLabel } from '../lib/host'
@@ -6,6 +6,7 @@ import { useAppState } from '../state/AppState'
 import { aiReady } from '../state/selectors'
 import { useSessionActions } from '../state/useSessionActions'
 import { useDocumentClient } from '../sync/useDocumentClient'
+import { usePresence } from '../sync/usePresence'
 import type { Agent } from '../types'
 
 function formatClock(iso: string): string {
@@ -48,25 +49,13 @@ export function Workspace(): React.JSX.Element | null {
     return () => window.removeEventListener('resize', onResize)
   }, [dispatch])
 
-  const participants = useMemo(() => {
-    if (!session) {
-      return []
+  const presence = usePresence(client)
+
+  useEffect(() => {
+    if (presence.handleNotice) {
+      dispatch({ type: 'notice', message: presence.handleNotice })
     }
-    const invited = state.agents.filter((agent) => agent.invited)
-    const waiting = session.share.active
-      ? [{ id: 'peer-wait', name: 'Waiting for peers', kind: 'peer' as const, working: false }]
-      : []
-    return [
-      { id: 'you', name: 'You', kind: 'you' as const, working: false },
-      ...invited.map((agent) => ({
-        id: agent.id,
-        name: agent.name,
-        kind: 'agent' as const,
-        working: agent.status === 'working'
-      })),
-      ...waiting
-    ]
-  }, [session, state.agents])
+  }, [dispatch, presence.handleNotice])
 
   if (!session) {
     return null
@@ -183,21 +172,28 @@ export function Workspace(): React.JSX.Element | null {
         <div className="sidebar__section">
           <h2>In this session</h2>
         </div>
-        <ul className="sidebar__list">
-          {participants.map((person) => (
+        <ul className="sidebar__list" data-testid="session-list">
+          {presence.rows.map((person) => (
             <li key={person.id}>
-              <div className={`nav-row nav-row--static kind-${person.kind}`}>
+              <button
+                type="button"
+                className={`nav-row kind-${person.kind}`}
+                disabled={!person.cursorBlockId}
+                onClick={() => person.cursorBlockId && presence.scrollTo(person.cursorBlockId)}
+              >
                 <StatusDot
-                  tone={person.working ? 'work' : person.kind === 'peer' ? 'off' : 'live'}
+                  tone={person.status === 'working' ? 'work' : person.online ? 'live' : 'off'}
                 />
                 <span>
-                  <strong>{person.name}</strong>
+                  <strong>
+                    {person.name} <span className="handle-tag">@{person.handle}</span>
+                  </strong>
                   <span className="muted">
-                    {person.kind === 'you' ? 'Local' : person.kind === 'agent' ? 'Agent' : 'Peer'}
-                    {person.working ? ' · working' : ''}
+                    {person.kind === 'you' ? 'You' : person.role === 'agent' ? 'Agent' : 'Guest'} ·{' '}
+                    {person.status}
                   </span>
                 </span>
-              </div>
+              </button>
             </li>
           ))}
         </ul>

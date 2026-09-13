@@ -10,7 +10,8 @@ export function writeAuthor(doc: LoroDoc, author: AuthorRecord): void {
     actorId: author.actorId,
     name: author.name,
     color: author.color,
-    role: author.role
+    role: author.role,
+    ...(author.handle ? { handle: author.handle } : {})
   })
 }
 
@@ -56,10 +57,12 @@ function asAuthor(value: unknown, peer: string): AuthorRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const rec = value as Record<string, unknown>
   if (typeof rec.name !== 'string') return null
+  const handle = typeof rec.handle === 'string' ? rec.handle : undefined
   return {
     actorId: typeof rec.actorId === 'string' ? rec.actorId : peer,
     name: rec.name,
     color: typeof rec.color === 'string' ? rec.color : '#8a7d6d',
-    role: rec.role === 'agent' ? 'agent' : 'human'
+    role: rec.role === 'agent' ? 'agent' : 'human',
+    ...(handle ? { handle } : {})
   }
 }

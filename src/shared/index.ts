@@ -1,3 +1,4 @@
+export * from './actors'
 export * from './base64'
 export * from './constants'
 export * from './handles'

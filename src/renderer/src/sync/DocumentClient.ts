@@ -1,10 +1,9 @@
 import type { JSONContent } from '@tiptap/core'
 import { LoroDoc, UndoManager, type VersionVector } from 'loro-crdt'
-import { CursorEphemeralStore } from 'loro-prosemirror'
-import { ensureAuthor } from '@core/authors'
+import { ensureAuthor, writeAuthor } from '@core/authors'
 import { configureDocument, readMeta } from '@core/document'
-import { EPHEMERAL_TIMEOUT_MS } from '@core/hub'
-import { META_KEY, SYSTEM_ORIGIN_PREFIX } from '@shared/constants'
+import { PresenceStore } from './presence-store'
+import { AUTHOR_ORIGIN, META_KEY, SYSTEM_ORIGIN_PREFIX } from '@shared/constants'
 import { decodeDocFrame, encodeDocFrame, FrameError } from '@shared/protocol'
 import type { ActorProfile } from '@shared/types'
 import { docJsonFromLoro, writeJsonToLoro } from './doc-json'
@@ -16,6 +15,7 @@ export type ClientEvent =
   | { type: 'title'; title: string }
   | { type: 'dirty'; dirty: boolean }
   | { type: 'change'; by: 'local' | 'import' | 'checkout' }
+  | { type: 'presence' }
 
 type Listener = (event: ClientEvent) => void
 
@@ -32,9 +32,9 @@ type Listener = (event: ClientEvent) => void
 export class DocumentClient {
   readonly docId: string
   readonly doc: LoroDoc
-  readonly presence: CursorEphemeralStore
+  readonly presence: PresenceStore
   readonly undoManager: UndoManager
-  readonly profile: ActorProfile
+  private profileValue: ActorProfile
   private port: MessagePort | null = null
   private statusValue: ClientStatus = 'connecting'
   private titleValue = ''
@@ -44,12 +44,17 @@ export class DocumentClient {
   private readonly unsubscribe: Array<() => void> = []
   private snapshotWaiters: Array<(ok: boolean) => void> = []
 
+  get profile(): ActorProfile {
+    return this.profileValue
+  }
+
   constructor(docId: string, profile: ActorProfile) {
     this.docId = docId
-    this.profile = profile
+    this.profileValue = profile
     this.doc = new LoroDoc()
     configureDocument(this.doc)
-    this.presence = new CursorEphemeralStore(this.doc.peerIdStr, EPHEMERAL_TIMEOUT_MS)
+    this.presence = new PresenceStore(this.doc.peerIdStr)
+    this.presence.setUser(profile)
     this.undoManager = new UndoManager(this.doc, {
       maxUndoSteps: 200,
       mergeInterval: 500,
@@ -59,6 +64,7 @@ export class DocumentClient {
     this.unsubscribe.push(
       this.doc.subscribeLocalUpdates((bytes) => this.send('update', bytes)),
       this.presence.subscribeLocalUpdates((bytes) => this.send('ephemeral', bytes)),
+      this.presence.subscribeBy(() => this.emit({ type: 'presence' })),
       this.doc.subscribe((event) => {
         const meta = this.doc.getMap(META_KEY)
         const title = meta.get('title')
@@ -132,12 +138,25 @@ export class DocumentClient {
     this.refreshDirty()
   }
 
+  setProfile(profile: ActorProfile): void {
+    this.profileValue = profile
+    this.presence.setUser(profile)
+    writeAuthor(this.doc, {
+      actorId: profile.actorId,
+      name: profile.name,
+      color: profile.color,
+      role: profile.role,
+      handle: profile.handle
+    })
+    this.doc.commit({ origin: AUTHOR_ORIGIN, timestamp: Date.now() })
+  }
+
   detach(): void {
     if (this.statusValue === 'detached') return
     this.setStatus('detached')
     for (const waiter of this.snapshotWaiters.splice(0)) waiter(false)
     for (const stop of this.unsubscribe.splice(0)) stop()
-    this.presence.setLocal({})
+    this.presence.clear()
     this.port?.close()
     this.port = null
   }
@@ -154,7 +173,7 @@ export class DocumentClient {
     }
     try {
       if (frame.kind === 'ephemeral') {
-        this.presence.apply(frame.bytes)
+        this.presence.inner.apply(frame.bytes)
         return
       }
       this.doc.import(frame.bytes)
@@ -169,8 +188,10 @@ export class DocumentClient {
         actorId: this.profile.actorId,
         name: this.profile.name,
         color: this.profile.color,
-        role: this.profile.role
+        role: this.profile.role,
+        handle: this.profile.handle
       })
+      this.presence.startHeartbeat()
       this.markClean()
       this.setStatus('live')
       for (const waiter of this.snapshotWaiters.splice(0)) waiter(true)

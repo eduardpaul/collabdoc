@@ -11,6 +11,7 @@ import { clearAssets } from '../editor/assets'
 import { createId, createShareCode, shareUrlForCode } from '../lib/ids'
 import { loadPersisted, savePersisted } from '../lib/persist'
 import { getClient } from '../sync/clients'
+import { asActorProfile, loadProfileSync } from '../sync/identity'
 import type {
   ActivityEvent,
   Agent,
@@ -23,7 +24,8 @@ import type {
   RecoveryOffer,
   RightTab,
   SettingsTab,
-  ShareState
+  ShareState,
+  UserProfile
 } from '../types'
 import { defaultAgents, defaultMcp, defaultProvider, emptyAppState } from './defaults'
 
@@ -69,6 +71,7 @@ export type Action =
   | { type: 'open-settings'; tab?: SettingsTab }
   | { type: 'close-settings' }
   | { type: 'set-settings-tab'; tab: SettingsTab }
+  | { type: 'set-profile'; profile: UserProfile }
   | { type: 'update-provider'; patch: Partial<LlmProvider> }
   | { type: 'add-mcp'; connection: McpConnection }
   | { type: 'update-mcp'; id: string; patch: Partial<McpConnection> }
@@ -143,8 +146,11 @@ function mergeMcp(defaults: McpConnection[], stored: McpConnection[] | undefined
 function createInitialState(): AppState {
   const persisted = loadPersisted()
   const agents = persisted?.agents?.length ? persisted.agents : defaultAgents
+  const profile = loadProfileSync()
   return {
     ...emptyAppState,
+    profile,
+    profileSetupOpen: !profile.setupComplete,
     provider: { ...defaultProvider, ...persisted?.provider },
     mcp: mergeMcp(defaultMcp, persisted?.mcp),
     agents: agents.map((agent) => ({
@@ -283,6 +289,16 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, settingsOpen: false }
     case 'set-settings-tab':
       return { ...state, settingsTab: action.tab }
+    case 'set-profile': {
+      if (state.session) {
+        getClient(state.session.id)?.setProfile(asActorProfile(action.profile))
+      }
+      return {
+        ...state,
+        profile: action.profile,
+        profileSetupOpen: !action.profile.setupComplete
+      }
+    }
     case 'update-provider': {
       const provider = { ...state.provider, ...action.patch }
       provider.enabled = Boolean(provider.endpoint.trim())

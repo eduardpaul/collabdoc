@@ -86,6 +86,16 @@ const api = {
       }
     }
   },
+  profile: {
+    get: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('profile:get'),
+    save: (profile: {
+      userId: string
+      name: string
+      handle: string
+      color: string
+      setupComplete: boolean
+    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('profile:save', profile)
+  },
   app: {
     onCommand: (listener: (command: string) => void): (() => void) => {
       const wrapped = (_event: unknown, command: unknown): void => {

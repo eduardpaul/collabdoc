@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { hostLabel } from '../lib/host'
 import { useAppState } from '../state/AppState'
 import { useSessionActions } from '../state/useSessionActions'
+import { saveProfile } from '../sync/identity'
 import { Button, Field, Modal, TextInput } from './ui'
+import { ProfileFields } from './ProfileFields'
 
 export function ShareDialog(): React.JSX.Element | null {
   const { state, dispatch } = useAppState()
@@ -107,6 +109,49 @@ export function JoinDialog(): React.JSX.Element | null {
           Join
         </Button>
         <Button onClick={() => dispatch({ type: 'set-join-open', open: false })}>Cancel</Button>
+      </div>
+    </Modal>
+  )
+}
+
+export function ProfileSetupDialog(): React.JSX.Element | null {
+  const { state, dispatch } = useAppState()
+  if (!state.profileSetupOpen) return null
+
+  const finish = (skipped: boolean): void => {
+    const profile = {
+      ...state.profile,
+      name: skipped ? 'You' : state.profile.name.trim() || 'You',
+      handle: skipped ? 'you' : state.profile.handle,
+      setupComplete: true
+    }
+    dispatch({ type: 'set-profile', profile })
+    void saveProfile(profile)
+  }
+
+  return (
+    <Modal
+      title="What should people call you?"
+      subtitle="Shown next to your cursor. Skip to stay “You”."
+      onClose={() => finish(true)}
+    >
+      <div data-testid="profile-setup">
+        <ProfileFields
+          name={state.profile.name === 'You' ? '' : state.profile.name}
+          handle={state.profile.handle}
+          color={state.profile.color}
+          onChange={(patch) =>
+            dispatch({ type: 'set-profile', profile: { ...state.profile, ...patch } })
+          }
+        />
+      </div>
+      <div className="modal__actions">
+        <Button variant="primary" onClick={() => finish(false)} data-testid="profile-continue">
+          Continue
+        </Button>
+        <Button onClick={() => finish(true)} data-testid="profile-skip">
+          Skip
+        </Button>
       </div>
     </Modal>
   )

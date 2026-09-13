@@ -30,6 +30,12 @@ export const INIT_ORIGIN = 'sys:init'
 export const HUB_ORIGIN = 'sys:hub'
 export const AUTHOR_ORIGIN = 'sys:author'
 
+/** Presence is ephemeral: 15 s without a heartbeat and the peer is gone. */
+export const PRESENCE_TIMEOUT_MS = 15_000
+export const PRESENCE_HEARTBEAT_MS = 5_000
+/** Cursor broadcasts are capped so one participant stays under 2 KB/s. */
+export const PRESENCE_MAX_HZ = 20
+
 export const ASSET_SRC_PREFIX = 'asset:'
 export const ASSET_SRC_PATTERN = /^asset:[a-f0-9]{64}$/
 

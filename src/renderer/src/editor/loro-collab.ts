@@ -13,7 +13,6 @@ import type { LoroDoc, UndoManager } from 'loro-crdt'
 import {
   canRedo,
   canUndo,
-  type CursorEphemeralStore,
   LoroEphemeralCursorPlugin,
   LoroSyncPlugin,
   loroSyncPluginKey,
@@ -26,6 +25,8 @@ import {
 import { ensureTextShape } from '@core/tree'
 import { BLOCK_ID_ATTR } from '@shared/constants'
 import type { ActorProfile } from '@shared/types'
+import { claimDecorations } from './claims'
+import type { PresenceStore } from '../sync/presence-store'
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -38,7 +39,7 @@ declare module '@tiptap/core' {
 
 export type LoroCollabOptions = {
   doc: LoroDoc
-  presence: CursorEphemeralStore
+  presence: PresenceStore
   undoManager: UndoManager
   profile: ActorProfile
 }
@@ -82,20 +83,43 @@ export const LoroCollab = Extension.create<LoroCollabOptions>({
       remoteSelectionKeeper(),
       droppedBlockWatcher(doc),
       LoroUndoPlugin({ doc, undoManager }),
-      LoroEphemeralCursorPlugin(presence, {
-        // The store passes `user` through verbatim, so `actorId`/`role` reach
-        // the hub and let sessions name this peer (see EphemeralPayload).
+      LoroEphemeralCursorPlugin(presence.inner, {
         user: {
           name: profile.name,
           color: profile.color,
           actorId: profile.actorId,
           role: profile.role
-        } as { name: string; color: string }
+        } as { name: string; color: string },
+        createCursor: (peer) => createNamedCursor(presence, peer),
+        createSelection: (peer) => {
+          const color = presence.getAll()[peer]?.user?.color ?? '#c45c26'
+          return {
+            class: 'loro-selection',
+            style: `background-color: ${color}33`
+          }
+        }
       }),
+      claimDecorations(presence),
       keymap({ 'Mod-z': undo, 'Mod-y': redo, 'Mod-Shift-z': redo })
     ]
   }
 })
+
+function createNamedCursor(store: PresenceStore, peer: string): HTMLSpanElement {
+  const user = store.getAll()[peer as keyof ReturnType<PresenceStore['getAll']>]?.user
+  const color = user?.color ?? '#c45c26'
+  const name = user?.name ?? peer.slice(0, 6)
+  const cursor = document.createElement('span')
+  cursor.className = 'ProseMirror-loro-cursor'
+  cursor.style.borderColor = color
+  cursor.dataset.peer = peer
+  cursor.dataset.name = name
+  const label = document.createElement('div')
+  label.style.backgroundColor = color
+  label.textContent = name
+  cursor.append('\u2060', label, '\u2060')
+  return cursor
+}
 
 /**
  * Every text block gets its `LoroText` the moment it exists.

@@ -36,8 +36,7 @@ type OpenDocResult =
   | { ok: false; error: string }
 
 type SaveDocResult =
-  | { ok: true; path: string; name: string }
-  | { ok: false; error: string; canceled?: boolean }
+  { ok: true; path: string; name: string } | { ok: false; error: string; canceled?: boolean }
 
 type PersistState = {
   docId: string
@@ -94,7 +93,9 @@ type HostApi = {
       mime: string
       base64: string
     }) => Promise<{ ok: true } | { ok: false; error: string }>
-    getAssets: (docId: string) => Promise<
+    getAssets: (
+      docId: string
+    ) => Promise<
       | { ok: true; assets: { hash: string; mime: string; base64: string }[] }
       | { ok: false; error: string }
     >
@@ -112,6 +113,34 @@ type HostApi = {
     }) => Promise<{ ok: true } | { ok: false; error: string }>
     onState: (listener: (state: PersistState) => void) => () => void
     onListing: (listener: (listing: PersistListing) => void) => () => void
+  }
+  profile: {
+    get: () => Promise<{
+      ok: true
+      profile: {
+        userId: string
+        name: string
+        handle: string
+        color: string
+        setupComplete: boolean
+      }
+    }>
+    save: (profile: {
+      userId: string
+      name: string
+      handle: string
+      color: string
+      setupComplete: boolean
+    }) => Promise<{
+      ok: true
+      profile: {
+        userId: string
+        name: string
+        handle: string
+        color: string
+        setupComplete: boolean
+      }
+    }>
   }
   app: {
     onCommand: (listener: (command: string) => void) => () => void

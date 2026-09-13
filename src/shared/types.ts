@@ -23,6 +23,7 @@ export type AuthorRecord = {
   name: string
   color: string
   role: ParticipantRole
+  handle?: string
 }
 
 export type TextLocator = {
