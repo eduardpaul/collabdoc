@@ -1,6 +1,7 @@
 import { useAppState } from './AppState'
 import { agentCanRun } from './selectors'
 import { parseDocument, previewOf, serializeDocument } from '../lib/document-file'
+import { listThreads, threadsAsFootnotes } from '@core/comments'
 import { extrasFromDoc, hydrateImages, saveDocumentToHost } from '../lib/files'
 import { emptyShare } from '../lib/share-state'
 import { takeLegacyRecents } from '../lib/persist'
@@ -57,7 +58,7 @@ export function useSessionActions(): {
   newDocument: () => void
   openDocument: () => void
   importMarkdown: () => void
-  exportMarkdown: () => void
+  exportMarkdown: (options?: { includeComments?: boolean }) => void
   openRecent: (id: string) => Promise<void>
   recoverDocument: (id: string) => Promise<void>
   locateRecent: (id: string) => Promise<void>
@@ -436,12 +437,16 @@ export function useSessionActions(): {
     await refreshListing()
   }
 
-  const exportMarkdown = async (): Promise<void> => {
+  const exportMarkdown = async (options: { includeComments?: boolean } = {}): Promise<void> => {
     const session = state.session
     const client = session ? getClient(session.id) : undefined
     if (!session || !client || client.status !== 'live') return
     const content = client.toJSON()
-    const markdown = serializeDocument(session.title, content, { singleFile: false })
+    // With comments: the same document plus footnotes; without, exactly 04's export.
+    const footnotes = options.includeComments
+      ? threadsAsFootnotes(listThreads(client.doc, { status: 'all' }))
+      : ''
+    const markdown = serializeDocument(session.title, content, { singleFile: false }) + footnotes
     const suggestedName = `${session.title.trim() || 'Untitled'}.md`
     if (!nativePersist() || !window.api?.documents.exportMarkdown) {
       await saveDocumentToHost({ path: null, title: session.title, content })
@@ -534,8 +539,8 @@ export function useSessionActions(): {
     newDocument: () => request('new'),
     openDocument: () => request('open'),
     importMarkdown,
-    exportMarkdown: () => {
-      void exportMarkdown()
+    exportMarkdown: (options) => {
+      void exportMarkdown(options)
     },
     openRecent: async (id: string) => {
       if (state.session?.id === id) return

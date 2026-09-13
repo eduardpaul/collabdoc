@@ -102,7 +102,7 @@ describe('collabdoc file format', () => {
         blockId: thread.blockId
       }))
     ).toEqual(before.comments)
-    expect(listHistory(again).length).toBe(before.changes)
+    expect(listHistory(again)).toHaveLength(before.changes)
     expect(
       listHistory(again).map((entry) => ({
         id: entry.id,

@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { HistoryEntry } from '@core/history'
+import { CommentsPanel, type CommentDraft } from '../components/CommentsPanel'
 import { DocumentEditor } from '../components/DocumentEditor'
 import { HistoryPanel } from '../components/HistoryPanel'
 import { Button, Icon, StatusDot, TextArea, TextInput } from '../components/ui'
@@ -7,6 +8,7 @@ import { hostLabel } from '../lib/host'
 import { useAppState } from '../state/AppState'
 import { aiReady } from '../state/selectors'
 import { useSessionActions } from '../state/useSessionActions'
+import { useComments } from '../sync/useComments'
 import { useDocumentClient } from '../sync/useDocumentClient'
 import { useHistory } from '../sync/useHistory'
 import { usePresence } from '../sync/usePresence'
@@ -22,6 +24,10 @@ export function Workspace(): React.JSX.Element | null {
   const session = state.session
   const client = useDocumentClient(session?.id ?? '')
   const history = useHistory(client)
+  const comments = useComments(client, state.profile.userId)
+  const [selectedThread, setSelectedThread] = useState<string | null>(null)
+  const [commentDraft, setCommentDraft] = useState<CommentDraft | null>(null)
+  const revealRef = useRef<((threadId: string) => void) | null>(null)
   const [ask, setAsk] = useState('')
   const [blockMarkdown, setBlockMarkdown] = useState('')
   const [selectedHistory, setSelectedHistory] = useState<string | null>(null)
@@ -57,6 +63,16 @@ export function Workspace(): React.JSX.Element | null {
   }, [dispatch])
 
   const presence = usePresence(client)
+  const participants = useMemo(
+    () =>
+      presence.rows.map((row) => ({
+        id: row.id,
+        handle: row.handle,
+        name: row.name,
+        color: row.color
+      })),
+    [presence.rows]
+  )
 
   useEffect(() => {
     if (presence.handleNotice) {
@@ -229,6 +245,17 @@ export function Workspace(): React.JSX.Element | null {
               restoreTo={restoreTo}
               onCloseTravel={() => setTravel(null)}
               onRestored={() => setRestoreTo(null)}
+              comments={comments}
+              selectedThread={selectedThread}
+              onSelectThread={(id) => {
+                setSelectedThread(id)
+                dispatch({ type: 'set-right-tab', tab: 'comments' })
+              }}
+              onDraftComment={(draft) => {
+                setCommentDraft(draft)
+                dispatch({ type: 'set-right-tab', tab: 'comments' })
+              }}
+              revealRef={revealRef}
               onNotice={(message) => dispatch({ type: 'notice', message })}
               onMarkdown={setBlockMarkdown}
               title={
@@ -259,6 +286,19 @@ export function Workspace(): React.JSX.Element | null {
             onClick={() => dispatch({ type: 'set-right-tab', tab: 'agents' })}
           >
             Agents
+          </button>
+          <button
+            type="button"
+            className={`tabs__btn ${state.rightTab === 'comments' ? 'is-active' : ''}`}
+            onClick={() => dispatch({ type: 'set-right-tab', tab: 'comments' })}
+            data-testid="tab-comments"
+          >
+            Comments
+            {comments.unread.size ? (
+              <span className="tabs__badge" aria-label={`${comments.unread.size} unread`}>
+                {comments.unread.size}
+              </span>
+            ) : null}
           </button>
           <button
             type="button"
@@ -383,6 +423,22 @@ export function Workspace(): React.JSX.Element | null {
             >
               <Icon name="plus" /> Manage agents
             </Button>
+          </div>
+        ) : state.rightTab === 'comments' && client ? (
+          <div className="rail__body">
+            <CommentsPanel
+              comments={comments}
+              youId={state.profile.userId}
+              youHandle={state.profile.handle}
+              participants={participants}
+              selectedId={selectedThread}
+              onSelect={setSelectedThread}
+              onReveal={(id) => revealRef.current?.(id)}
+              draft={commentDraft}
+              onCloseDraft={() => setCommentDraft(null)}
+              onNotice={(message) => dispatch({ type: 'notice', message })}
+              readOnly={session.share.readOnly}
+            />
           </div>
         ) : state.rightTab === 'history' && client ? (
           <div className="rail__body">

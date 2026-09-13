@@ -227,6 +227,10 @@ function installAppMenu(): void {
       { type: 'separator' },
       { label: 'Import Markdown…', click: () => send('import-markdown') },
       { label: 'Export Markdown…', click: () => send('export-markdown') },
+      {
+        label: 'Export Markdown with Comments…',
+        click: () => send('export-markdown-comments')
+      },
       { type: 'separator' },
       { label: 'Save', accelerator: 'CmdOrCtrl+S', click: () => send('save') },
       { label: 'Save As…', accelerator: 'CmdOrCtrl+Shift+S', click: () => send('save-as') }

@@ -45,6 +45,10 @@ export const HUB_ORIGIN = 'sys:hub'
 export const AUTHOR_ORIGIN = 'sys:author'
 /** Checkpoints are bookkeeping: never an undo step (06), still a history entry (05). */
 export const CHECKPOINT_ORIGIN = 'sys:checkpoint'
+/** Orphan marks on comment threads (09): bookkeeping, not undoable. */
+export const ORPHAN_ORIGIN = 'sys:orphan'
+/** Per-user, unsynced: which replies the user has seen (09). */
+export const COMMENTS_SEEN_KEY = 'collabdoc.comments.seen'
 
 /** Undo stacks are bounded per participant (06). */
 export const UNDO_MAX_STEPS = 200

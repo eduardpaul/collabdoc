@@ -114,6 +114,7 @@ function AppShell(): React.JSX.Element {
       if (command === 'save-as') void actions.saveDocumentAs()
       if (command === 'import-markdown') actions.importMarkdown()
       if (command === 'export-markdown') actions.exportMarkdown()
+      if (command === 'export-markdown-comments') actions.exportMarkdown({ includeComments: true })
     })
     return () => stop?.()
   }, [actions])

@@ -112,6 +112,28 @@ export class DocumentClient {
     }
   }
 
+  /**
+   * A discrete, attributed, undoable change (a comment action): its own
+   * history entry and its own undo step. The undo interval is left at 0 so
+   * the next keystroke starts a new step too; the editor's commit cutter
+   * restores the ceiling after that commit (see `humanCommitCutter`).
+   */
+  commitStep(message: string, write: () => void): void {
+    this.undoManager.setMergeInterval(0)
+    write()
+    this.doc.commit({
+      origin: `actor:${this.profile.actorId}`,
+      message,
+      timestamp: commitTimestamp()
+    })
+  }
+
+  /** Bookkeeping the app does on its own behalf: synced, never an undo step. */
+  commitSystem(origin: string, write: () => void): void {
+    write()
+    this.doc.commit({ origin, timestamp: commitTimestamp() })
+  }
+
   setTitle(title: string): void {
     if (this.statusValue !== 'live') return
     if (readMeta(this.doc).title === title) return

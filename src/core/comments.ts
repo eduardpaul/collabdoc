@@ -7,8 +7,11 @@ import type {
   CommentReply,
   CommentThread,
   Suggestion,
+  SuggestionStatus,
   ThreadStatus
 } from '../shared/types'
+import { decodeAnchor, encodeAnchor } from './anchors'
+import { blockAgentText, findBlock, firstText, isSyntaxFigure } from './tree'
 
 /**
  * Comment threads live in the `comments` root map, one `LoroMap` per thread,
@@ -25,7 +28,8 @@ export type ThreadFilter = {
   mentioning?: string
 }
 
-export type CommentPermissionError = 'not_found' | 'forbidden'
+export type CommentError = 'not_found' | 'forbidden' | 'conflict' | 'invalid_range'
+export type CommentPermissionError = CommentError
 
 export function commentsMap(doc: LoroDoc): LoroMap {
   return doc.getMap(COMMENTS_KEY)
@@ -60,11 +64,13 @@ export function openThread(
     author: CommentAuthor
     body: string
     createdAt?: number
+    whole?: boolean
   }
 ): CommentThread {
   const id = newThreadId()
   const map = commentsMap(doc).setContainer(id, new LoroMap())
   map.set('blockId', input.blockId)
+  if (input.whole) map.set('whole', true)
   map.set('quote', input.quote)
   map.set('start', input.start)
   map.set('end', input.end)
@@ -76,6 +82,92 @@ export function openThread(
   map.set('status', 'open')
   map.setContainer('replies', new LoroList())
   return readThread(id, map)
+}
+
+/**
+ * Open a thread on a block: on `start..end` of its text, or on the whole
+ * block when no range is given. The span is remembered three ways — Loro
+ * cursors (stable through edits), offsets and the quoted text (display and
+ * fallback). Shared by the `add_comment` tool and the editor.
+ */
+export function openThreadOnRange(
+  doc: LoroDoc,
+  input: {
+    blockId: string
+    start?: number
+    end?: number
+    author: CommentAuthor
+    body: string
+    createdAt?: number
+  }
+): CommentThread | CommentError {
+  const found = findBlock(doc, input.blockId)
+  if (!found) return 'not_found'
+  const content = blockAgentText(found.node)
+  const whole = input.start == null && input.end == null
+  const start = whole ? 0 : Math.max(0, input.start ?? 0)
+  const end = whole ? content.length : Math.min(content.length, input.end ?? content.length)
+  if (end < start || (end === start && content.length > 0 && !whole)) return 'invalid_range'
+  const text = isSyntaxFigure(found.node) ? null : firstText(found.node)
+  const anchorStart = whole ? undefined : text?.getCursor(start, 0)
+  const anchorEnd = whole ? undefined : text?.getCursor(end, 0)
+  return openThread(doc, {
+    blockId: input.blockId,
+    quote: content.slice(start, end),
+    start,
+    end,
+    anchorStart: anchorStart ? encodeAnchor(anchorStart) : '',
+    anchorEnd: anchorEnd ? encodeAnchor(anchorEnd) : '',
+    author: input.author,
+    body: input.body,
+    createdAt: input.createdAt,
+    whole
+  })
+}
+
+/**
+ * Where a thread's span is now. Cursors follow the characters through edits
+ * before and inside the span. When both cursors land on the same offset the
+ * characters are gone — an undo brings back *new* characters the cursors do
+ * not know — so the quote is searched for, as it is for threads written
+ * without cursors (figures). Whole-block threads span the block's text.
+ */
+export function currentSpan(
+  doc: LoroDoc,
+  thread: CommentThread
+): { start: number; end: number } | null {
+  const found = findBlock(doc, thread.blockId)
+  if (!found) return null
+  const content = blockAgentText(found.node)
+  if (thread.whole) return { start: 0, end: content.length }
+  if (thread.anchorStart && thread.anchorEnd) {
+    try {
+      const start = doc.getCursorPos(decodeAnchor(thread.anchorStart))
+      const end = doc.getCursorPos(decodeAnchor(thread.anchorEnd))
+      if (start && end && end.offset > start.offset) {
+        return { start: start.offset, end: end.offset }
+      }
+    } catch {
+      /* the text container itself is gone: fall through to the quote */
+    }
+  }
+  return locateQuote(content, thread.quote, thread.start)
+}
+
+/**
+ * Mark threads whose block or span no longer exists, and clear the mark when
+ * an undo brings the text back. Returns the ids that changed; the caller
+ * commits. Never drops a thread: an orphan stays listed.
+ */
+export function refreshOrphans(doc: LoroDoc): string[] {
+  const changed: string[] = []
+  for (const thread of listThreads(doc, { status: 'all' })) {
+    const orphaned = currentSpan(doc, thread) === null
+    if (orphaned === (thread.orphaned ?? false)) continue
+    markOrphaned(doc, thread.id, orphaned)
+    changed.push(thread.id)
+  }
+  return changed
 }
 
 export function replyToThread(
@@ -101,6 +193,7 @@ export function resolveThread(
 ): CommentThread | CommentPermissionError {
   const map = getThreadMap(doc, threadId)
   if (!map) return 'not_found'
+  if (map.get('status') === 'resolved') return 'conflict'
   map.set('status', 'resolved')
   map.set('resolvedBy', by.id)
   map.set('resolvedAt', at)
@@ -118,6 +211,7 @@ export function reopenThread(
 ): CommentThread | CommentPermissionError {
   const map = getThreadMap(doc, threadId)
   if (!map) return 'not_found'
+  if (map.get('status') !== 'resolved') return 'conflict'
   map.set('status', 'open')
   map.delete('resolvedBy')
   map.delete('resolvedAt')
@@ -180,6 +274,36 @@ export function editReply(
   return 'not_found'
 }
 
+/**
+ * The suggestion machine: `pending → applying → applied | declined`, and a
+ * pending suggestion may be declined outright. Anything else is a conflict,
+ * as is attaching a suggestion to a resolved thread.
+ */
+const SUGGESTION_MOVES: Record<string, readonly SuggestionStatus[]> = {
+  none: ['pending'],
+  pending: ['applying', 'declined'],
+  applying: ['applied', 'declined'],
+  applied: [],
+  declined: []
+}
+
+export function transitionSuggestion(
+  doc: LoroDoc,
+  threadId: string,
+  next: SuggestionStatus,
+  meta: { by?: string; error?: string } = {}
+): CommentThread | CommentError {
+  const map = getThreadMap(doc, threadId)
+  if (!map) return 'not_found'
+  const current = suggestionFrom(map.get('suggestion'))
+  const from = current?.status ?? 'none'
+  if (!SUGGESTION_MOVES[from].includes(next)) return 'conflict'
+  if (from === 'none' && map.get('status') === 'resolved') return 'conflict'
+  map.set('suggestion', stripUndefined({ status: next, by: meta.by, error: meta.error }))
+  return readThread(threadId, map)
+}
+
+/** Raw write, no transition check — tests and repairs; flows use `transitionSuggestion`. */
 export function setSuggestion(
   doc: LoroDoc,
   threadId: string,
@@ -280,6 +404,7 @@ export function threadFromMap(id: string, map: LoroMap): CommentThread | null {
   if (typeof resolvedAt === 'number') thread.resolvedAt = resolvedAt
   if (map.get('orphaned') === true) thread.orphaned = true
   if (map.get('deleted') === true) thread.deleted = true
+  if (map.get('whole') === true) thread.whole = true
   const suggestion = suggestionFrom(map.get('suggestion'))
   if (suggestion) thread.suggestion = suggestion
   return thread
@@ -338,4 +463,29 @@ function stringOr(value: unknown, fallback: string): string {
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' ? value : fallback
+}
+
+/**
+ * Threads as Markdown footnotes for export: one footnote per thread with its
+ * status, quote, author and replies. Deleted bodies are shown as such.
+ */
+export function threadsAsFootnotes(threads: CommentThread[]): string {
+  if (threads.length === 0) return ''
+  const lines: string[] = ['', '---', '', '## Comments', '']
+  threads.forEach((thread, i) => {
+    const n = i + 1
+    const state = thread.orphaned ? 'orphaned' : thread.status
+    const where = thread.whole || !thread.quote ? 'on block' : `on “${collapse(thread.quote)}”`
+    const body = thread.deleted ? '_(deleted)_' : collapse(thread.body)
+    lines.push(`[^c${n}]: **${thread.author.name}** (${state}, ${where}): ${body}`)
+    for (const reply of thread.replies) {
+      const text = reply.deleted ? '_(deleted)_' : collapse(reply.body)
+      lines.push(`    - **${reply.author.name}**: ${text}`)
+    }
+  })
+  return lines.join('\n') + '\n'
+}
+
+function collapse(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
 }

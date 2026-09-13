@@ -1,10 +1,12 @@
 import { Editor } from '@tiptap/core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { getThread } from '@core/comments'
 import { listHistory } from '@core/history'
 import { DocumentRegistry } from '@core/registry'
 import { human, addParagraph, textOf, writer } from '@core/test-helpers'
 import { blockPlainText, findBlock, getChildren, getRoot, allBlocks } from '@core/tree'
 import { LoroList, LoroMap, LoroText } from 'loro-crdt'
+import type { CommentThread } from '@shared/types'
 import { editorExtensions } from '../editor/extensions'
 import { LoroCollab, commitMessageKey } from '../editor/loro-collab'
 import {
@@ -14,7 +16,9 @@ import {
   openClient,
   resetClientsForTests
 } from './clients'
+import { CommentsApi } from './comments-api'
 import { DocumentClient } from './DocumentClient'
+import { unreadThreads } from './useComments'
 import { inPageHost, setDocumentHostForTests } from './host'
 
 let registry: DocumentRegistry
@@ -536,6 +540,104 @@ describe('per-actor undo in the editor (06)', () => {
     await tick(20)
     expect(editorText(editor)).toBe('keep ')
     expect(editor.state.selection.from).toBe(6)
+  })
+})
+
+describe('comments from the renderer (09)', () => {
+  it('a comment on the selection is one attributed, undoable commit that peers see (AC-09.1, AC-09.2)', async () => {
+    const client = await createAndOpen({ title: 'Comments' })
+    const editor = await bindEditor(client)
+    editor.commands.insertContent('Some words here')
+    await tick(1_100)
+    const api = new CommentsApi(client)
+    const hub = registry.get(client.docId)!.hub
+    const blockId = idOf(hub.doc, 0)
+    const added = api.add({ blockId, start: 5, end: 10, body: 'why words? @nova' })
+    expect(added.ok).toBe(true)
+    if (!added.ok) return
+    expect(added.thread).toMatchObject({
+      quote: 'words',
+      author: { id: client.profile.actorId, role: 'human' },
+      status: 'open'
+    })
+    await tick(5)
+    // The agent on the hub sees it and replies through its tool.
+    const nova = writer(hub, 'nova')
+    const listed = nova.call('list_comments', { mentioning: 'me' }) as { threads: CommentThread[] }
+    expect(listed.threads.map((t) => t.id)).toEqual([added.thread.id])
+    expect(
+      nova.call('reply_comment', { threadId: added.thread.id, body: 'because' })
+    ).toMatchObject({
+      ok: true
+    })
+    await tick(5)
+    expect(getThread(client.doc, added.thread.id)?.replies.map((r) => r.body)).toEqual(['because'])
+    // History: the comment is its own entry with a message, by this user.
+    const mine = myHistory(client)
+    expect(mine.some((e) => e.message.startsWith('comment: why words?'))).toBe(true)
+    // Undo reverts the comment alone, not the typing before it.
+    expect(editor.commands.undo()).toBe(true)
+    await tick(10)
+    expect(editorText(editor)).toBe('Some words here')
+    expect(getThread(client.doc, added.thread.id)).toBeNull()
+  })
+
+  it('resolve, reopen, edit and delete keep the permissions of the core model (AC-09.3, AC-09.4)', async () => {
+    const client = await createAndOpen({ title: 'Perms' })
+    await bindEditor(client)
+    const hub = registry.get(client.docId)!.hub
+    const nova = writer(hub, 'nova')
+    const blockId = idOf(hub.doc, 0)
+    const theirs = nova.call('add_comment', { blockId, body: 'agent note' }) as {
+      thread: CommentThread
+    }
+    await tick(5)
+    const api = new CommentsApi(client)
+    expect(api.edit(theirs.thread.id, 'rewritten')).toMatchObject({ ok: false })
+    expect(api.remove(theirs.thread.id)).toMatchObject({ ok: false })
+    expect(api.reopen(theirs.thread.id)).toMatchObject({ ok: false })
+    expect(api.resolve(theirs.thread.id)).toMatchObject({
+      ok: true,
+      thread: { status: 'resolved' }
+    })
+    expect(api.resolve(theirs.thread.id)).toMatchObject({ ok: false })
+    expect(api.reopen(theirs.thread.id)).toMatchObject({ ok: true, thread: { status: 'open' } })
+    const mine = api.add({ blockId, body: 'mine' })
+    if (!mine.ok) throw new Error(mine.error)
+    expect(api.edit(mine.thread.id, 'edited')).toMatchObject({
+      ok: true,
+      thread: { body: 'edited' }
+    })
+    expect(api.remove(mine.thread.id)).toMatchObject({
+      ok: true,
+      thread: { deleted: true, body: '' }
+    })
+    await tick(5)
+    expect(getThread(hub.doc, mine.thread.id)).toMatchObject({ deleted: true, replies: [] })
+  })
+
+  it('unread marks threads with new replies by others until opened (AC-09.9)', () => {
+    const ana = { id: 'ana', name: 'Ana', role: 'human' as const, color: '#000' }
+    const rex = { id: 'rex', name: 'Rex', role: 'agent' as const, color: '#111' }
+    const base = {
+      blockId: 'b',
+      quote: '',
+      start: 0,
+      end: 0,
+      anchorStart: '',
+      anchorEnd: '',
+      body: 'q',
+      createdAt: 1,
+      status: 'open' as const
+    }
+    const threads: CommentThread[] = [
+      { ...base, id: 't1', author: ana, replies: [{ id: 'r1', author: rex, body: 'a', at: 2 }] },
+      { ...base, id: 't2', author: ana, replies: [{ id: 'r2', author: ana, body: 'b', at: 2 }] },
+      { ...base, id: 't3', author: rex, replies: [] }
+    ]
+    expect([...unreadThreads(threads, {}, 'ana')]).toEqual(['t1'])
+    expect([...unreadThreads(threads, { t1: 1 }, 'ana')]).toEqual([])
+    expect([...unreadThreads(threads, { t1: 1 }, 'rex')]).toEqual(['t2'])
   })
 })
 

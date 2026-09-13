@@ -190,6 +190,8 @@ export type CommentThread = {
   resolvedAt?: number
   orphaned?: boolean
   deleted?: boolean
+  /** Opened on the whole block, not a span. */
+  whole?: boolean
   replies: CommentReply[]
   suggestion?: Suggestion
 }

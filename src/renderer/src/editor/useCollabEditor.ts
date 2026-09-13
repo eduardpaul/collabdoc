@@ -3,6 +3,7 @@ import type { Editor } from '@tiptap/core'
 import { useEditor } from '@tiptap/react'
 import type { AttributionSource } from './attribution'
 import { editorExtensions } from './extensions'
+import { CommentMarks } from './comment-marks'
 import { LoroCollab } from './loro-collab'
 import { hrefFromClickTarget, isSafeHttpUrl, openExternalUrl } from './open-link'
 import type { DocumentClient } from '../sync/DocumentClient'
@@ -14,7 +15,9 @@ import type { DocumentClient } from '../sync/DocumentClient'
 export function useCollabEditor(
   client: DocumentClient,
   editable = true,
-  attribution?: () => AttributionSource
+  attribution?: () => AttributionSource,
+  onSelectThread?: (threadId: string) => void,
+  onComment?: () => void
 ): Editor {
   const editor = useEditor(
     {
@@ -27,6 +30,10 @@ export function useCollabEditor(
           undoManager: client.undoManager,
           profile: client.profile,
           attribution
+        }),
+        CommentMarks.configure({
+          onSelect: (id) => onSelectThread?.(id),
+          onComment: () => onComment?.()
         })
       ],
       immediatelyRender: true,

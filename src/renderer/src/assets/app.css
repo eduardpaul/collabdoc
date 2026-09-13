@@ -1723,3 +1723,207 @@ kbd {
     overflow: auto;
   }
 }
+
+/* ---- Comments (09) ------------------------------------------------------ */
+
+.tabs__badge {
+  display: inline-block;
+  min-width: 16px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.comments-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.comment-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  outline: none;
+}
+
+.comment-list:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+  border-radius: 8px;
+}
+
+.comment-card,
+.comment-composer {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--thread-color, var(--line));
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.comment-card.is-selected {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--thread-color, var(--accent));
+}
+
+.comment-card.is-resolved,
+.comment-card.is-orphaned {
+  opacity: 0.75;
+}
+
+.comment-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.comment-card__head .history-dot {
+  margin-top: 0;
+}
+
+.comment-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.comment-state {
+  margin-left: auto;
+}
+
+.comment-unread {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.comment-quote {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-left: 2px solid var(--thread-color, var(--line));
+  padding-left: 8px;
+}
+
+.comment-body {
+  margin: 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.comment-own {
+  display: flex;
+  gap: 10px;
+}
+
+.linkish {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.comment-count {
+  margin: 0;
+  font-size: 11px;
+}
+
+.comment-replies {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-left: 1px solid var(--line);
+}
+
+.comment-reply {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.comment-reply-box,
+.comment-composer form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.comment-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.mention-chip {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--thread-color, var(--accent)) 22%, transparent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* In the page: spans coloured by the thread author; whole-block threads mark the edge. */
+.comment-span {
+  background: color-mix(in srgb, var(--thread-color, var(--accent)) 24%, transparent);
+  border-bottom: 2px solid var(--thread-color, var(--accent));
+  cursor: pointer;
+}
+
+.comment-span.is-selected {
+  background: color-mix(in srgb, var(--thread-color, var(--accent)) 40%, transparent);
+}
+
+.comment-block {
+  box-shadow: inset 3px 0 0 var(--thread-color, var(--accent));
+  padding-left: 8px;
+  margin-left: -11px;
+  border-radius: 2px;
+}
+
+.comment-block.is-selected {
+  background: color-mix(in srgb, var(--thread-color, var(--accent)) 10%, transparent);
+}
+
+.comment-span.is-flash,
+.comment-block.is-flash {
+  animation: comment-flash 1.2s ease-out 1;
+}
+
+@keyframes comment-flash {
+  0% {
+    background: color-mix(in srgb, var(--thread-color, var(--accent)) 70%, transparent);
+  }
+  100% {
+    background: color-mix(in srgb, var(--thread-color, var(--accent)) 24%, transparent);
+  }
+}

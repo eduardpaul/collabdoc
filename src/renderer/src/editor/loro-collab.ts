@@ -372,10 +372,10 @@ export function remoteSelectionKeeper(): Plugin {
   })
 }
 
-type BlockAnchor = { blockId: string; offset: number }
+export type BlockAnchor = { blockId: string; offset: number }
 
 /** Where the caret sits, in terms that outlive a rebuild. */
-function blockAnchor(state: EditorState, pos: number): BlockAnchor | null {
+export function blockAnchor(state: EditorState, pos: number): BlockAnchor | null {
   if (pos > state.doc.content.size) return null
   const $pos = state.doc.resolve(pos)
   for (let depth = $pos.depth; depth > 0; depth -= 1) {

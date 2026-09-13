@@ -1,7 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { CommentAuthor, CommentThread, ReplyResult, ThreadResult } from '../shared/types'
+import { REVIEWER_TOOLS } from '../shared/tools'
 import {
+  currentSpan,
   deleteThreadBody,
   editReply,
   editThreadBody,
@@ -11,14 +13,17 @@ import {
   locateQuote,
   markOrphaned,
   openThread,
+  refreshOrphans,
   reopenThread,
   replyToThread,
   resolveThread,
   setSuggestion,
-  threadMentions
+  threadMentions,
+  threadsAsFootnotes,
+  transitionSuggestion
 } from './comments'
 import { SyncHub } from './hub'
-import { addParagraph, expectOk, human, reviewer, writer } from './test-helpers'
+import { addParagraph, expectOk, human, reviewer, textOf, writer } from './test-helpers'
 
 const ANA: CommentAuthor = { id: 'ana', name: 'Ana', role: 'human', color: '#c45c26' }
 const REX: CommentAuthor = { id: 'rex', name: 'Rex', role: 'agent', color: '#1f8a70' }
@@ -286,5 +291,174 @@ describe('comment model', () => {
     expect(locateQuote('a cat and a cat', 'cat', 3)).toEqual({ start: 2, end: 5 })
     expect(locateQuote('a cat', 'dog')).toBeNull()
     expect(locateQuote('a cat', '')).toBeNull()
+  })
+})
+
+describe('comment spans and state (09)', () => {
+  it('a span follows its words through edits before and inside it; deleting it orphans the thread (AC-09.6)', () => {
+    const hub = SyncHub.create()
+    const ana = human(hub)
+    const p = addParagraph(ana, 'The quick brown fox jumps')
+    const opened = thread(
+      ana.call('add_comment', { blockId: p, body: 'nice', locator: { find: 'brown fox' } })
+    )
+    expect(opened.whole).toBeUndefined()
+    expect(currentSpan(hub.doc, opened)).toEqual({ start: 10, end: 19 })
+    // Editing before the span: same words, new offsets.
+    expectOk(ana.call('insert_text', { blockId: p, text: 'Look! ', at: { start: 0 } }))
+    const after = getThread(hub.doc, opened.id)!
+    const moved = currentSpan(hub.doc, after)!
+    expect(textOf(ana, p).slice(moved.start, moved.end)).toBe('brown fox')
+    // Editing inside: the surviving characters stay covered.
+    expectOk(ana.call('replace_text', { blockId: p, locator: { find: 'brown ' }, text: '' }))
+    const inside = currentSpan(hub.doc, getThread(hub.doc, opened.id)!)!
+    expect(textOf(ana, p).slice(inside.start, inside.end)).toBe('fox')
+    expect(refreshOrphans(hub.doc)).toEqual([])
+    // Deleting the whole span orphans the thread but keeps it listed.
+    expectOk(ana.call('replace_text', { blockId: p, locator: { find: 'fox' }, text: '' }))
+    expect(currentSpan(hub.doc, getThread(hub.doc, opened.id)!)).toBeNull()
+    expect(refreshOrphans(hub.doc)).toEqual([opened.id])
+    expect(listThreads(hub.doc, { status: 'all' }).map((t) => [t.id, t.orphaned])).toEqual([
+      [opened.id, true]
+    ])
+    // The quoted words coming back (two undos) clears the mark: the cursors
+    // point at the deleted characters, so this is the quote being found again.
+    expectOk(ana.call('undo', {}))
+    expectOk(ana.call('undo', {}))
+    expect(textOf(ana, p)).toBe('Look! The quick brown fox jumps')
+    expect(refreshOrphans(hub.doc)).toEqual([opened.id])
+    expect(getThread(hub.doc, opened.id)?.orphaned).toBeUndefined()
+  })
+
+  it('a whole-block thread spans the block text and is orphaned only with the block (AC-09.10)', () => {
+    const hub = SyncHub.create()
+    const ana = human(hub)
+    const p = addParagraph(ana, 'whole')
+    const opened = thread(ana.call('add_comment', { blockId: p, body: 'block note' }))
+    expect(opened.whole).toBe(true)
+    expectOk(
+      ana.call('replace_text', { blockId: p, locator: { find: 'whole' }, text: 'other words' })
+    )
+    expect(currentSpan(hub.doc, getThread(hub.doc, opened.id)!)).toEqual({ start: 0, end: 11 })
+    expect(refreshOrphans(hub.doc)).toEqual([])
+    expectOk(ana.call('delete_blocks', { blockIds: [p] }))
+    expect(refreshOrphans(hub.doc)).toEqual([opened.id])
+    expect(getThread(hub.doc, opened.id)?.orphaned).toBe(true)
+  })
+
+  it('rejects illegal thread and suggestion transitions (AC-09.3)', () => {
+    const hub = SyncHub.create()
+    const ana = human(hub)
+    const p = addParagraph(ana, 'text')
+    const id = thread(ana.call('add_comment', { blockId: p, body: 'q' })).id
+    expect(reopenThread(hub.doc, id)).toBe('conflict')
+    expect(transitionSuggestion(hub.doc, id, 'applying')).toBe('conflict')
+    expect(transitionSuggestion(hub.doc, id, 'applied')).toBe('conflict')
+    expect((transitionSuggestion(hub.doc, id, 'pending') as CommentThread).suggestion).toEqual({
+      status: 'pending'
+    })
+    expect(transitionSuggestion(hub.doc, id, 'pending')).toBe('conflict')
+    expect(transitionSuggestion(hub.doc, id, 'applied')).toBe('conflict')
+    expect(
+      (transitionSuggestion(hub.doc, id, 'applying', { by: 'rex' }) as CommentThread).suggestion
+    ).toEqual({ status: 'applying', by: 'rex' })
+    expect(transitionSuggestion(hub.doc, id, 'pending')).toBe('conflict')
+    expect(transitionSuggestion(hub.doc, id, 'declined', { error: 'no' })).toMatchObject({
+      suggestion: { status: 'declined', error: 'no' }
+    })
+    expect(transitionSuggestion(hub.doc, id, 'applied')).toBe('conflict')
+    expect(transitionSuggestion(hub.doc, id, 'applying')).toBe('conflict')
+    // pending → applying → applied, then nothing moves.
+    expect((setSuggestion(hub.doc, id, null) as CommentThread).suggestion).toBeUndefined()
+    transitionSuggestion(hub.doc, id, 'pending')
+    transitionSuggestion(hub.doc, id, 'applying')
+    expect(transitionSuggestion(hub.doc, id, 'applied')).toMatchObject({
+      suggestion: { status: 'applied' }
+    })
+    expect(transitionSuggestion(hub.doc, id, 'declined')).toBe('conflict')
+    // Resolved threads take no new suggestion; resolving twice conflicts.
+    expectOk(ana.call('resolve_comment', { threadId: id }))
+    expect(resolveThread(hub.doc, id, ANA)).toBe('conflict')
+    expect(ana.call('resolve_comment', { threadId: id })).toMatchObject({
+      ok: false,
+      error: 'conflict'
+    })
+    setSuggestion(hub.doc, id, null)
+    expect(transitionSuggestion(hub.doc, id, 'pending')).toBe('conflict')
+    expect(reopenThread(hub.doc, id)).toMatchObject({ status: 'open' })
+    expect(transitionSuggestion(hub.doc, 'c_missing', 'pending')).toBe('not_found')
+  })
+
+  it('a reply and a resolve from two sessions at once both land (AC-09.5)', () => {
+    const hub = SyncHub.create()
+    const ana = human(hub)
+    const rex = writer(hub, 'rex')
+    const p = addParagraph(ana, 'text')
+    const id = thread(ana.call('add_comment', { blockId: p, body: 'question' })).id
+    // Neither session sees the other's change until the hub relays it: fork
+    // both, act, then let the hub merge.
+    const anaDoc = ana.doc
+    const rexDoc = rex.doc
+    replyToThread(anaDoc, id, ANA, 'answer', 20)
+    resolveThread(rexDoc, id, REX, 21)
+    anaDoc.commit({ origin: 'actor:ana' })
+    rexDoc.commit({ origin: 'actor:rex' })
+    const merged = getThread(hub.doc, id)!
+    expect(merged.status).toBe('resolved')
+    expect(merged.resolvedBy).toBe('rex')
+    expect(merged.replies.map((r) => r.body)).toEqual(['answer'])
+    expect(getThread(anaDoc, id)).toEqual(merged)
+    expect(getThread(rexDoc, id)).toEqual(merged)
+  })
+
+  it('exports threads as Markdown footnotes (AC-09.11)', () => {
+    const hub = SyncHub.create()
+    const ana = human(hub)
+    const rex = writer(hub, 'rex')
+    const p = addParagraph(ana, 'Some words here')
+    const a = thread(
+      ana.call('add_comment', { blockId: p, body: 'first\nline', locator: { find: 'words' } })
+    )
+    expectOk(rex.call('reply_comment', { threadId: a.id, body: 'ok' }))
+    const b = thread(rex.call('add_comment', { blockId: p, body: 'whole' }))
+    expectOk(rex.call('resolve_comment', { threadId: b.id }))
+    deleteThreadBody(hub.doc, b.id, 'rex')
+    expect(threadsAsFootnotes([])).toBe('')
+    expect(threadsAsFootnotes(listThreads(hub.doc, { status: 'all' }))).toBe(
+      [
+        '',
+        '---',
+        '',
+        '## Comments',
+        '',
+        `[^c1]: **Ana** (open, on “words”): first line`,
+        `    - **Rex**: ok`,
+        `[^c2]: **Rex** (resolved, on block): _(deleted)_`,
+        ''
+      ].join('\n')
+    )
+  })
+
+  it('reviewer sessions have the comment and read tools and nothing else (AC-09.12)', () => {
+    expect([...REVIEWER_TOOLS].sort()).toEqual(
+      [
+        'get_document',
+        'get_blocks',
+        'search',
+        'get_presence',
+        'add_comment',
+        'reply_comment',
+        'resolve_comment',
+        'list_comments'
+      ].sort()
+    )
+    const hub = SyncHub.create()
+    const p = addParagraph(human(hub), 'text')
+    const rev = reviewer(hub, 'rev')
+    expect(rev.call('insert_text', { blockId: p, text: 'x' })).toMatchObject({
+      ok: false,
+      error: 'forbidden'
+    })
+    expectOk(rev.call('add_comment', { blockId: p, body: 'fine' }))
   })
 })

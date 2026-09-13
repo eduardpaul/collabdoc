@@ -91,7 +91,14 @@ export function SelectionBar({
       >
         Link
       </Button>
-      <Button size="sm" variant="ghost" aria-label="Comment" disabled onClick={onComment}>
+      <Button
+        size="sm"
+        variant="ghost"
+        aria-label="Comment"
+        title="Comment (Mod+Alt+M)"
+        disabled={!onComment}
+        onClick={onComment}
+      >
         Comment
       </Button>
       <Button size="sm" variant="ghost" aria-label="Ask agent" disabled onClick={onAskAgent}>

@@ -1,17 +1,28 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MutableRefObject,
+  type ReactNode
+} from 'react'
 import { EditorContent, useEditorState } from '@tiptap/react'
 import { NodeSelection } from '@tiptap/pm/state'
+import { currentSpan } from '@core/comments'
 import type { HistoryBlock, HistoryEntry } from '@core/history'
 import { previewAt } from '@core/history'
 import { attributionKey } from '../editor/attribution'
 import { AssetError, bytesToBase64, putFile, setAssetDocument } from '../editor/assets'
-import { currentBlockMarkdown } from '../editor/current-block'
+import { commentMarksKey, revealThread, type CommentSpan } from '../editor/comment-marks'
+import { currentBlockId, currentBlockMarkdown } from '../editor/current-block'
 import { configureFigureHost } from '../editor/figure-host'
 import { exportSelectedFigure } from '../editor/figures/export'
-import { commitMessageKey } from '../editor/loro-collab'
+import { blockAnchor, commitMessageKey } from '../editor/loro-collab'
 import { useCollabEditor } from '../editor/useCollabEditor'
 import type { DocumentClient } from '../sync/DocumentClient'
+import type { CommentsView } from '../sync/useComments'
 import type { HistoryView } from '../sync/useHistory'
+import type { CommentDraft } from './CommentsPanel'
 import { EditorToolbar } from './EditorToolbar'
 import { FigureControls } from './FigureControls'
 import { SearchReplace } from './SearchReplace'
@@ -29,7 +40,12 @@ export function DocumentEditor({
   travel,
   restoreTo,
   onCloseTravel,
-  onRestored
+  onRestored,
+  comments,
+  selectedThread = null,
+  onSelectThread,
+  onDraftComment,
+  revealRef
 }: {
   client: DocumentClient
   title: ReactNode
@@ -41,6 +57,13 @@ export function DocumentEditor({
   restoreTo?: HistoryEntry | null
   onCloseTravel?: () => void
   onRestored?: () => void
+  comments?: CommentsView
+  selectedThread?: string | null
+  onSelectThread?: (threadId: string) => void
+  /** The user asked to comment on the selection (or the current block). */
+  onDraftComment?: (draft: CommentDraft) => void
+  /** Filled in with a function that scrolls the editor to a thread's span. */
+  revealRef?: MutableRefObject<((threadId: string) => void) | null>
 }): React.JSX.Element {
   const [attribution, setAttribution] = useState(false)
   const attributionRef = useRef({
@@ -48,7 +71,11 @@ export function DocumentEditor({
     colorFor: (_blockId: string) => history?.index?.lastAuthor(_blockId)
   })
   const attributionFn = useCallback(() => attributionRef.current, [])
-  const editor = useCollabEditor(client, !readOnly, attributionFn)
+  const selectThreadRef = useRef(onSelectThread)
+  const selectThread = useCallback((id: string) => selectThreadRef.current?.(id), [])
+  const draftRef = useRef<() => void>(() => undefined)
+  const commentShortcut = useCallback(() => draftRef.current(), [])
+  const editor = useCollabEditor(client, !readOnly, attributionFn, selectThread, commentShortcut)
   const docId = client.docId
   const [searchOpen, setSearchOpen] = useState(false)
   const [source, setSource] = useState<{ kind: SourceKind; text: string } | null>(null)
@@ -85,7 +112,8 @@ export function DocumentEditor({
   useEffect(() => {
     editorRef.current = editor
     noticeRef.current = onNotice
-  }, [editor, onNotice])
+    selectThreadRef.current = onSelectThread
+  }, [editor, onNotice, onSelectThread])
 
   useEffect(() => {
     setAssetDocument(docId)
@@ -132,6 +160,61 @@ export function DocumentEditor({
     editor.view.dispatch(editor.state.tr.setMeta(attributionKey, { refresh: true }))
   }, [editor, attribution, history?.version])
 
+  // Highlights follow the threads: re-place them from Loro cursors whenever
+  // the comment set or the selection changes.
+  useEffect(() => {
+    if (editor.isDestroyed) return
+    const spans: CommentSpan[] = []
+    for (const thread of comments?.threads ?? []) {
+      if (thread.status !== 'open' || thread.orphaned) continue
+      const span = currentSpan(client.doc, thread)
+      if (!span) continue
+      spans.push({
+        id: thread.id,
+        blockId: thread.blockId,
+        start: span.start,
+        end: span.end,
+        whole: thread.whole === true,
+        color: thread.author.color
+      })
+    }
+    editor.view.dispatch(
+      editor.state.tr.setMeta(commentMarksKey, { spans, selected: selectedThread })
+    )
+  }, [editor, client, comments?.threads, selectedThread])
+
+  useEffect(() => {
+    if (!revealRef) return
+    revealRef.current = (threadId) => {
+      if (!editor.isDestroyed) revealThread(editor.view, threadId)
+    }
+    return () => {
+      revealRef.current = null
+    }
+  }, [editor, revealRef])
+
+  // A comment on the selection, or on the block the caret is in.
+  const draftComment = useCallback((): void => {
+    if (readOnly || !onDraftComment) return
+    const { state } = editor
+    const sel = state.selection
+    if (sel.empty) {
+      const blockId = currentBlockId(state)
+      if (!blockId) return
+      onDraftComment({ blockId, quote: '' })
+      return
+    }
+    const from = blockAnchor(state, sel.from)
+    const to = blockAnchor(state, sel.to)
+    if (!from || !to || from.blockId !== to.blockId) {
+      onNotice('Select text within one block to comment on it.')
+      return
+    }
+    const quote = state.doc.textBetween(sel.from, sel.to, ' ').trim()
+    if (!quote) return
+    onDraftComment({ blockId: from.blockId, start: from.offset, end: to.offset, quote })
+  }, [editor, readOnly, onDraftComment, onNotice])
+
   // One transaction, one Loro change: the cutter reads the message meta and
   // stamps the sync plugin's commit with it (see `humanCommitCutter`).
   const applyRestore = useCallback(
@@ -164,6 +247,10 @@ export function DocumentEditor({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+
+  useEffect(() => {
+    draftRef.current = draftComment
+  }, [draftComment])
 
   const openSource = (): void => {
     const sel = editor.state.selection
@@ -198,6 +285,7 @@ export function DocumentEditor({
         onToggleSearch={() => setSearchOpen((value) => !value)}
         attribution={attribution}
         onToggleAttribution={() => setAttribution((value) => !value)}
+        onComment={readOnly ? undefined : draftComment}
       />
       <SearchReplace editor={editor} open={searchOpen} onClose={() => setSearchOpen(false)} />
       <FigureControls
@@ -259,7 +347,9 @@ export function DocumentEditor({
             />
           ) : null}
           <EditorContent editor={editor} />
-          {travel ? null : <SelectionBar editor={editor} />}
+          {travel ? null : (
+            <SelectionBar editor={editor} onComment={readOnly ? undefined : draftComment} />
+          )}
         </div>
       </article>
     </div>

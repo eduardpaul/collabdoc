@@ -106,7 +106,7 @@ export type ActivityEvent = {
 
 export type AppScreen = 'start' | 'workspace'
 export type SettingsTab = 'you' | 'provider' | 'mcp' | 'agents'
-export type RightTab = 'agents' | 'history' | 'activity' | 'markdown'
+export type RightTab = 'agents' | 'comments' | 'history' | 'activity' | 'markdown'
 export type CloseIntent = 'home' | 'new' | 'open' | 'recent'
 
 export type UserProfile = {

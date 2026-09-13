@@ -2,13 +2,20 @@ import type {
   CommentAuthor,
   CommentThread,
   MutationErr,
+  MutationErrorKind,
   ReplyResult,
   TextLocator,
   ThreadResult,
   ThreadsResult
 } from '../../shared/types'
-import { encodeAnchor } from '../anchors'
-import { listThreads, openThread, replyToThread, resolveThread, getThread } from '../comments'
+import {
+  getThread,
+  listThreads,
+  openThreadOnRange,
+  replyToThread,
+  resolveThread,
+  type CommentError
+} from '../comments'
 import { resolveRange, resolveRangeInString } from '../locators'
 import { blockAgentText, findBlock, firstText, isSyntaxFigure } from '../tree'
 import { asRecord, asString, fail, type SessionContext } from './context'
@@ -20,6 +27,11 @@ function authorOf(ctx: SessionContext): CommentAuthor {
     role: ctx.profile.role,
     color: ctx.profile.color
   }
+}
+
+function commentErrorKind(error: CommentError): MutationErrorKind {
+  if (error === 'invalid_range') return 'invalid_locator'
+  return error
 }
 
 function checkBody(ctx: SessionContext, raw: unknown): { ok: true; body: string } | MutationErr {
@@ -44,9 +56,10 @@ export function addComment(
 
   const content = blockAgentText(found.node)
   const locator = asRecord(args.locator) as TextLocator | undefined
+  const whole = !locator || Object.keys(locator).length === 0
   let start = 0
   let end = content.length
-  if (locator && Object.keys(locator).length > 0) {
+  if (!whole) {
     const text = isSyntaxFigure(found.node) ? null : firstText(found.node)
     const resolved = text
       ? resolveRange(ctx.doc, text, locator, 'span')
@@ -55,26 +68,22 @@ export function addComment(
     start = resolved.range.start
     end = resolved.range.end
   }
-  if (end < start || (end === start && content.length > 0)) {
+  if (!whole && (end < start || (end === start && content.length > 0))) {
     return fail('invalid_locator', 'Comment range is empty.')
   }
 
-  const text = isSyntaxFigure(found.node) ? null : firstText(found.node)
-  const anchorStart = text?.getCursor(start, 0)
-  const anchorEnd = text?.getCursor(end, 0)
-  let thread: CommentThread | null = null
+  let thread: CommentThread | CommentError = 'not_found'
   ctx.commit(`comment: ${checked.body.slice(0, 80)}`, () => {
-    thread = openThread(ctx.doc, {
+    thread = openThreadOnRange(ctx.doc, {
       blockId,
-      quote: content.slice(start, end),
-      start,
-      end,
-      anchorStart: anchorStart ? encodeAnchor(anchorStart) : '',
-      anchorEnd: anchorEnd ? encodeAnchor(anchorEnd) : '',
+      start: whole ? undefined : start,
+      end: whole ? undefined : end,
       author: authorOf(ctx),
       body: checked.body
     })
   })
+  if (typeof thread === 'string')
+    return fail(commentErrorKind(thread), `Could not comment on ${blockId}.`)
   return { ok: true as const, thread: thread as unknown as CommentThread }
 }
 
