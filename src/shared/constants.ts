@@ -1,0 +1,147 @@
+/**
+ * Names and limits shared by the document core, the editor and the agents.
+ *
+ * This module is compiled for both Node (main) and the browser (renderer):
+ * no Node, Electron or React imports.
+ */
+
+// Loro tree shape read by `loro-prosemirror`. Keep these four in sync with it.
+export const ROOT_DOC_KEY = 'doc'
+export const ATTRIBUTES_KEY = 'attributes'
+export const CHILDREN_KEY = 'children'
+export const NODE_NAME_KEY = 'nodeName'
+
+// Sidecar root containers next to the document tree.
+export const META_KEY = 'meta'
+export const AUTHORS_KEY = 'authors'
+export const COMMENTS_KEY = 'comments'
+
+export const BLOCK_ID_ATTR = 'blockId'
+export const SCHEMA_VERSION = 1
+
+/**
+ * Commit origins. Everything a participant does (human or agent) is committed
+ * with `actor:<actorId>`; bookkeeping the app does on its own behalf uses a
+ * `sys:` prefix so undo managers can skip it.
+ */
+export const ACTOR_ORIGIN_PREFIX = 'actor:'
+export const SYSTEM_ORIGIN_PREFIX = 'sys:'
+export const INIT_ORIGIN = 'sys:init'
+export const HUB_ORIGIN = 'sys:hub'
+export const AUTHOR_ORIGIN = 'sys:author'
+
+export const ASSET_SRC_PREFIX = 'asset:'
+export const ASSET_SRC_PATTERN = /^asset:[a-f0-9]{64}$/
+
+/** Per-session caps. Overridable so external MCP clients can be held tighter. */
+export const DEFAULT_LIMITS = {
+  maxInsertChars: 8000,
+  maxBlocksPerCall: 20,
+  maxBlocksPerRead: 50,
+  maxSearchResults: 50,
+  maxCommentChars: 2000,
+  defaultClaimSeconds: 30,
+  maxClaimSeconds: 120
+} as const
+
+export type SessionLimits = { -readonly [K in keyof typeof DEFAULT_LIMITS]: number }
+
+export const ALLOWED_NODES = [
+  'paragraph',
+  'heading',
+  'blockquote',
+  'codeBlock',
+  'horizontalRule',
+  'bulletList',
+  'orderedList',
+  'taskList',
+  'listItem',
+  'taskItem',
+  'imageFigure',
+  'mermaidFigure',
+  'infographicFigure'
+] as const
+
+export const ALLOWED_MARKS = [
+  'bold',
+  'italic',
+  'underline',
+  'strike',
+  'code',
+  'link',
+  'highlight',
+  'superscript',
+  'subscript'
+] as const
+
+export const BLOCK_ID_TYPES = [
+  'paragraph',
+  'heading',
+  'blockquote',
+  'codeBlock',
+  'listItem',
+  'taskItem',
+  'horizontalRule',
+  'imageFigure',
+  'mermaidFigure',
+  'infographicFigure'
+] as const
+
+/** Nodes with no text content of their own. */
+export const ATOM_NODE_TYPES = ['horizontalRule', 'imageFigure', 'hardBreak'] as const
+
+/**
+ * Node types whose children are blocks. Everything else holds text (or
+ * nothing), so nesting a block inside one produces a tree ProseMirror cannot
+ * build: the offending block *and its parent's text* stop rendering.
+ */
+export const BLOCK_CONTAINER_TYPES = [
+  'blockquote',
+  'listItem',
+  'taskItem',
+  'bulletList',
+  'orderedList',
+  'taskList'
+] as const
+
+export const FIGURE_TYPES = ['imageFigure', 'mermaidFigure', 'infographicFigure'] as const
+export const SYNTAX_FIGURE_TYPES = ['mermaidFigure', 'infographicFigure'] as const
+
+export const FIGURE_WIDTHS = [50, 75, 100] as const
+export const FIGURE_ALIGNS = ['left', 'center', 'right'] as const
+
+export const MAX_IMAGE_BYTES = 2 * 1024 * 1024
+export const MAX_DOCUMENT_ASSET_BYTES = 25 * 1024 * 1024
+
+export const HEADING_LEVELS = [1, 2, 3, 4] as const
+
+/**
+ * How a mark behaves when text is typed at its edge.
+ *
+ * `loro-prosemirror` derives the same config from the ProseMirror schema
+ * (`inclusive !== false` → `"after"`). This table and the Tiptap extensions
+ * must agree, or the same edit marks up differently depending on who made it;
+ * `checkTextStyleParity` in the renderer fails the dev run if they drift.
+ *
+ * `link` expands because Tiptap's Link mark is inclusive whenever autolink is
+ * on, and autolink is on.
+ */
+export const TEXT_STYLE_CONFIG = {
+  bold: { expand: 'after' as const },
+  italic: { expand: 'after' as const },
+  underline: { expand: 'after' as const },
+  strike: { expand: 'after' as const },
+  code: { expand: 'none' as const },
+  link: { expand: 'after' as const },
+  highlight: { expand: 'none' as const },
+  superscript: { expand: 'none' as const },
+  subscript: { expand: 'none' as const }
+}
+
+export type TextStyleExpand = 'after' | 'none'
+export type AllowedNode = (typeof ALLOWED_NODES)[number]
+export type AllowedMark = (typeof ALLOWED_MARKS)[number]
+export type HeadingLevel = (typeof HEADING_LEVELS)[number]
+export type FigureWidth = (typeof FIGURE_WIDTHS)[number]
+export type FigureAlign = (typeof FIGURE_ALIGNS)[number]
+export type SyntaxFigureType = (typeof SYNTAX_FIGURE_TYPES)[number]

@@ -4,8 +4,16 @@ import react from '@vitejs/plugin-react'
 
 const isWsl = Boolean(process.env.WSL_DISTRO_NAME)
 
+const sharedAliases = {
+  '@shared': resolve('src/shared'),
+  '@core': resolve('src/core')
+}
+
 export default defineConfig({
   main: {
+    resolve: {
+      alias: sharedAliases
+    },
     build: {
       target: 'node24',
       bytecode: true,
@@ -43,7 +51,8 @@ export default defineConfig({
     },
     resolve: {
       alias: {
-        '@renderer': resolve('src/renderer/src')
+        '@renderer': resolve('src/renderer/src'),
+        ...sharedAliases
       }
     },
     plugins: [react()]

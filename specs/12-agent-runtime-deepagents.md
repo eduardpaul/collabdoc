@@ -34,7 +34,7 @@ Replace the `setTimeout` stubs with a real runtime in the main process. Each age
 - Run record: `{ runId, agentId, docId, kind: "ask" | "mention" | "review" | "apply", input, startedAt, steps: ToolCall[], writes: number, outcome, tokens?, error? }` streamed to the renderer as `agents:event` and persisted in Activity (19).
 - Renderer: `agents` slice reflects `status: idle | queued | working | done | error`, current step summary, cancel button; ask box wires to `agents:run`.
 - Safety rails at the runtime level: per-run write cap (e.g. 40 write calls), per-run wall clock (3 min default), max output chars per run; exceeding any ends the run with `limit` and the document keeps what was written (all attributed, undoable).
-- Every agent commit carries `origin = agent:<agentId>` and `message = <tool> <summary>`; the agent's identity is registered in `authors` (02) on invite.
+- Every agent commit carries `origin = actor:<agentId>` (the same prefix people use — an agent is just another participant, see 02) and `message = <tool> <summary>`; the agent's identity lands in `authors` (02) with its first commit.
 - Renderer-only dev mode (03) gets a `FakeRuntime` that echoes tool calls, so UI work never needs a key.
 
 ## Acceptance criteria

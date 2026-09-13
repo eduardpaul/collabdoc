@@ -25,7 +25,7 @@ Undo/redo backed by Loro's `UndoManager`, scoped to the acting participant: a hu
 
 ## Design
 
-- Renderer: `LoroUndoPlugin` configured with `excludeOriginPrefixes: ["agent:", "peer:", "sys:"]`; toolbar Undo/Redo buttons reflect `canUndo/canRedo` via the plugin state.
+- Renderer: `LoroUndoPlugin` configured with `excludeOriginPrefixes: ["sys:"]` — each participant's own `LoroDoc` only records *local* ops, so other actors' `actor:<id>` commits arrive as imports and are never undo candidates; only the app's own `sys:` bookkeeping (author registration, hub init) has to be excluded explicitly; toolbar Undo/Redo buttons reflect `canUndo/canRedo` via the plugin state.
 - Agents: each `DocumentSession` gets its own `UndoManager` with the same exclusion rule, exposed as the `undo`/`redo` tools (already in the tool list).
 - Selection restore: on undo, place the caret at the end of the reverted range (Loro cursors stored with the undo step — use `UndoManager.setOnPush/OnPop` to stash `Cursor`s).
 - Grouping matches history (05): idle ≤ 1 s or block change starts a new undo step for humans; every tool call is a step for agents.
