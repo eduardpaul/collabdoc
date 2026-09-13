@@ -44,10 +44,25 @@ export type Agent = {
   status: AgentStatus
 }
 
+export type ShareGuestInfo = {
+  id: string
+  name: string
+  color: string
+  handle: string
+  connection: 'direct' | 'holepunched' | 'relay' | 'local'
+}
+
 export type ShareState = {
   active: boolean
+  announcing: boolean
   url: string | null
   code: string | null
+  role: 'host' | 'guest' | null
+  guests: ShareGuestInfo[]
+  status: string
+  lockedUntil: number
+  hostEnded: boolean
+  readOnly: boolean
 }
 
 /**

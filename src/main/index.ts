@@ -9,6 +9,8 @@ import { DocumentRegistry } from '@core/registry'
 import { broadcastListing, broadcastState, registerDocumentIpc, sendCommand } from './documents/ipc'
 import { DocumentStore } from './persist/store'
 import { readProfile, writeProfile } from './profile'
+import { ShareService } from './share/service'
+import { broadcastShare, broadcastShareActivity, registerShareIpc } from './share/ipc'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -145,7 +147,9 @@ if (!gotTheLock) {
       sendListing: broadcastListing
     })
     void persist.init()
+    const sharing = new ShareService(documents, persist, broadcastShare, broadcastShareActivity)
     registerDocumentIpc(documents, persist)
+    registerShareIpc(sharing)
     installAppMenu()
 
     ipcMain.handle('documents:saveBytes', async (event, payload: BytesSavePayload) => {

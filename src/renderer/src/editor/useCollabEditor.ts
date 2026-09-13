@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import type { Editor } from '@tiptap/core'
 import { useEditor } from '@tiptap/react'
 import { editorExtensions } from './extensions'
@@ -9,9 +10,10 @@ import type { DocumentClient } from '../sync/DocumentClient'
  * A Tiptap editor bound to a live `DocumentClient`. The Loro doc is the
  * content; Tiptap's own history is off (undo is Loro's, see 06).
  */
-export function useCollabEditor(client: DocumentClient): Editor {
+export function useCollabEditor(client: DocumentClient, editable = true): Editor {
   const editor = useEditor(
     {
+      editable,
       extensions: [
         ...editorExtensions(),
         LoroCollab.configure({
@@ -55,6 +57,10 @@ export function useCollabEditor(client: DocumentClient): Editor {
     },
     [client]
   )
+
+  useEffect(() => {
+    editor.setEditable(editable)
+  }, [editor, editable])
 
   return editor
 }

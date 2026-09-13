@@ -201,23 +201,37 @@ export function Workspace(): React.JSX.Element | null {
 
       <main className="editor">
         {client ? (
-          <DocumentEditor
-            key={session.id}
-            client={client}
-            onNotice={(message) => dispatch({ type: 'notice', message })}
-            onMarkdown={setBlockMarkdown}
-            title={
-              <TextInput
-                className="page__title"
-                value={session.title}
-                aria-label="Document title"
-                onChange={(event) => {
-                  dispatch({ type: 'set-title', title: event.target.value })
-                  client.setTitle(event.target.value)
-                }}
-              />
-            }
-          />
+          <>
+            {session.share.hostEnded ? (
+              <div className="host-ended" data-testid="host-ended">
+                <p>Host ended the session · Save a copy to keep working.</p>
+                <Button size="sm" onClick={() => void actions.saveDocument()}>
+                  Save a copy
+                </Button>
+                <Button size="sm" onClick={() => void actions.forkDocument()}>
+                  Fork as my own document
+                </Button>
+              </div>
+            ) : null}
+            <DocumentEditor
+              key={session.id}
+              client={client}
+              readOnly={session.share.readOnly}
+              onNotice={(message) => dispatch({ type: 'notice', message })}
+              onMarkdown={setBlockMarkdown}
+              title={
+                <TextInput
+                  className="page__title"
+                  value={session.title}
+                  aria-label="Document title"
+                  onChange={(event) => {
+                    dispatch({ type: 'set-title', title: event.target.value })
+                    client.setTitle(event.target.value)
+                  }}
+                />
+              }
+            />
+          </>
         ) : (
           <div className="editor__connecting" data-testid="editor-connecting">
             <p className="muted">Connecting to the document…</p>

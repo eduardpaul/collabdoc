@@ -21,7 +21,7 @@ export default defineConfig({
       rollupOptions: {
         // loro-crdt's Node build reads its .wasm next to its own file via
         // __dirname, so it has to stay a real package, not bundled code.
-        external: ['loro-crdt']
+        external: ['loro-crdt', 'hyperswarm']
       }
     }
   },

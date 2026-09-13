@@ -114,6 +114,68 @@ type HostApi = {
     onState: (listener: (state: PersistState) => void) => () => void
     onListing: (listener: (listing: PersistListing) => void) => () => void
   }
+  share: {
+    start: (payload: { docId: string; hostName: string }) => Promise<
+      | {
+          ok: true
+          state: {
+            active: boolean
+            announcing: boolean
+            code: string | null
+            link: string | null
+            role: 'host' | 'guest' | null
+            guests: Array<{
+              id: string
+              name: string
+              color: string
+              handle: string
+              connection: 'direct' | 'holepunched' | 'relay' | 'local'
+            }>
+            status: string
+            lockedUntil: number
+            hostEnded: boolean
+            readOnly: boolean
+          }
+        }
+      | { ok: false; error: string }
+    >
+    stop: () => Promise<{ ok: true }>
+    removeGuest: (id: string) => Promise<{ ok: true } | { ok: false; error: string }>
+    join: (payload: {
+      code: string
+      profile: {
+        userId: string
+        name: string
+        handle: string
+        color: string
+        installPublicKey: string
+      }
+      expectedDocId?: string
+    }) => Promise<
+      | { ok: true; docId: string; title: string }
+      | { ok: false; error: string }
+    >
+    leave: () => Promise<{ ok: true }>
+    onState: (listener: (state: {
+      active: boolean
+      announcing: boolean
+      code: string | null
+      link: string | null
+      role: 'host' | 'guest' | null
+      guests: Array<{
+        id: string
+        name: string
+        color: string
+        handle: string
+        connection: 'direct' | 'holepunched' | 'relay' | 'local'
+      }>
+      status: string
+      lockedUntil: number
+      hostEnded: boolean
+      readOnly: boolean
+    }) => void) => () => void
+    onActivity: (listener: (summary: string) => void) => () => void
+  }
   profile: {
     get: () => Promise<{
       ok: true

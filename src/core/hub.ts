@@ -1,4 +1,4 @@
-import { EphemeralStore, LoroDoc } from 'loro-crdt'
+import { EphemeralStore, LoroDoc, VersionVector } from 'loro-crdt'
 import { HUB_ORIGIN, PRESENCE_TIMEOUT_MS } from '../shared/constants'
 import { createDocument, openDocument } from './document'
 
@@ -46,6 +46,15 @@ export class SyncHub {
 
   snapshot(): Uint8Array {
     return this.doc.export({ mode: 'snapshot' })
+  }
+
+  exportFrom(encodedVersion: Uint8Array | null): Uint8Array {
+    if (!encodedVersion || encodedVersion.byteLength === 0) return this.snapshot()
+    try {
+      return this.doc.export({ mode: 'update', from: VersionVector.decode(encodedVersion) })
+    } catch {
+      return this.snapshot()
+    }
   }
 
   ephemeralSnapshot(): Uint8Array {

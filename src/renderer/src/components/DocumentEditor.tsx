@@ -18,14 +18,16 @@ export function DocumentEditor({
   client,
   title,
   onNotice,
-  onMarkdown
+  onMarkdown,
+  readOnly = false
 }: {
   client: DocumentClient
   title: ReactNode
   onNotice: (message: string) => void
   onMarkdown: (markdown: string) => void
+  readOnly?: boolean
 }): React.JSX.Element {
-  const editor = useCollabEditor(client)
+  const editor = useCollabEditor(client, !readOnly)
   const docId = client.docId
   const [searchOpen, setSearchOpen] = useState(false)
   const [source, setSource] = useState<{ kind: SourceKind; text: string } | null>(null)

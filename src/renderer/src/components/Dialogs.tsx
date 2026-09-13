@@ -8,6 +8,7 @@ import { ProfileFields } from './ProfileFields'
 
 export function ShareDialog(): React.JSX.Element | null {
   const { state, dispatch } = useAppState()
+  const actions = useSessionActions()
   const share = state.session?.share
   if (!state.shareOpen || !state.session || !share) {
     return null
@@ -22,45 +23,76 @@ export function ShareDialog(): React.JSX.Element | null {
     }
   }
 
+  const live = share.active && Boolean(share.code) && !share.announcing
+
   return (
     <Modal
       title="Share this document"
-      subtitle="Peer-to-peer over a temporary local tunnel. No CollabDoc server."
+      subtitle="Peer-to-peer over Hyperswarm. No CollabDoc server."
       onClose={() => dispatch({ type: 'set-share-open', open: false })}
     >
       <p className="lede">
-        Anyone with the connection code can join this session from another CollabDoc window. The
-        tunnel URL is a placeholder until Localtunnel is wired.
+        Discovery uses a public DHT; the topic hash is visible to DHT nodes, your document is not.
+        Connections are direct and encrypted.
       </p>
       <div className="share-status">
-        <span className={`pill ${share.active ? 'pill--live' : ''}`}>
-          {share.active ? 'Tunnel live' : 'Tunnel off'}
+        <span className={`pill ${live ? 'pill--live' : ''}`}>
+          {share.announcing ? 'Announcing…' : live ? 'Live' : 'Off'}
         </span>
         <span className="muted">Host · {hostLabel()}</span>
       </div>
-      {share.active && share.code ? (
+      {share.lockedUntil > 0 ? (
+        <p className="muted">Too many failed codes. Not accepting new guests for a minute.</p>
+      ) : null}
+      {live ? (
         <div className="share-grid">
           <Field label="Connection code">
             <div className="inline-copy">
-              <TextInput readOnly value={share.code} />
+              <TextInput readOnly value={share.code ?? ''} className="share-code" />
               <Button onClick={() => void copy(share.code ?? '')}>Copy</Button>
             </div>
           </Field>
-          <Field label="Tunnel URL">
+          <Field label="Link">
             <div className="inline-copy">
               <TextInput readOnly value={share.url ?? ''} />
-              <Button onClick={() => void copy(share.url ?? '')}>Copy</Button>
+              <Button onClick={() => void copy(share.url ?? '')}>Copy link</Button>
             </div>
           </Field>
+          {share.guests.length ? (
+            <ul className="guest-list">
+              {share.guests.map((guest) => (
+                <li key={guest.id}>
+                  <span>
+                    <strong>{guest.name}</strong>
+                    <span className="muted">
+                      @{guest.handle} · {guest.connection}
+                    </span>
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void actions.removeShareGuest(guest.id)}
+                  >
+                    Remove
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">No guests yet.</p>
+          )}
         </div>
       ) : (
         <p className="muted">
-          Start a tunnel to generate a code others can use on the start screen.
+          Start sharing to mint a code. Untitled documents are saved as a draft first.
         </p>
       )}
       <div className="modal__actions">
-        <Button variant="primary" onClick={() => dispatch({ type: 'toggle-share' })}>
-          {share.active ? 'Stop sharing' : 'Start tunnel'}
+        <Button
+          variant="primary"
+          onClick={() => void (share.active ? actions.stopShare() : actions.startShare())}
+        >
+          {share.active ? 'Stop sharing' : 'Start sharing'}
         </Button>
         <Button onClick={() => dispatch({ type: 'set-share-open', open: false })}>Done</Button>
       </div>
@@ -75,6 +107,12 @@ export function JoinDialog(): React.JSX.Element | null {
   if (!state.joinOpen) {
     return null
   }
+  const joining = Boolean(
+    state.session?.share.role === 'guest' &&
+    state.session.share.status &&
+    !state.session.share.hostEnded
+  )
+  const status = state.session?.share.status ?? ''
 
   const join = (): void => {
     const next = code.trim()
@@ -88,10 +126,10 @@ export function JoinDialog(): React.JSX.Element | null {
   return (
     <Modal
       title="Join a session"
-      subtitle="Paste the connection code from the person who started the tunnel."
+      subtitle="Paste the code or collabdoc:// link from the host."
       onClose={() => dispatch({ type: 'set-join-open', open: false })}
     >
-      <Field label="Connection code" hint="Looks like CD-7K4M2Q">
+      <Field label="Connection code" hint="Looks like K7QX-3M9P-2RHD">
         <TextInput
           autoFocus
           value={code}
@@ -101,12 +139,19 @@ export function JoinDialog(): React.JSX.Element | null {
               join()
             }
           }}
-          placeholder="CD-······"
+          placeholder="K7QX-3M9P-2RHD"
         />
       </Field>
+      {status ? <p className="muted">{status}</p> : null}
+      {status.includes('network restrictions') ? (
+        <p className="muted">
+          Could not reach the host directly (network restrictions). Symmetric NATs and some
+          corporate networks block hole-punching.
+        </p>
+      ) : null}
       <div className="modal__actions">
-        <Button variant="primary" onClick={join}>
-          Join
+        <Button variant="primary" onClick={join} disabled={joining}>
+          {joining ? 'Still trying' : 'Join'}
         </Button>
         <Button onClick={() => dispatch({ type: 'set-join-open', open: false })}>Cancel</Button>
       </div>

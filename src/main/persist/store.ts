@@ -127,6 +127,11 @@ export class DocumentStore {
     return { docId: entry.docId, title: readMeta(entry.hub.doc).title }
   }
 
+  /** Start autosaving a hub that was registered from a guest snapshot. */
+  follow(docId: string): void {
+    this.watch(docId, { path: null, isDraft: true, clean: true })
+  }
+
   async openCollabdoc(filePath: string): Promise<OpenedCollabdoc> {
     const raw = await readFile(filePath)
     const decoded = decodeCollabdoc(raw)

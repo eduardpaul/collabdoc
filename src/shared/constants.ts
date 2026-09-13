@@ -36,6 +36,17 @@ export const PRESENCE_HEARTBEAT_MS = 5_000
 /** Cursor broadcasts are capped so one participant stays under 2 KB/s. */
 export const PRESENCE_MAX_HZ = 20
 
+export const SHARE_PROTOCOL_VERSION = 1
+export const SHARE_MAX_PEERS = 10
+export const SHARE_AUTH_TIMEOUT_MS = 10_000
+export const SHARE_PROOF_WINDOW_MS = 60_000
+export const SHARE_PROOF_LOCK_MS = 60_000
+export const SHARE_MAX_FAILED_PROOFS = 5
+export const SHARE_STALL_MS = 30_000
+export const SHARE_SLOW_BUFFER_BYTES = 4 * 1024 * 1024
+export const SHARE_JOIN_TIMEOUT_MS = 30_000
+export const SHARE_ASSET_CHUNK_BYTES = 256 * 1024
+
 export const ASSET_SRC_PREFIX = 'asset:'
 export const ASSET_SRC_PATTERN = /^asset:[a-f0-9]{64}$/
 

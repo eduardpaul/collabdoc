@@ -8,7 +8,8 @@ import {
   type ReactNode
 } from 'react'
 import { clearAssets } from '../editor/assets'
-import { createId, createShareCode, shareUrlForCode } from '../lib/ids'
+import { createId } from '../lib/ids'
+import { emptyShare } from '../lib/share-state'
 import { loadPersisted, savePersisted } from '../lib/persist'
 import { getClient } from '../sync/clients'
 import { asActorProfile, loadProfileSync } from '../sync/identity'
@@ -82,6 +83,7 @@ export type Action =
   | { type: 'set-share-open'; open: boolean }
   | { type: 'set-join-open'; open: boolean }
   | { type: 'toggle-share' }
+  | { type: 'set-share'; share: Partial<ShareState> }
   | { type: 'set-right-tab'; tab: RightTab }
   | { type: 'toggle-left' }
   | { type: 'toggle-right' }
@@ -236,7 +238,7 @@ function reducer(state: AppState, action: Action): AppState {
         dirty: action.session.dirty ?? false,
         isDraft: action.session.isDraft ?? !action.session.path,
         hasDraft: action.session.hasDraft ?? false,
-        share: action.session.share ?? { active: false, url: null, code: null }
+        share: action.session.share ?? emptyShare()
       }
       return withSession(state, session, {
         activity: [
@@ -328,35 +330,13 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, shareOpen: action.open }
     case 'set-join-open':
       return { ...state, joinOpen: action.open }
-    case 'toggle-share': {
-      if (!state.session) {
-        return state
-      }
-      if (state.session.share.active) {
-        const session = { ...state.session, share: { active: false, url: null, code: null } }
-        return {
-          ...state,
-          session,
-          shareOpen: true,
-          activity: [
-            activity({ actor: 'You', kind: 'share', summary: 'Stopped the local tunnel' }),
-            ...state.activity
-          ]
-        }
-      }
-      const code = createShareCode()
-      const session = {
-        ...state.session,
-        share: { active: true, code, url: shareUrlForCode(code) }
-      }
+    case 'toggle-share':
+      return state
+    case 'set-share': {
+      if (!state.session) return state
       return {
         ...state,
-        session,
-        shareOpen: true,
-        activity: [
-          activity({ actor: 'You', kind: 'share', summary: `Started a local tunnel · ${code}` }),
-          ...state.activity
-        ]
+        session: { ...state.session, share: { ...state.session.share, ...action.share } }
       }
     }
     case 'set-right-tab':
@@ -433,9 +413,31 @@ export function AppStateProvider({ children }: { children: ReactNode }): React.J
         }))
       })
     })
+    const stopShare = window.api?.share?.onState?.((share) => {
+      dispatch({
+        type: 'set-share',
+        share: {
+          active: share.active,
+          announcing: share.announcing,
+          url: share.link,
+          code: share.code,
+          role: share.role,
+          guests: share.guests,
+          status: share.status,
+          lockedUntil: share.lockedUntil,
+          hostEnded: share.hostEnded,
+          readOnly: share.readOnly
+        }
+      })
+    })
+    const stopShareActivity = window.api?.share?.onActivity?.((summary) => {
+      dispatch({ type: 'push-activity', event: { actor: 'You', kind: 'share', summary } })
+    })
     return () => {
       stopState()
       stopListing?.()
+      stopShare?.()
+      stopShareActivity?.()
     }
   }, [])
 

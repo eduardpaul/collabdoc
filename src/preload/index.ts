@@ -86,6 +86,41 @@ const api = {
       }
     }
   },
+  share: {
+    start: (payload: { docId: string; hostName: string }): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('share:start', payload),
+    stop: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('share:stop'),
+    removeGuest: (id: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('share:removeGuest', id),
+    join: (payload: {
+      code: string
+      profile: {
+        userId: string
+        name: string
+        handle: string
+        color: string
+        installPublicKey: string
+      }
+      expectedDocId?: string
+    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('share:join', payload),
+    leave: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('share:leave'),
+    onState: (listener: (state: unknown) => void): (() => void) => {
+      const wrapped = (_event: unknown, state: unknown): void => listener(state)
+      ipcRenderer.on('share:state', wrapped)
+      return () => {
+        ipcRenderer.removeListener('share:state', wrapped)
+      }
+    },
+    onActivity: (listener: (summary: string) => void): (() => void) => {
+      const wrapped = (_event: unknown, summary: unknown): void => {
+        if (typeof summary === 'string') listener(summary)
+      }
+      ipcRenderer.on('share:activity', wrapped)
+      return () => {
+        ipcRenderer.removeListener('share:activity', wrapped)
+      }
+    }
+  },
   profile: {
     get: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('profile:get'),
     save: (profile: {

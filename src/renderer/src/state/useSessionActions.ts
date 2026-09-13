@@ -2,7 +2,7 @@ import { useAppState } from './AppState'
 import { agentCanRun } from './selectors'
 import { parseDocument, previewOf, serializeDocument } from '../lib/document-file'
 import { extrasFromDoc, hydrateImages, saveDocumentToHost } from '../lib/files'
-import { shareUrlForCode } from '../lib/ids'
+import { emptyShare } from '../lib/share-state'
 import { takeLegacyRecents } from '../lib/persist'
 import { closeClient, createAndOpen, getClient, openClient } from '../sync/clients'
 import { textFromDoc } from '../editor/document'
@@ -63,6 +63,10 @@ export function useSessionActions(): {
   locateRecent: (id: string) => Promise<void>
   removeRecent: (id: string) => Promise<void>
   joinSession: (code: string) => Promise<void>
+  startShare: () => Promise<void>
+  stopShare: () => Promise<void>
+  removeShareGuest: (id: string) => Promise<void>
+  forkDocument: () => Promise<void>
   resumeDocument: (docId: string) => Promise<boolean>
   saveDocument: () => Promise<boolean>
   saveDocumentAs: () => Promise<boolean>
@@ -304,28 +308,82 @@ export function useSessionActions(): {
   }
 
   const joinSession = async (rawCode: string): Promise<void> => {
-    const code = rawCode.trim().toUpperCase()
+    const code = rawCode.trim()
+    if (!window.api?.share?.join) {
+      dispatch({ type: 'notice', message: 'Joining a live session needs the desktop app.' })
+      return
+    }
     try {
       await leaveCurrent()
-      const client = await createAndOpen({ title: 'Joined session' })
+      const result = await window.api.share.join({
+        code,
+        profile: {
+          userId: state.profile.userId,
+          name: state.profile.name,
+          handle: state.profile.handle,
+          color: state.profile.color,
+          installPublicKey: state.profile.userId
+        }
+      })
+      if (!result.ok) throw new Error(result.error)
+      const client = await openClient(result.docId)
       dispatch({
         type: 'open-session',
         session: {
-          id: client.docId,
-          title: 'Joined session',
+          id: result.docId,
+          title: result.title || client.title,
           path: null,
-          share: { active: true, code, url: shareUrlForCode(code) }
+          isDraft: true,
+          share: { ...emptyShare(), active: true, role: 'guest', code, status: 'joined' }
         },
-        summary: `Joined session ${code}`,
+        summary: `Joined session`,
         kind: 'join'
       })
-      dispatch({
-        type: 'notice',
-        message: 'Peer sessions arrive with Hyperswarm sharing; this document is local for now.'
-      })
+      dispatch({ type: 'set-join-open', open: false })
     } catch (error) {
       fail(error)
     }
+  }
+
+  const startShare = async (): Promise<void> => {
+    const session = state.session
+    if (!session) return
+    if (!window.api?.share?.start) {
+      dispatch({ type: 'notice', message: 'Sharing needs the desktop app.' })
+      return
+    }
+    dispatch({ type: 'set-share', share: { announcing: true, status: 'announcing…' } })
+    const result = await window.api.share.start({
+      docId: session.id,
+      hostName: state.profile.name
+    })
+    if (!result.ok) {
+      dispatch({ type: 'set-share', share: { announcing: false, status: '' } })
+      fail(new Error(result.error))
+    }
+  }
+
+  const stopShare = async (): Promise<void> => {
+    await window.api?.share?.stop?.()
+    dispatch({ type: 'set-share', share: emptyShare() })
+  }
+
+  const removeShareGuest = async (id: string): Promise<void> => {
+    await window.api?.share?.removeGuest?.(id)
+  }
+
+  const forkDocument = async (): Promise<void> => {
+    const session = state.session
+    const client = session ? getClient(session.id) : undefined
+    if (!session || !client || client.status !== 'live') return
+    const content = client.toJSON()
+    await leaveCurrent()
+    const next = await createAndOpen({ title: `${session.title} copy`, seed: content })
+    dispatch({
+      type: 'open-session',
+      session: { id: next.docId, title: next.title, path: null, isDraft: true },
+      summary: 'Forked as my own document'
+    })
   }
 
   const resumeDocument = async (docId: string): Promise<boolean> => {
@@ -518,6 +576,10 @@ export function useSessionActions(): {
       if (nativePersist()) await window.api!.documents.removeRecent(id)
     },
     joinSession,
+    startShare,
+    stopShare,
+    removeShareGuest,
+    forkDocument,
     resumeDocument,
     saveDocument: () => saveDocument(false),
     saveDocumentAs: () => saveDocument(true),
