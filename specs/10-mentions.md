@@ -1,10 +1,10 @@
-# 10 · `@` mentions of agents and people
+# 10 · `@` mentions: requests to any participant
 
-**Phase:** 2 · **Depends on:** 01, 09 · **Status:** not started
+**Phase:** 2 · **Depends on:** 01, 07, 09 · **Status:** not started
 
 ## Summary
 
-Typing `@` opens a picker listing invited agents (by handle) and session participants. Mentioning an agent at the start of a paragraph followed by an instruction invokes that agent on that block (14); mentioning a person notifies them. Mentions are real nodes in the document, synced like any other content, and are flattened to plain text before agents read the block.
+Typing `@` in the document or in a comment opens a picker of participants — people and agents in one list, each with a handle. A mention is a **request addressed to a participant**: a person gets a notification in their inbox (persisted, so it is there when they come back); an agent gets a run (14/15). Same node, same picker, same chip; only the handler differs. Mentions are document content (synced, persisted, attributed) and are flattened to `@handle` text before agents read the block.
 
 ## Current state (collabdoc)
 
@@ -12,40 +12,63 @@ Typing `@` opens a picker listing invited agents (by handle) and session partici
 
 ## Reference (lorocollab)
 
-- `client/extensions/writer-mention.ts` — Tiptap `Mention` with `startOfLine: true`, suggestion items from the writer roster, `parseWriterCommand(node, handles)`, the plugin that fires `onInvoke(blockId, handle, instruction)` after `MENTION_IDLE_MS = 8000` of idle.
-- `shared/mentions.ts` + test — `normalizeHandle`, `isValidHandle`, `commandFromMention`, `parseMentionCommand` (text fallback for `@handle instruction` typed without the node).
-- `core/tree.ts#flattenMentions`, `mentionHandleOf` — host flattens mention nodes to `@handle` text before the writer sees the block.
-- `client/App.tsx` — `invokedMentions` set so the same block is not invoked twice.
+- `client/extensions/writer-mention.ts` — Tiptap `Mention` with `startOfLine: true`, roster-driven suggestions, `parseWriterCommand`, idle auto-invoke after 8 s.
+- `shared/mentions.ts` + test — `normalizeHandle`, `isValidHandle`, `commandFromMention`, `parseMentionCommand` (text fallback).
+- `core/tree.ts#flattenMentions`, `mentionHandleOf`.
+- `client/App.tsx` — in-memory `invokedMentions` guard.
 
 ## Review before adopting
 
-- `startOfLine: true` and "8 s idle then fire" were POC ergonomics. Replace with an explicit trigger: pressing **Enter** or a "Send" chip on the mention paragraph invokes; idle auto-fire is off by default (setting).
-- `invokedMentions` is in-memory in the browser — after reload the same block would be re-invoked. Store `invokedAt` on the mention node's attrs (synced), and have the runtime (14) treat a mention as a one-shot job keyed by `(blockId, mentionId)`.
-- Handles are only for writers. Extend the picker to reviewers ("@reviewer look at this") and to people (notification only).
-- The mention node stores `id = handle`. Store `{ kind: "agent" | "person", id, label }` so renames do not break old mentions.
-- `flattenMentions` mutates a cloned block text for the agent; ensure the agent's `replace_text` locators computed on flattened text still resolve on the real block (write the test: block `"@arch write X"` → agent replaces `"write X"`).
+- **Writer-only by design**: handles exist only for writers, the picker lists only writers, and a mention exists only to fire a run. CollabDoc needs one participant registry (07) where people and agents both have handles, and one mention node whose target may be either.
+- `startOfLine: true` + "fire after 8 s idle" were POC ergonomics. Requests are sent explicitly (Enter / Send chip); idle auto-send is an opt-in setting for agents only.
+- The in-memory invoked guard does not survive reload. Persist request state on the node (`requestId`, `sentAt`) and let main dedupe by `requestId`.
+- Node stores `id = handle`; store `{ kind, id, label }` so renames do not break old mentions.
+- `flattenMentions` must keep locators valid: test that an agent's `replace_text` on `"@arch write X"` preserves the chip.
 
 ## Design
 
-- `Mention` extension configured with `char: "@"`, `allowSpaces: false`, items = invited agents (handle, name, role) + participants (name), grouped in the popup with role badges; keyboard navigation.
-- Node attrs: `{ kind, id, label, mentionId, invokedAt? }`. Rendered as a chip in the agent's color.
-- Agent invocation: when a block's first child is an agent mention and the user presses Enter (or clicks the chip's "Run"), the renderer emits `agents:invoke { blockId, mentionId, handle, instruction }` to main; the runtime (14) takes over and updates the chip state (`queued → working → done | failed`).
-- Person mention: emits an activity event and a badge for that participant (19); no document mutation beyond the node.
-- Agents reading blocks get mentions flattened to `@handle` text; agents writing text cannot create mention nodes (not in `ALLOWED_NODES`).
-- Settings toggle "Auto-run agent mentions after N seconds idle" (off by default).
+### Registry and handles (07)
+
+- Every participant has a `handle` (`[a-z0-9_-]{2,20}`, unique per document): people from their profile (default derived from name, editable), agents from their persona (13). The registry lists everyone recorded in `authors` for this document plus currently invited agents — **not only who is connected now**, so an offline collaborator can be mentioned and will find it on return.
+
+### Node
+
+- Tiptap `Mention` with `char: "@"`; items grouped **People / Agents** with role badges and presence dots; keyboard navigation; `@` + space inserts a literal `@`; not active in code blocks or links.
+- Node attrs `{ kind: "person" | "agent", id, handle, label, requestId?, sentAt?, state? }`; rendered as a chip in the target's color.
+
+### Requests
+
+- **Sending**: a paragraph whose first child is a mention, plus text, is a request. Enter (or the chip's Send) marks the node `sentAt` and emits `mentions:request { requestId, docId, blockId, target, text, origin: "document" | "comment", threadId? }` to main; main dedupes by `requestId` and routes:
+  - target **person** → notification record in that person's inbox (below); the chip shows `sent` and later `seen` when the person opens it.
+  - target **agent** → `agents:invoke` (14 for writers, 15 for reviewers); the chip shows `queued → working → done | failed`, with Retry on failure.
+- A mention without text (e.g. mid-sentence "as @ana said") is not a request: no run, but still a notification for a person and no-op for an agent.
+- **In comments** (09): `@handle` in a body/reply resolves through the same registry and emits the same request with `origin: "comment"`; agents answer **in the thread** (`reply_comment`) rather than editing, unless the thread has a suggestion being applied (15).
+- Settings (agents only): "Auto-send agent requests after N s idle" — off by default.
+
+### Inbox (people)
+
+- `userData/inbox/<userId>.json` on each install: `{ id, docId, blockId | threadId, from, text, at, read }` — written by main when a request targets the local user (host and guests each keep their own; a guest's inbox is fed over the sync connection through a `notify` control frame, and by scanning mention nodes/comment bodies on rejoin for anything newer than `lastSeenAt`).
+- UI: bell in the topbar with unread count; list with jump-to; marking read notifies the sender's chip (`seen`) via ephemeral presence when both are online.
+- Agents' "inbox" is `list_comments { mentioning: "me" }` plus the run queue — no separate store.
+
+### Agents reading/writing mentions
+
+- `get_blocks` flattens mention nodes to `@handle`; the `mention` node type is not in `ALLOWED_NODES`, so agents cannot insert chips into the document; in comment bodies they may write `@handle` text, which renders as a chip for humans.
 
 ## Acceptance criteria
 
-- [ ] AC-10.1 Typing `@` shows a picker with invited agents and connected participants; arrow keys + Enter insert a mention chip; Escape closes without inserting; `@` followed by a space inserts a literal `@`.
-- [ ] AC-10.2 A mention chip is a document node synced to guests and persisted; it renders with the target's color and label and is flattened to `@handle` in `get_blocks` output for agents.
-- [ ] AC-10.3 `@writer draft an intro` + Enter dispatches exactly one `agents:invoke` with `blockId`, `mentionId`, `handle`, `instruction = "draft an intro"`; pressing Enter again on the same block does not re-invoke (chip shows state); the guard survives renderer reload.
-- [ ] AC-10.4 The chip shows `queued / working / done / failed` states driven by runtime events; failed shows the reason on hover and offers Retry.
-- [ ] AC-10.5 Mentioning a person adds an activity row "You mentioned Ana in ¶4" on all sides and a badge on Ana's participant row; clicking it scrolls to the block.
-- [ ] AC-10.6 Removing an agent from the session leaves existing mention chips intact (label preserved) but greys them out and disables Run.
-- [ ] AC-10.7 A block `"@arch write X"` edited by the agent via `replace_text { locator: { find: "write X" } }` results in `"@arch <new text>"` with the mention chip preserved (locator resolution accounts for the flattened prefix).
-- [ ] AC-10.8 With the idle auto-run setting enabled, a mention paragraph left untouched for N seconds invokes once; typing again before N seconds resets the timer.
-- [ ] AC-10.9 The picker is not shown, and `@` is a literal character, inside code blocks and inside links.
+- [ ] AC-10.1 Typing `@` shows People and Agents groups with handles, names, role badges and presence; the list includes a collaborator who is currently offline but has edited this document before; arrows + Enter insert a chip; Escape cancels; `@` + space is literal; no picker inside code blocks or links.
+- [ ] AC-10.2 A chip is a synced, persisted document node rendered in the target's color; `get_blocks` returns it flattened as `@handle`; agents cannot create mention nodes (attempt → `schema`).
+- [ ] AC-10.3 Person request: `@ana please check the numbers` + Enter creates one inbox entry for Ana (host or guest) with the block text and a jump link; the sender's chip shows `sent`, then `seen` when Ana opens it; nothing is created twice after a renderer reload.
+- [ ] AC-10.4 Offline recipient: Ana is disconnected when mentioned; on rejoining (08) her inbox shows the mention and the topbar badge counts it.
+- [ ] AC-10.5 Agent request: `@writer draft an intro` + Enter dispatches exactly one `agents:invoke` with `requestId`, `blockId`, `handle`, `instruction = "draft an intro"`; Enter again does not re-send; the guard survives reload; chip states follow runtime events and Failed offers Retry.
+- [ ] AC-10.6 Comment mentions: `@reviewer is this claim supported?` in a reply produces a reviewer run scoped to the thread's block whose answer arrives as a reply in the same thread; `@ana` in a reply produces an inbox entry pointing at the thread.
+- [ ] AC-10.7 A block `"@arch write X"` edited by the agent via `replace_text { find: "write X" }` becomes `"@arch <new text>"` with the chip preserved.
+- [ ] AC-10.8 Removing an agent or a collaborator leaving leaves chips intact (label kept) but greyed; Send is disabled for removed agents; mentions of a person who left still land in their inbox on return.
+- [ ] AC-10.9 Handles are unique per document; renaming a person or agent updates chip labels everywhere while old mentions keep resolving by `id`.
+- [ ] AC-10.10 Inbox: unread count in the topbar, list sorted newest first, jump-to opens the document/block/thread, mark-read individually or all; inbox is per install and never synced to other users.
+- [ ] AC-10.11 With idle auto-send enabled, an agent request paragraph left untouched for N seconds is sent once; typing resets the timer; the setting never applies to person mentions.
 
 ## Out of scope
 
-Mentioning documents or blocks (`#block`); email/push notifications for mentioned people who are offline.
+Mentioning documents/blocks (`#block`); email/push notifications; group handles (`@everyone`); mention-based permissions.

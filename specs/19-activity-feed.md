@@ -21,8 +21,8 @@ Replace the in-memory list of reducer strings with a real, persisted, filterable
 ## Design
 
 - Storage: `userData/activity/<docId>.jsonl` (append-only, rotated at 5 MB) written by main; the Loro document is not used for activity because it must include non-document events and must not sync to guests by default.
-- Event shape: `{ id, at, docId, actor: { id, name, role, color }, kind, summary, detail?, runId?, ok }`; kinds: `document`, `edit` (one per history commit, summarised), `comment`, `mention`, `agent-run`, `agent-step`, `share`, `peer`, `mcp`, `provider`, `error`.
-- Producers: `DocumentRegistry` (open/save/close/import/export), history subscriber (edit rows from 05 commits), comments store, `AgentRuntime` (run start/steps/end with tokens if the model reports usage), `TunnelHost`/`GuestClient`, `DocumentMcpServer`, `ProviderRegistry`.
+- Event shape: `{ id, at, docId, actor: { id, name, role, color }, kind, summary, detail?, runId?, ok }`; kinds: `document`, `edit` (one per history commit, summarised), `comment` (open/reply/resolve by any participant), `mention` (request sent/seen, person or agent), `agent-run`, `agent-step`, `share`, `peer`, `mcp`, `provider`, `error`. Person-directed items (mentions of you, replies to your threads) also feed the inbox in 10; Activity is the full log, the inbox is what needs your attention.
+- Producers: `DocumentRegistry` (open/save/close/import/export), history subscriber (edit rows from 05 commits), comments store, `AgentRuntime` (run start/steps/end with tokens if the model reports usage), `PeerHost`/`PeerGuest` (08), `DocumentMcpServer`, `ProviderRegistry`.
 - Rail Activity tab: newest first, grouped runs (collapsed by default, expandable to steps), filters by kind and actor, search, "Jump to" (block, comment, history entry), export as JSONL/Markdown.
 - Guests see their own local activity; host-side events are not synced except those already visible through the document (edits, comments).
 
@@ -33,8 +33,8 @@ Replace the in-memory list of reducer strings with a real, persisted, filterable
 - [ ] AC-19.3 Agent runs appear as one collapsed row (`Writer · drafted intro · 4 steps · 1 230 tokens · 12 s`) expandable to steps with tool name, summary, and ok/error; token counts are shown when the provider reports usage and omitted otherwise (never guessed).
 - [ ] AC-19.4 Filters by kind and actor and the search box combine; the visible count is shown; clearing filters restores all.
 - [ ] AC-19.5 "Jump to" from an edit row selects the History entry (05); from a comment row selects the comment (09); from an agent row filters History to that run.
-- [ ] AC-19.6 Errors from any subsystem (provider auth, tunnel down, MCP source failure) appear as `error` rows with the typed reason and are also shown in the notice bar once.
-- [ ] AC-19.7 Export writes JSONL or Markdown for the current filter; the file contains no secrets (grep for provider keys and tunnel tokens in a test).
+- [ ] AC-19.6 Errors from any subsystem (provider auth, peer unreachable / auth failure, MCP source failure) appear as `error` rows with the typed reason and are also shown in the notice bar once.
+- [ ] AC-19.7 Export writes JSONL or Markdown for the current filter; the file contains no secrets (grep for provider keys, join codes and swarm keys in a test).
 - [ ] AC-19.8 The renderer receives events in batches (≤ 10/100 ms) and the tab stays responsive with 10 000 events (virtualised list).
 - [ ] AC-19.9 The old in-memory `push-activity` path is removed; the reducer no longer holds activity.
 

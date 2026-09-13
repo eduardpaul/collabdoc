@@ -4,7 +4,7 @@
 
 ## Summary
 
-The three ways a Writer is put to work: **Ask** (free-text instruction from the rail, optionally scoped to the current selection), **Mention** (`@handle instruction` in a paragraph), and **Rewrite selection** (selection bar). All three become runtime jobs whose result lands in the document as attributed, undoable commits, with the writer claiming blocks while it works so humans see where it is.
+The four ways a Writer is put to work: **Ask** (free-text instruction from the rail, optionally scoped to the current selection), **Mention** (`@handle instruction` in a paragraph — the same request mechanism people receive as notifications, 10), **Comment request** (`@handle …` in a comment thread — the writer answers in the thread, or edits when the thread's suggestion is being applied), and **Rewrite selection** (selection bar). All three become runtime jobs whose result lands in the document as attributed, undoable commits, with the writer claiming blocks while it works so humans see where it is.
 
 ## Current state (collabdoc)
 
@@ -26,7 +26,7 @@ The three ways a Writer is put to work: **Ask** (free-text instruction from the 
 
 ## Design
 
-- Job kinds: `ask { instruction, scope? }`, `mention { blockId, mentionId, instruction }`, `rewrite { blockId, locator, instruction }`.
+- Job kinds: `ask { instruction, scope? }`, `mention { requestId, blockId, instruction }`, `thread { requestId, threadId, blockId, text }` (reply-only unless it carries an apply suggestion from 15), `rewrite { blockId, locator, instruction }`.
 - Prompt context: document outline (`get_document` pre-fetched and injected to save a step), the scoped blocks' full text, open comments on those blocks, and the instruction. Rules generated from 13.
 - Scope enforcement: a writer run with a scope may only write to the scoped block ids (plus `insert_blocks` adjacent to them); out-of-scope writes are rejected by the session with `forbidden` and counted as an error in the run record.
 - Presence: the runtime calls `set_presence` with claims on the scoped blocks before the model starts and clears them on finish.
@@ -44,7 +44,8 @@ The three ways a Writer is put to work: **Ask** (free-text instruction from the 
 - [ ] AC-14.7 A run with zero writes ends as `done` with the notice "made no changes: <summary>" rather than as an error.
 - [ ] AC-14.8 Each writer commit message names the tool and a ≤ 80-char summary; History filters by the writer and shows the diff for each commit.
 - [ ] AC-14.9 The writer's output never contains node types outside `ALLOWED_NODES` or mention nodes; attempts are rejected with `schema` and reported.
-- [ ] AC-14.10 End-to-end test with a mocked model covers all three job kinds and runs in CI without network.
+- [ ] AC-14.10 Comment request: `@writer suggest a shorter version` in a thread produces a `reply_comment` from the writer in that thread and no document edit; the same thread with a pending suggestion accepted as "Apply with writer" (15) produces a scoped edit plus a reply summarising it.
+- [ ] AC-14.11 End-to-end test with a mocked model covers all four job kinds and runs in CI without network.
 
 ## Out of scope
 

@@ -38,7 +38,7 @@ Nothing. Document content is a string.
 - `DocumentSession` constructor: `(hub, actorProfile, { allowedTools, enforceClaims, limits })`. Each session owns a `LoroDoc` fork and re-exports every local commit to the hub with `origin = actor:<id>` and a `message` describing the tool call.
 - Attribution: on first commit each session writes `{actorId, name, color, role}` into the `authors` root map keyed by its peer id (`registerAuthor`). History (05) reads it back.
 - Document metadata root map `meta`: `title`, `createdAt`, `schemaVersion`, `docId`.
-- Tool surface = exactly the fifteen tools in `shared/types.ts`, role-gated. Everything an agent or MCP client can do to a document goes through `DocumentSession.call(toolName, args)` which returns `MutationResult | ReadResult`; this single choke point is where logging and limits live.
+- Tool surface = the fifteen tools in `shared/types.ts` plus the thread tools added by 09 (`reply_comment`, `resolve_comment`), role-gated. Everything an agent or MCP client can do to a document goes through `DocumentSession.call(toolName, args)` which returns `MutationResult | ReadResult`; this single choke point is where logging and limits live.
 - `TEXT_STYLE_CONFIG` is applied via `doc.configTextStyle` on every `LoroDoc` we create (hub, forks, guests) — never forget the guest side.
 
 ## Acceptance criteria
@@ -47,7 +47,7 @@ Nothing. Document content is a string.
 - [ ] AC-02.2 A `SyncHub` can be created empty; its document has a `meta` map with `docId`, `title`, `schemaVersion = 1`, and a single empty paragraph with a `blockId`.
 - [ ] AC-02.3 Two `DocumentSession`s on the same hub see each other's writes: a `replace_text` in session A is visible in `get_blocks` in session B synchronously after the call returns.
 - [ ] AC-02.4 Every tool in `TOOL_DEFINITIONS` is implemented; calling a tool outside a session's `allowedTools` returns `{ ok:false, error:"schema" }` (or a dedicated `forbidden` kind — pick one and document it) and does not change the document.
-- [ ] AC-02.5 A reviewer-role session cannot mutate text: `insert_text`, `replace_text`, `insert_blocks`, `update_block`, `delete_blocks`, `apply_marks`, `undo`, `redo` are all rejected; `add_comment` succeeds.
+- [ ] AC-02.5 A reviewer-role session cannot mutate text: `insert_text`, `replace_text`, `insert_blocks`, `update_block`, `delete_blocks`, `apply_marks`, `undo`, `redo` are all rejected; `add_comment`, `reply_comment`, `resolve_comment` succeed.
 - [ ] AC-02.6 Locator resolution: `find` with `occurrence` picks the nth match; `expected` mismatch returns `conflict` with the current block text; a stale anchor after concurrent edits resolves to the moved position or returns `invalid_locator`, never to a wrong span. Each case has a unit test.
 - [ ] AC-02.7 Concurrent edits from two sessions to the same block converge to the same text in both sessions and on the hub (property-style test with random interleavings, ≥ 200 iterations).
 - [ ] AC-02.8 Limits: `insert_text` over `MAX_INSERT_CHARS`, `insert_blocks` over `MAX_BLOCKS_PER_CALL`, and `get_blocks` over 50 ids return `limit`; a block type not in `ALLOWED_NODES` returns `schema`.
@@ -62,4 +62,5 @@ Transport (03), persistence (04), UI (05/09), agent scheduling (12).
 
 ## Open questions
 
+- The human's own `DocumentSession` (renderer side) uses the same tool surface for comments so human and agent comment actions are attributed and undoable identically; text editing by humans goes through `loro-prosemirror`, not tools.
 - Should `meta.title` be a `LoroText` (collaboratively editable) or a plain map value (last-writer-wins)? Recommendation: plain value; titles are short and conflicts are rare.

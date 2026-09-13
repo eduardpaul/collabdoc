@@ -21,7 +21,7 @@ Undo/redo backed by Loro's `UndoManager`, scoped to the acting participant: a hu
 - lorocollab's `UndoManager` options were tuned for one peer per session; verify `mergeInterval` and `maxUndoSteps` explicitly and set them (current defaults are implicit).
 - Verify that undoing a text insert that a remote peer has since typed *inside* keeps the peer's text (Loro guarantees this, but write the test).
 - The client and the human `DocumentSession` in the runtime (lorocollab creates a server-side "human" session for the voice agent) must not both manage undo for the same actor. In CollabDoc the human's undo lives only in the renderer.
-- Comment status changes and checkpoint creation are commits too; decide whether they are undoable (recommend: comment accept/reject yes, checkpoints no — use `excludeOriginPrefixes` for `sys:`).
+- Comment status changes and checkpoint creation are commits too; decide whether they are undoable (recommend: comment open/reply/resolve yes, checkpoints no — use `excludeOriginPrefixes` for `sys:`).
 
 ## Design
 
@@ -38,7 +38,7 @@ Undo/redo backed by Loro's `UndoManager`, scoped to the acting participant: a hu
 - [ ] AC-06.4 Toolbar Undo/Redo buttons are disabled exactly when `canUndo`/`canRedo` are false; state updates immediately after each edit, undo, or remote import.
 - [ ] AC-06.5 After undo the caret sits at the end of the reverted range and the editor is scrolled so it is visible.
 - [ ] AC-06.6 Agent `undo` tool reverts only that agent's last successful write and returns the affected blocks and the new `UndoState`; calling `undo` with nothing to undo returns `ok:true` with `applied: "nothing to undo"` (not an error).
-- [ ] AC-06.7 Comment accept/reject (09) is undoable by the person who did it; checkpoint creation (05) is not undoable and is skipped by undo.
+- [ ] AC-06.7 Opening, replying to, or resolving a comment thread (09) is undoable by the participant who did it (human via `Mod+Z`, agent via its `undo` tool); checkpoint creation (05) is not undoable and is skipped by undo.
 - [ ] AC-06.8 Undo history is bounded (`maxUndoSteps = 200`) and does not grow main/renderer memory beyond that bound in a 10 000-edit stress test.
 
 ## Out of scope

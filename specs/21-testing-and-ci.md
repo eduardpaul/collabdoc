@@ -22,8 +22,8 @@ Establish the test pyramid the other specs assume: vitest for `src/core`, `src/s
 ## Design
 
 - **Unit/integration (vitest 5)**: `src/core`, `src/shared` (Node + jsdom environments), `src/main/**` with Electron APIs mocked via a small `electron` stub, renderer reducers/selectors/editor extensions with jsdom + `@tiptap/core` headless editor.
-- **Fakes**: `FakeChatModel` (scripted tool calls, observes `AbortSignal`), `FakeBackendCli` (17), `MemoryTransport` (03 in-page hub), `FakeTunnel` (08, in-process relay) so collaboration tests do not hit `loca.lt`.
-- **E2E (Playwright `_electron`)**: launch `out/` build; flows: new/open/save/recover, editor basics, undo, history restore, comments, mention → fake writer, ask → fake reviewer, share/join with two app instances over `FakeTunnel`, MCP server with the MCP Inspector CLI, settings/provider test against a local mock server.
+- **Fakes**: `FakeChatModel` (scripted tool calls, observes `AbortSignal`), `FakeBackendCli` (17), `MemoryTransport` (03 in-page hub and 08 in-process peer transport implementing `PeerTransport`) so collaboration tests never touch the DHT or the network.
+- **E2E (Playwright `_electron`)**: launch `out/` build; flows: new/open/save/recover, editor basics, undo, history restore, comments, mention → fake writer, ask → fake reviewer, share/join with two app instances over `MemoryTransport`, MCP server with the MCP Inspector CLI, settings/provider test against a local mock server.
 - **Perf checks**: typing latency (01), history incremental (05), presence bandwidth (07) as assertions with generous thresholds on CI.
 - **CI**: GitHub Actions — `lint`, `typecheck`, `test:unit` on Linux; `test:e2e` on Linux (xvfb), Windows, macOS; `build:unpack` artefacts; `npm audit` (20); coverage upload; required checks on `main`.
 - Scripts: `test`, `test:unit`, `test:e2e`, `test:watch`, `coverage`.
@@ -33,8 +33,8 @@ Establish the test pyramid the other specs assume: vitest for `src/core`, `src/s
 - [ ] AC-21.1 `npm test` runs unit + integration tests in under 60 s locally with no network and no credentials; `npm run test:e2e` runs the Playwright suite against a built app.
 - [ ] AC-21.2 Coverage thresholds enforced: `src/core` + `src/shared` ≥ 85 % lines, `src/main` ≥ 70 %, renderer state/editor ≥ 70 %; CI fails below.
 - [ ] AC-21.3 `FakeChatModel` supports scripted multi-step tool calls and abort; all AI-flow tests in 12–15 use it; a CI job proves the suite passes with `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` unset.
-- [ ] AC-21.4 The two-instance collaboration e2e test (host + guest over `FakeTunnel`) runs on all three OSes and asserts convergence after concurrent typing.
-- [ ] AC-21.5 A nightly opt-in job runs the real-network tests (localtunnel, Microsoft Learn MCP, real Claude Code CLI) and reports without blocking merges.
+- [ ] AC-21.4 The two-instance collaboration e2e test (host + guest over `MemoryTransport`) runs on all three OSes and asserts convergence after concurrent typing; a packaged-app smoke test on each OS loads `sodium-native`/`udx-native` and connects two in-process swarms over loopback (AC-08.14).
+- [ ] AC-21.5 A nightly opt-in job runs the real-network tests (Hyperswarm across two runners on different networks, Microsoft Learn MCP, real Claude Code CLI) and reports without blocking merges.
 - [ ] AC-21.6 Every spec's ACs that say "unit test" or "Playwright test" have a corresponding test file referenced by AC id in a comment (a script lists ACs without tests and the count is tracked to zero over the roadmap).
 - [ ] AC-21.7 CI produces unpacked builds for Linux/Windows/macOS as artefacts and runs the Fuses check (20).
 - [ ] AC-21.8 Flaky-test policy: retries are 0 on unit tests, 1 on e2e; any test retried more than 3 times in a week is filed as an issue automatically (or at least listed in the CI summary).

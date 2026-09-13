@@ -11,7 +11,7 @@ Written 2026-09-13 against `collabdoc` commit `0875431` and `../lorocollab` (Sep
 | UI scaffold | **Done (visual only).** Start screen, workspace (sidebar / editor / rail), settings modal with provider/MCP/agents tabs, share/join/unsaved dialogs, notice bar, activity feed | `src/renderer/src/screens/*`, `components/*` |
 | Editor | **Placeholder.** A `<textarea>`; toolbar wraps Markdown syntax; "@ mention" and "Comment" buttons insert literal characters | `screens/Workspace.tsx` |
 | CRDT / versioning | **Absent.** Content is a string in a React reducer | `state/AppState.tsx` |
-| Sharing | **Mocked.** `toggle-share` fabricates a `CD-XXXXXX` code and a `https://<slug>.loca.lt` URL; join loads placeholder text | `state/AppState.tsx`, `lib/ids.ts` |
+| Sharing | **Mocked.** `toggle-share` fabricates a `CD-XXXXXX` code and a `https://<slug>.loca.lt` URL (localtunnel-style; superseded by the Hyperswarm decision in 08); join loads placeholder text | `state/AppState.tsx`, `lib/ids.ts` |
 | LLM provider | **Form only.** Settings persisted; API key sits in plain `localStorage` under `collabdoc.v1`; nothing calls the endpoint | `lib/persist.ts`, `components/SettingsModal.tsx` |
 | MCP | **Mocked.** `connectMcp` flips status to `connected` after 700 ms | `state/useSessionActions.ts` |
 | Agents | **Mocked.** `askAgent` posts two activity rows 1.4 s apart | `state/useSessionActions.ts` |
@@ -37,13 +37,13 @@ The split we need is **Electron renderer + Electron main**, and the mapping of *
 | `src/shared/*` (types, constants, actors, ids, mentions, protocol) | Tool schemas, frame encoding, actor registry | `src/shared/*` — **port after review** (tool schemas are the contract agents see; wording matters) |
 | `src/client/extensions/*`, `src/client/editor/*` | Tiptap 3 + `loro-prosemirror` glue, comments decorations, block ids, `@writer` mention | `src/renderer/src/editor/*` — **port after review**, re-skin toolbar to the existing UI kit |
 | `src/client/components/HistoryPanel.tsx`, `SearchReplace.tsx`, `CommentCard.tsx`, `SelectionBar.tsx` | Panels | `src/renderer/src/components/*` — **rewrite against the existing UI kit**, using lorocollab for behaviour only |
-| `src/server/index.ts` (ws hub, loopback/origin guard) | Sync authority + transport | **replace** → Electron main hosts `SyncHub`; renderer talks over `MessagePort`; peers over WebSocket + localtunnel |
+| `src/server/index.ts` (ws hub, loopback/origin guard) | Sync authority + transport | **replace** → Electron main hosts `SyncHub`; renderer talks over `MessagePort`; peers over Hyperswarm (P2P, no ws server) |
 | `src/server/runtime.ts` (reviewer/writer/apply scheduling, caps) | Agent orchestration | **re-implement** the scheduling rules (coalescing, sweep caps, backlog) in main; the class itself is too entangled with Azure and voice to keep |
 | `src/server/llm-agent.ts` (Azure OpenAI tool loop) | LLM calls | **replace** → LangChain DeepAgents + provider abstraction + MCP backends |
 | `src/voice/*`, `VoiceBar` | Azure Voice Live | **drop** (out of scope) |
 | `infographic-figure.ts`, `mermaid-figure.ts` | Rich figures | **defer** — optional after 01 |
 
-Key design decision carried over (this one is not a POC shortcut, it is the idea): **agents never touch Loro/CRDT APIs**. They see block ids, text locators and a small tool set; the host resolves, validates, attributes and commits. Reviewers cannot mutate text. That is what makes "every AI modification strictly version-controlled and attributed" cheap to guarantee.
+Two principles run through every spec. First, **agents are participants, not features**: a person and an agent open comment threads, reply, resolve, get mentioned and are attributed through the same model — what differs is only how they answer (a person reads a notification, an agent runs). lorocollab is agent-centric in places (comments and mentions exist only for agents there); the specs correct that rather than copy it. Second, carried over because it is the idea and not a shortcut: **agents never touch Loro/CRDT APIs**. They see block ids, text locators and a small tool set; the host resolves, validates, attributes and commits. Reviewers cannot mutate text. That is what makes "every AI modification strictly version-controlled and attributed" cheap to guarantee.
 
 ## 3. Target architecture
 
@@ -55,9 +55,9 @@ Key design decision carried over (this one is not a POC shortcut, it is the idea
 │  ProviderRegistry(OpenAI-compatible / Anthropic / custom; safeStorage) │
 │  McpHost         (server: document tools for Claude/Codex CLIs;   │
 │                   client: knowledge MCPs for agents)              │
-│  TunnelHost      (ws on 127.0.0.1 → localtunnel URL + join code)  │
+│  PeerHost        (Hyperswarm topic + join code; no listening port)│
 └──────┬──────────────────────────────┬────────────────────────────┘
-       │ MessagePort (binary frames)  │ WebSocket (binary frames)
+       │ MessagePort (binary frames)  │ Hyperswarm (Noise-encrypted UDP)
 ┌──────▼───────────┐          ┌───────▼──────────┐
 │ Renderer (React) │          │ Peer CollabDoc   │
 │ Tiptap 3 + Loro  │          │ (guest instance) │
@@ -66,6 +66,8 @@ Key design decision carried over (this one is not a POC shortcut, it is the idea
 ```
 
 The renderer is *a client* of main exactly as the browser is a client of lorocollab's server. Guests connect to the host's main process the same way, so the sync code path is identical for local and remote participants.
+
+**Networking decision (2026-09-13):** the Scope named localtunnel; v1 uses **Hyperswarm** instead — direct, Noise-encrypted, keypair-authenticated P2P connections with DHT discovery, no relay we depend on and no listening port on the host. The trade-offs (native modules in Electron, public DHT bootstrap, hole-punch failures on strict NATs, no browser guests) and the mitigation plan are in [08](08-p2p-sharing-hyperswarm.md). `Scope.md` is updated to match.
 
 ## 4. Phases and features
 
@@ -87,9 +89,9 @@ Each feature is one file in this folder. "Depends on" is a hard ordering; everyt
 | # | Feature | Depends on |
 | --- | --- | --- |
 | [07](07-presence-and-identity.md) | Identity, presence, remote cursors, participant list | 03 |
-| [08](08-p2p-sharing-localtunnel.md) | Host/join a session over localtunnel with a connection code | 03, 04, 07 |
-| [09](09-comments-and-review.md) | Inline comments, cards, accept/reject/reply | 03 |
-| [10](10-mentions.md) | `@` mentions of agents and people | 01, 09 |
+| [08](08-p2p-sharing-hyperswarm.md) | Host/join a session peer-to-peer over Hyperswarm with a connection code | 03, 04, 07 |
+| [09](09-comments-and-review.md) | Comment threads any participant (person or agent) opens, answers, resolves | 03, 07 |
+| [10](10-mentions.md) | `@` mentions as requests to people (inbox) and agents (runs) | 01, 07, 09 |
 
 ### Phase 3 — AI participants
 
@@ -109,7 +111,7 @@ Each feature is one file in this folder. "Depends on" is a hard ordering; everyt
 | # | Feature | Depends on |
 | --- | --- | --- |
 | [19](19-activity-feed.md) | Real, persisted, filterable activity feed | 05, 08, 12 |
-| [20](20-security-hardening.md) | Secrets, loopback/tunnel auth, IPC validation, agent limits | 08, 11, 16 |
+| [20](20-security-hardening.md) | Secrets, P2P handshake auth, loopback MCP auth, IPC validation, agent limits | 08, 11, 16 |
 | [21](21-testing-and-ci.md) | Vitest core suite, Playwright Electron e2e, CI | all |
 
 ## 5. Suggested delivery order
@@ -117,14 +119,14 @@ Each feature is one file in this folder. "Depends on" is a hard ordering; everyt
 1. **01 → 02 → 03** together form the first milestone: the textarea is gone, typing produces attributed Loro ops, main owns the doc. Nothing user-visible changes beyond the editor, which is why it should go first.
 2. **04, 05, 06** make it a trustworthy single-user editor (save, history, undo). Ship this as v0.2.
 3. **11 → 12 → 13 → 14/15** gets a Writer and a Reviewer actually editing/commenting through an API key. v0.3.
-4. **07 → 08** adds the tunnel. It is independent of AI and can be built in parallel by a second person. v0.4.
+4. **07 → 08** adds P2P sharing over Hyperswarm. It is independent of AI and can be built in parallel by a second person; start its native-module and NAT verification early because it is the main packaging risk. v0.4.
 5. **09, 10** are needed by 14/15 but small; build them right after 03.
 6. **16 → 17 → 18** deliver the MCP promises in the Scope. v0.5.
 7. **19, 20, 21** run continuously; 20 has hard gates before any public build.
 
 ## 6. Versions to target (checked 2026-09-13)
 
-`loro-crdt 1.16.1`, `loro-prosemirror 0.4.4`, `@tiptap/* 3.31.3`, `localtunnel 2.0.2`, `deepagents 1.13.4`, `@langchain/core 1.2.11`, `@langchain/langgraph 1.4.15`, `@langchain/openai 1.5.13`, `@langchain/anthropic 1.5.10`, `@langchain/mcp-adapters 1.1.4`, `@modelcontextprotocol/sdk 1.30.0`, `electron 44.3.0`, `electron-vite 5.0.0`, `vitest 5.0.0`.
+`loro-crdt 1.16.1`, `loro-prosemirror 0.4.4`, `@tiptap/* 3.31.3`, `hyperswarm 4.17.1`, `hyperdht 6.34.0`, `sodium-native 5.1.0`, `udx-native 1.21.1`, `deepagents 1.13.4`, `@langchain/core 1.2.11`, `@langchain/langgraph 1.4.15`, `@langchain/openai 1.5.13`, `@langchain/anthropic 1.5.10`, `@langchain/mcp-adapters 1.1.4`, `@modelcontextprotocol/sdk 1.30.0`, `electron 44.3.0`, `electron-vite 5.0.0`, `vitest 5.0.0`.
 
 ## 7. Conventions used in the specs
 
