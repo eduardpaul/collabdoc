@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
+import type { HistoryEntry } from '@core/history'
 import { DocumentEditor } from '../components/DocumentEditor'
+import { HistoryPanel } from '../components/HistoryPanel'
 import { Button, Icon, StatusDot, TextArea, TextInput } from '../components/ui'
 import { hostLabel } from '../lib/host'
 import { useAppState } from '../state/AppState'
 import { aiReady } from '../state/selectors'
 import { useSessionActions } from '../state/useSessionActions'
 import { useDocumentClient } from '../sync/useDocumentClient'
+import { useHistory } from '../sync/useHistory'
 import { usePresence } from '../sync/usePresence'
 import type { Agent } from '../types'
 
@@ -18,8 +21,12 @@ export function Workspace(): React.JSX.Element | null {
   const actions = useSessionActions()
   const session = state.session
   const client = useDocumentClient(session?.id ?? '')
+  const history = useHistory(client)
   const [ask, setAsk] = useState('')
   const [blockMarkdown, setBlockMarkdown] = useState('')
+  const [selectedHistory, setSelectedHistory] = useState<string | null>(null)
+  const [travel, setTravel] = useState<HistoryEntry | null>(null)
+  const [restoreTo, setRestoreTo] = useState<HistoryEntry | null>(null)
   const ready = aiReady(state)
 
   useEffect(() => {
@@ -217,6 +224,11 @@ export function Workspace(): React.JSX.Element | null {
               key={session.id}
               client={client}
               readOnly={session.share.readOnly}
+              history={history}
+              travel={travel}
+              restoreTo={restoreTo}
+              onCloseTravel={() => setTravel(null)}
+              onRestored={() => setRestoreTo(null)}
               onNotice={(message) => dispatch({ type: 'notice', message })}
               onMarkdown={setBlockMarkdown}
               title={
@@ -247,6 +259,13 @@ export function Workspace(): React.JSX.Element | null {
             onClick={() => dispatch({ type: 'set-right-tab', tab: 'agents' })}
           >
             Agents
+          </button>
+          <button
+            type="button"
+            className={`tabs__btn ${state.rightTab === 'history' ? 'is-active' : ''}`}
+            onClick={() => dispatch({ type: 'set-right-tab', tab: 'history' })}
+          >
+            History
           </button>
           <button
             type="button"
@@ -364,6 +383,21 @@ export function Workspace(): React.JSX.Element | null {
             >
               <Icon name="plus" /> Manage agents
             </Button>
+          </div>
+        ) : state.rightTab === 'history' && client ? (
+          <div className="rail__body">
+            <HistoryPanel
+              client={client}
+              history={history}
+              youId={state.profile.userId}
+              selectedId={selectedHistory}
+              onSelect={setSelectedHistory}
+              onView={setTravel}
+              onRestore={(entry) => {
+                setTravel(null)
+                setRestoreTo(entry)
+              }}
+            />
           </div>
         ) : state.rightTab === 'markdown' ? (
           <div className="rail__body">

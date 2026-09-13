@@ -15,6 +15,14 @@ export const NODE_NAME_KEY = 'nodeName'
 export const META_KEY = 'meta'
 export const AUTHORS_KEY = 'authors'
 export const COMMENTS_KEY = 'comments'
+export const CHECKPOINTS_KEY = 'checkpoints'
+
+/** Human typing is one history entry until 1 s idle or a block switch (05). */
+export const HUMAN_COMMIT_MERGE_S = 1
+export const HUMAN_COMMIT_IDLE_MS = 1_000
+/** History UI waits this long after edits before recomputing (lorocollab). */
+export const HISTORY_SETTLE_MS = 400
+export const HISTORY_DIFF_CACHE = 32
 
 export const BLOCK_ID_ATTR = 'blockId'
 export const SCHEMA_VERSION = 1

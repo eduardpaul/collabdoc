@@ -1,5 +1,7 @@
 import type { Editor, JSONContent } from '@tiptap/core'
+import type { EditorState } from '@tiptap/pm/state'
 import { NodeSelection } from '@tiptap/pm/state'
+import { BLOCK_ID_ATTR } from '@shared/constants'
 import { docToMarkdown } from './markdown'
 
 export function currentBlockJson(editor: Editor): JSONContent | null {
@@ -19,6 +21,20 @@ export function currentBlockJson(editor: Editor): JSONContent | null {
     ) {
       return node.toJSON() as JSONContent
     }
+  }
+  return null
+}
+
+export function currentBlockId(state: EditorState): string | null {
+  const sel = state.selection
+  if (sel instanceof NodeSelection) {
+    const id = sel.node.attrs?.[BLOCK_ID_ATTR]
+    if (typeof id === 'string' && id) return id
+  }
+  const $from = sel.$from
+  for (let depth = $from.depth; depth > 0; depth -= 1) {
+    const id = $from.node(depth).attrs?.[BLOCK_ID_ATTR]
+    if (typeof id === 'string' && id) return id
   }
   return null
 }

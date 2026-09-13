@@ -6,6 +6,7 @@ import { PresenceStore } from './presence-store'
 import { AUTHOR_ORIGIN, META_KEY, SYSTEM_ORIGIN_PREFIX } from '@shared/constants'
 import { decodeDocFrame, encodeDocFrame, FrameError } from '@shared/protocol'
 import type { ActorProfile } from '@shared/types'
+import type { Frontier } from '@core/history'
 import { docJsonFromLoro, writeJsonToLoro } from './doc-json'
 
 export type ClientStatus = 'connecting' | 'live' | 'detached'
@@ -127,6 +128,16 @@ export class DocumentClient {
   seed(content: JSONContent): void {
     writeJsonToLoro(this.doc, content)
     this.markClean()
+  }
+
+  /** JSON of the document at `frontiers`, on a throwaway fork. */
+  previewJson(frontiers: Frontier[]): JSONContent | null {
+    if (frontiers.length === 0) return null
+    try {
+      return docJsonFromLoro(this.doc.forkAt(frontiers))
+    } catch {
+      return null
+    }
   }
 
   toJSON(): JSONContent {

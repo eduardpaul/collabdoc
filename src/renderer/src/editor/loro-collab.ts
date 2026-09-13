@@ -22,10 +22,13 @@ import {
   undo,
   type LoroDocType
 } from 'loro-prosemirror'
+import { commitBoundary } from '@core/document'
 import { ensureTextShape } from '@core/tree'
-import { BLOCK_ID_ATTR } from '@shared/constants'
+import { BLOCK_ID_ATTR, HUMAN_COMMIT_IDLE_MS } from '@shared/constants'
 import type { ActorProfile } from '@shared/types'
+import { attributionDecorations, type AttributionSource } from './attribution'
 import { claimDecorations } from './claims'
+import { currentBlockId } from './current-block'
 import type { PresenceStore } from '../sync/presence-store'
 
 declare module '@tiptap/core' {
@@ -42,6 +45,7 @@ export type LoroCollabOptions = {
   presence: PresenceStore
   undoManager: UndoManager
   profile: ActorProfile
+  attribution?: () => AttributionSource
 }
 
 /**
@@ -75,14 +79,16 @@ export const LoroCollab = Extension.create<LoroCollabOptions>({
   },
 
   addProseMirrorPlugins() {
-    const { doc, presence, undoManager, profile } = this.options
+    const { doc, presence, undoManager, profile, attribution } = this.options
     return [
       LoroSyncPlugin({ doc: doc as LoroDocType }),
       textShapeKeeper(doc),
+      humanCommitCutter(doc, () => `actor:${profile.actorId}`),
       remoteWritebackGuard(),
       remoteSelectionKeeper(),
       droppedBlockWatcher(doc),
       LoroUndoPlugin({ doc, undoManager }),
+      ...(attribution ? [attributionDecorations(attribution)] : []),
       LoroEphemeralCursorPlugin(presence.inner, {
         user: {
           name: profile.name,
@@ -141,6 +147,40 @@ function insertsBlocks(tr: Transaction): boolean {
       if (child.isBlock) block = true
     })
     return block
+  })
+}
+
+/**
+ * Human typing is one Loro change until 1 s idle or the caret moves to
+ * another block. LoroSyncPlugin commits every transaction; merge-interval
+ * groups those, and this plugin forces a boundary on block switch / idle.
+ */
+export function humanCommitCutter(doc: LoroDoc, origin: () => string): Plugin {
+  return new Plugin({
+    appendTransaction(trs, oldState, newState) {
+      if (!trs.some((tr) => tr.docChanged)) return null
+      const prev = currentBlockId(oldState)
+      const next = currentBlockId(newState)
+      if (prev && next && prev !== next) {
+        doc.setChangeMergeInterval(0)
+      }
+      return null
+    },
+    view() {
+      let idle: ReturnType<typeof setTimeout> | null = null
+      return {
+        update(view, prev) {
+          if (view.state.doc === prev.doc) return
+          if (idle) clearTimeout(idle)
+          idle = setTimeout(() => {
+            commitBoundary(doc, { origin: origin(), timestamp: Date.now() })
+          }, HUMAN_COMMIT_IDLE_MS)
+        },
+        destroy() {
+          if (idle) clearTimeout(idle)
+        }
+      }
+    }
   })
 }
 

@@ -356,6 +356,23 @@ describe('DocumentClient over a MessagePort', () => {
     detach()
     guest.detach()
   })
+
+  it('restore applies one new commit and keeps later history (AC-05.7)', async () => {
+    const client = await createAndOpen({ title: 'Restore' })
+    const editor = await bindEditor(client)
+    editor.commands.insertContent('first')
+    await tick(20)
+    const afterFirst = [...client.doc.frontiers()]
+    editor.commands.insertContent(' second')
+    await tick(20)
+    const json = client.previewJson(afterFirst)
+    expect(json).toBeTruthy()
+    client.doc.setChangeMergeInterval(0)
+    editor.commands.setContent(json!)
+    await tick(20)
+    expect(editorText(editor).trim()).toBe('first')
+    expect(editor.can().undo()).toBe(true)
+  })
 })
 
 function idOf(doc: import('loro-crdt').LoroDoc, index: number): string {

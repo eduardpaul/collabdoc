@@ -1,12 +1,18 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { EditorContent, useEditorState } from '@tiptap/react'
 import { NodeSelection } from '@tiptap/pm/state'
+import { commitBoundary } from '@core/document'
+import type { HistoryBlock, HistoryEntry } from '@core/history'
+import { previewAt } from '@core/history'
+import { HUMAN_COMMIT_MERGE_S } from '@shared/constants'
+import { attributionKey } from '../editor/attribution'
 import { AssetError, bytesToBase64, putFile, setAssetDocument } from '../editor/assets'
 import { currentBlockMarkdown } from '../editor/current-block'
 import { configureFigureHost } from '../editor/figure-host'
 import { exportSelectedFigure } from '../editor/figures/export'
 import { useCollabEditor } from '../editor/useCollabEditor'
 import type { DocumentClient } from '../sync/DocumentClient'
+import type { HistoryView } from '../sync/useHistory'
 import { EditorToolbar } from './EditorToolbar'
 import { FigureControls } from './FigureControls'
 import { SearchReplace } from './SearchReplace'
@@ -19,15 +25,31 @@ export function DocumentEditor({
   title,
   onNotice,
   onMarkdown,
-  readOnly = false
+  readOnly = false,
+  history,
+  travel,
+  restoreTo,
+  onCloseTravel,
+  onRestored
 }: {
   client: DocumentClient
   title: ReactNode
   onNotice: (message: string) => void
   onMarkdown: (markdown: string) => void
   readOnly?: boolean
+  history?: HistoryView
+  travel?: HistoryEntry | null
+  restoreTo?: HistoryEntry | null
+  onCloseTravel?: () => void
+  onRestored?: () => void
 }): React.JSX.Element {
-  const editor = useCollabEditor(client, !readOnly)
+  const [attribution, setAttribution] = useState(false)
+  const attributionRef = useRef({
+    enabled: false,
+    colorFor: (_blockId: string) => history?.index?.lastAuthor(_blockId)
+  })
+  const attributionFn = useCallback(() => attributionRef.current, [])
+  const editor = useCollabEditor(client, !readOnly, attributionFn)
   const docId = client.docId
   const [searchOpen, setSearchOpen] = useState(false)
   const [source, setSource] = useState<{ kind: SourceKind; text: string } | null>(null)
@@ -100,6 +122,47 @@ export function DocumentEditor({
   }, [markdown, onMarkdown])
 
   useEffect(() => {
+    attributionRef.current = {
+      enabled: attribution,
+      colorFor: (blockId) => history?.index?.lastAuthor(blockId)
+    }
+  }, [attribution, history])
+
+  useEffect(() => {
+    if (editor.isDestroyed) return
+    editor.view.dispatch(editor.state.tr.setMeta(attributionKey, { refresh: true }))
+  }, [editor, attribution, history?.version])
+
+  const applyRestore = (entry: HistoryEntry): void => {
+    const json = client.previewJson(entry.frontiers)
+    if (!json) return
+    client.doc.setChangeMergeInterval(0)
+    editor.commands.setContent(json)
+    client.doc.setChangeMergeInterval(HUMAN_COMMIT_MERGE_S)
+    commitBoundary(client.doc, {
+      origin: `actor:${client.profile.actorId}`,
+      message: 'Restore version',
+      timestamp: Date.now()
+    })
+  }
+
+  useEffect(() => {
+    if (!restoreTo || editor.isDestroyed) return
+    const json = client.previewJson(restoreTo.frontiers)
+    if (json) {
+      client.doc.setChangeMergeInterval(0)
+      editor.commands.setContent(json)
+      client.doc.setChangeMergeInterval(HUMAN_COMMIT_MERGE_S)
+      commitBoundary(client.doc, {
+        origin: `actor:${client.profile.actorId}`,
+        message: 'Restore version',
+        timestamp: Date.now()
+      })
+    }
+    onRestored?.()
+  }, [client, editor, restoreTo, onRestored])
+
+  useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       const mod = event.metaKey || event.ctrlKey
       if (mod && event.key.toLowerCase() === 'f') {
@@ -142,6 +205,8 @@ export function DocumentEditor({
         editor={editor}
         searchOpen={searchOpen}
         onToggleSearch={() => setSearchOpen((value) => !value)}
+        attribution={attribution}
+        onToggleAttribution={() => setAttribution((value) => !value)}
       />
       <SearchReplace editor={editor} open={searchOpen} onClose={() => setSearchOpen(false)} />
       <FigureControls
@@ -187,10 +252,62 @@ export function DocumentEditor({
       <article className="page">
         {title}
         <div className="page__body">
+          {travel ? (
+            <TravelOverlay
+              entry={travel}
+              blocks={previewAt(client.doc, travel.frontiers)}
+              onClose={() => onCloseTravel?.()}
+              onRestore={() => {
+                applyRestore(travel)
+                onCloseTravel?.()
+              }}
+            />
+          ) : null}
           <EditorContent editor={editor} />
-          <SelectionBar editor={editor} />
+          {travel ? null : <SelectionBar editor={editor} />}
         </div>
       </article>
+    </div>
+  )
+}
+
+function TravelOverlay({
+  entry,
+  blocks,
+  onClose,
+  onRestore
+}: {
+  entry: HistoryEntry
+  blocks: HistoryBlock[]
+  onClose: () => void
+  onRestore: () => void
+}): React.JSX.Element {
+  const when = new Date(entry.timestamp).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+  return (
+    <div className="travel-overlay" data-testid="travel-overlay">
+      <div className="travel-banner">
+        <p>
+          Viewing version from {when} by {entry.author.name}
+        </p>
+        <div className="travel-banner__actions">
+          <Button size="sm" variant="primary" onClick={onRestore}>
+            Restore
+          </Button>
+          <Button size="sm" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </div>
+      <div className="travel-doc" aria-readonly="true">
+        {blocks.map((block, i) => (
+          <section key={block.blockId ?? i} data-type={block.type}>
+            {block.text || <span className="muted">Empty {block.type}</span>}
+          </section>
+        ))}
+      </div>
     </div>
   )
 }

@@ -20,7 +20,7 @@ import type {
   UndoState
 } from '../shared/types'
 import { ensureAuthor } from './authors'
-import { configureDocument } from './document'
+import { commitBoundary, configureDocument } from './document'
 import { EPHEMERAL_TIMEOUT_MS, type SyncHub } from './hub'
 import { asString, fail, isMutationResult, type SessionContext } from './tools/context'
 import { addComment, listComments, replyComment, resolveComment } from './tools/comments'
@@ -249,11 +249,15 @@ export class DocumentSession implements SessionContext {
       // Whatever landed before the throw must not stay pending: commit it
       // under a message that says so, then let `call()` report the error.
       closeGroup(this.undoManager)
-      this.doc.commit({ origin: this.origin, message: `failed: ${message}`, timestamp: Date.now() })
+      commitBoundary(this.doc, {
+        origin: this.origin,
+        message: `failed: ${message}`,
+        timestamp: Date.now()
+      })
       throw err
     }
     closeGroup(this.undoManager)
-    this.doc.commit({ origin: this.origin, message, timestamp: Date.now() })
+    commitBoundary(this.doc, { origin: this.origin, message, timestamp: Date.now() })
   }
 
   undoState(): UndoState {

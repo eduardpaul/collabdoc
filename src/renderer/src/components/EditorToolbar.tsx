@@ -20,11 +20,15 @@ type BlockValue =
 export function EditorToolbar({
   editor,
   searchOpen,
-  onToggleSearch
+  onToggleSearch,
+  attribution,
+  onToggleAttribution
 }: {
   editor: Editor
   searchOpen: boolean
   onToggleSearch: () => void
+  attribution?: boolean
+  onToggleAttribution?: () => void
 }): React.JSX.Element {
   const state = useEditorState({
     editor,
@@ -216,6 +220,14 @@ export function EditorToolbar({
         active={searchOpen}
         onClick={onToggleSearch}
       />
+      {onToggleAttribution ? (
+        <ToolButton
+          label="Show last author"
+          icon="users"
+          active={attribution}
+          onClick={onToggleAttribution}
+        />
+      ) : null}
       <ToolButton label="Mention" icon="at" disabled onClick={() => undefined} />
       <ToolButton label="Comment" icon="comment" disabled onClick={() => undefined} />
     </div>

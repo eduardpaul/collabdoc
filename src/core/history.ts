@@ -9,7 +9,9 @@ import {
   NODE_NAME_KEY,
   ROOT_DOC_KEY
 } from '../shared/constants'
+import type { AuthorRecord } from '../shared/types'
 import { readAuthors, unknownAuthor, type HistoryAuthor } from './authors'
+import { allBlocks, blockIdOf, firstText, getAttrs, getChildren } from './tree'
 
 export type Frontier = { peer: PeerID; counter: number }
 
@@ -28,6 +30,7 @@ export type HistoryEntry = {
   author: HistoryAuthor
   frontiers: Frontier[]
   parentFrontiers: Frontier[]
+  blockIds: string[]
 }
 
 export type HistoryBlock = { type: string; text: string; blockId?: string }
@@ -37,48 +40,134 @@ export type HistoryBlock = { type: string; text: string; blockId?: string }
  * `authors` map. Peers that never identified themselves are reported as
  * unknown rather than guessed.
  *
- * Walks `getAllChanges()` each time; 05 adds an incremental cache keyed by
- * frontier if this proves slow on long documents.
+ * Walks `getAllChanges()` each time. The History tab uses `HistoryIndex`
+ * (05) so new commits are appended without re-describing old ones.
  */
 export function listHistory(doc: LoroDoc): HistoryEntry[] {
   const authors = readAuthors(doc)
   const commentContainers = commentContainerIds(doc)
+  const containers = containerToBlockId(doc)
   const entries: HistoryEntry[] = []
   for (const [peer, changes] of doc.getAllChanges()) {
     for (const change of changes) {
-      const described = describeChange(doc, peer, change.counter, change.length, commentContainers)
-      if (described.details.length === 0 && !change.message) continue
-      const author = authors[peer] ?? unknownAuthor(peer)
-      const lastCounter = change.counter + Math.max(change.length, 1) - 1
-      const { details, added, removed } = described
-      const message = change.message ?? ''
-      entries.push({
-        id: `${change.counter}@${peer}`,
-        peer,
-        counter: change.counter,
-        length: change.length,
-        lamport: change.lamport,
-        timestamp: normalizeTimestamp(change.timestamp),
-        message,
-        details,
-        added,
-        removed,
-        summary: summarize(details, added, removed, message),
-        author,
-        frontiers: [{ peer: peer as PeerID, counter: lastCounter }],
-        parentFrontiers: (change.deps ?? []).map((dep) => ({
-          peer: dep.peer,
-          counter: dep.counter
-        }))
-      })
+      const entry = entryFromChange(doc, peer, change, authors, commentContainers, containers)
+      if (entry) entries.push(entry)
     }
   }
-  entries.sort((a, b) => {
-    if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp
-    if (a.lamport !== b.lamport) return a.lamport - b.lamport
-    return a.peer.localeCompare(b.peer)
-  })
+  entries.sort(compareHistory)
   return entries
+}
+
+export type ChangeLike = {
+  counter: number
+  length: number
+  lamport: number
+  timestamp: number
+  message?: string
+  deps?: Frontier[]
+}
+
+export function entryFromChange(
+  doc: LoroDoc,
+  peer: string,
+  change: ChangeLike,
+  authors: Record<string, AuthorRecord>,
+  commentContainers: Set<string>,
+  containers: Map<string, string>
+): HistoryEntry | null {
+  const described = describeChange(
+    doc,
+    peer,
+    change.counter,
+    change.length,
+    commentContainers,
+    containers
+  )
+  if (described.details.length === 0 && !change.message) return null
+  const author = authors[peer] ?? unknownAuthor(peer)
+  const lastCounter = change.counter + Math.max(change.length, 1) - 1
+  const { details, added, removed, blockIds } = described
+  const message = change.message ?? ''
+  return {
+    id: `${change.counter}@${peer}`,
+    peer,
+    counter: change.counter,
+    length: change.length,
+    lamport: change.lamport,
+    timestamp: normalizeTimestamp(change.timestamp),
+    message,
+    details,
+    added,
+    removed,
+    summary: summarize(details, added, removed, message),
+    author,
+    frontiers: [{ peer: peer as PeerID, counter: lastCounter }],
+    parentFrontiers: (change.deps ?? []).map((dep) => ({
+      peer: dep.peer,
+      counter: dep.counter
+    })),
+    blockIds
+  }
+}
+
+export function compareHistory(a: HistoryEntry, b: HistoryEntry): number {
+  if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp
+  if (a.lamport !== b.lamport) return a.lamport - b.lamport
+  return a.peer.localeCompare(b.peer)
+}
+
+export function commentContainerIds(doc: LoroDoc): Set<string> {
+  const ids = new Set<string>()
+  const root = doc.getMap(COMMENTS_KEY)
+  ids.add(root.id)
+  for (const key of root.keys()) {
+    const thread = root.get(key)
+    if (!(thread instanceof LoroMap)) continue
+    ids.add(thread.id)
+    const replies = thread.get('replies')
+    if (replies instanceof LoroList) ids.add(replies.id)
+  }
+  return ids
+}
+
+/** Map every live container id (node, attrs, children, text) to its blockId. */
+export function containerToBlockId(doc: LoroDoc): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const { node } of allBlocks(doc)) {
+    const blockId = blockIdOf(node)
+    if (!blockId) continue
+    map.set(node.id, blockId)
+    map.set(getAttrs(node).id, blockId)
+    map.set(getChildren(node).id, blockId)
+    const text = firstText(node)
+    if (text) map.set(text.id, blockId)
+  }
+  return map
+}
+
+export function filterHistory(
+  entries: HistoryEntry[],
+  options: { actorId?: string; query?: string } = {}
+): HistoryEntry[] {
+  const query = options.query?.trim().toLowerCase() ?? ''
+  return entries.filter((entry) => {
+    if (options.actorId && entry.author.actorId !== options.actorId) return false
+    if (!query) return true
+    return (
+      entry.summary.toLowerCase().includes(query) ||
+      entry.message.toLowerCase().includes(query) ||
+      entry.author.name.toLowerCase().includes(query)
+    )
+  })
+}
+
+export function authorCounts(entries: HistoryEntry[]): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const entry of entries) {
+    const id = entry.author.actorId
+    counts.set(id, (counts.get(id) ?? 0) + 1)
+  }
+  return counts
 }
 
 /** The top-level blocks as they were at `frontiers`, on a throwaway fork. */
@@ -95,32 +184,14 @@ export function livePreview(doc: LoroDoc): HistoryBlock[] {
   return readBlocks(doc)
 }
 
-/**
- * Thread maps and reply lists have their own container ids, so "is this op a
- * comment op" needs the set of containers under the `comments` root. Threads
- * are only ever soft-deleted, so walking the live map finds all of them.
- */
-function commentContainerIds(doc: LoroDoc): Set<string> {
-  const ids = new Set<string>()
-  const root = doc.getMap(COMMENTS_KEY)
-  ids.add(root.id)
-  for (const key of root.keys()) {
-    const thread = root.get(key)
-    if (!(thread instanceof LoroMap)) continue
-    ids.add(thread.id)
-    const replies = thread.get('replies')
-    if (replies instanceof LoroList) ids.add(replies.id)
-  }
-  return ids
-}
-
 function describeChange(
   doc: LoroDoc,
   peer: string,
   counter: number,
   length: number,
-  commentContainers: Set<string>
-): { details: string[]; added: number; removed: number } {
+  commentContainers: Set<string>,
+  containers: Map<string, string>
+): { details: string[]; added: number; removed: number; blockIds: string[] } {
   let ops: JsonOp[] = []
   try {
     const changes = doc.exportJsonInIdSpan({
@@ -130,14 +201,17 @@ function describeChange(
     })
     ops = changes.flatMap((change) => change.ops ?? [])
   } catch {
-    return { details: [], added: 0, removed: 0 }
+    return { details: [], added: 0, removed: 0, blockIds: [] }
   }
   const lines: string[] = []
+  const blockIds: string[] = []
   let added = 0
   let removed = 0
   for (const op of ops) {
     const container = String(op.container)
     const content = op.content as Record<string, unknown>
+    const blockId = containers.get(container)
+    if (blockId && !blockIds.includes(blockId)) blockIds.push(blockId)
     if (container.includes(AUTHORS_KEY)) continue
     if (container.includes(META_KEY)) {
       const line = describeMetaOp(content)
@@ -166,7 +240,7 @@ function describeChange(
     const line = describeOp(content, isText)
     if (line && !lines.includes(line)) lines.push(line)
   }
-  return { details: lines.slice(0, 6), added, removed }
+  return { details: lines.slice(0, 6), added, removed, blockIds }
 }
 
 function summarize(details: string[], added: number, removed: number, message: string): string {

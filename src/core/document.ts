@@ -3,6 +3,7 @@ import {
   ATTRIBUTES_KEY,
   BLOCK_ID_ATTR,
   CHILDREN_KEY,
+  HUMAN_COMMIT_MERGE_S,
   INIT_ORIGIN,
   META_KEY,
   NODE_NAME_KEY,
@@ -26,6 +27,8 @@ export type DocumentMeta = {
 export function configureDocument(doc: LoroDoc): void {
   doc.setRecordTimestamp(true)
   doc.configTextStyle(TEXT_STYLE_CONFIG)
+  // Consecutive local commits within this many seconds become one history entry.
+  doc.setChangeMergeInterval(HUMAN_COMMIT_MERGE_S)
 }
 
 /**
@@ -84,5 +87,15 @@ export function readMeta(doc: LoroDoc): DocumentMeta {
 /** Titles are short and conflicts rare, so a plain last-writer-wins value. */
 export function setTitle(doc: LoroDoc, title: string, origin: string): void {
   doc.getMap(META_KEY).set('title', title)
-  doc.commit({ origin, message: `rename to “${title}”`, timestamp: Date.now() })
+  commitBoundary(doc, { origin, message: `rename to “${title}”`, timestamp: Date.now() })
+}
+
+/** Commit that must not merge with the previous change (agent tools, checkpoints). */
+export function commitBoundary(
+  doc: LoroDoc,
+  options: { origin?: string; timestamp?: number; message?: string }
+): void {
+  doc.setChangeMergeInterval(0)
+  doc.commit(options)
+  doc.setChangeMergeInterval(HUMAN_COMMIT_MERGE_S)
 }

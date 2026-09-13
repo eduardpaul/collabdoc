@@ -50,6 +50,7 @@ export type IconName =
   | 'image'
   | 'mermaid'
   | 'infographic'
+  | 'history'
 
 const paths: Record<IconName, ReactNode> = {
   file: (
@@ -306,6 +307,12 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M6 17V10" />
       <path d="M12 17V7" />
       <path d="M18 17v-5" />
+    </>
+  ),
+  history: (
+    <>
+      <circle cx="12" cy="12" r="8" />
+      <path d="M12 8v5l3 2" />
     </>
   )
 }

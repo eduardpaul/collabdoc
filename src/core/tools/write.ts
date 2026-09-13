@@ -208,7 +208,9 @@ export function replaceText(ctx: SessionContext, args: Record<string, unknown>):
   if (claimed) return claimed
 
   const { start, end } = resolved.range
-  return ctx.mutate(`replace ${end - start} chars`, () => {
+  const previous = loroText.toString().slice(start, end)
+  const clip = (value: string): string => (value.length > 40 ? `${value.slice(0, 39)}…` : value)
+  return ctx.mutate(`replace_text in ${blockId}: "${clip(previous)}" → "${clip(text)}"`, () => {
     if (end > start) loroText.delete(start, end - start)
     if (text.length > 0) loroText.insert(start, text)
     return [node]
