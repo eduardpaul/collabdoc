@@ -13,6 +13,8 @@ export default defineConfig({
     environment: 'happy-dom',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     exclude: ['e2e/**', 'node_modules/**'],
+    // `--expose-gc` lets the registry memory test (AC-03.5) measure a settled heap.
+    poolOptions: { forks: { execArgv: ['--expose-gc'] } },
     coverage: {
       provider: 'v8',
       include: ['src/core/**/*.ts', 'src/shared/**/*.ts'],

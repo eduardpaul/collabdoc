@@ -1,0 +1,207 @@
+import type { JSONContent } from '@tiptap/core'
+import { LoroDoc, UndoManager, type VersionVector } from 'loro-crdt'
+import { CursorEphemeralStore } from 'loro-prosemirror'
+import { ensureAuthor } from '@core/authors'
+import { configureDocument, readMeta } from '@core/document'
+import { EPHEMERAL_TIMEOUT_MS } from '@core/hub'
+import { META_KEY, SYSTEM_ORIGIN_PREFIX } from '@shared/constants'
+import { decodeDocFrame, encodeDocFrame, FrameError } from '@shared/protocol'
+import type { ActorProfile } from '@shared/types'
+import { docJsonFromLoro, writeJsonToLoro } from './doc-json'
+
+export type ClientStatus = 'connecting' | 'live' | 'detached'
+
+export type ClientEvent =
+  | { type: 'status'; status: ClientStatus }
+  | { type: 'title'; title: string }
+  | { type: 'dirty'; dirty: boolean }
+  | { type: 'change'; by: 'local' | 'import' | 'checkout' }
+
+type Listener = (event: ClientEvent) => void
+
+/**
+ * The renderer's copy of one document.
+ *
+ * Owns a `LoroDoc` mirrored from the hub over a `MessagePort`, the presence
+ * store the cursor plugin writes into, and the undo manager scoped to this
+ * person's own commits. Tiptap binds to `doc` through `LoroCollab`; nothing
+ * else in the renderer holds document content.
+ *
+ *   connecting ── snapshot frame ──▶ live ── port closes / detach() ──▶ detached
+ */
+export class DocumentClient {
+  readonly docId: string
+  readonly doc: LoroDoc
+  readonly presence: CursorEphemeralStore
+  readonly undoManager: UndoManager
+  readonly profile: ActorProfile
+  private port: MessagePort | null = null
+  private statusValue: ClientStatus = 'connecting'
+  private titleValue = ''
+  private savedVersion: VersionVector | null = null
+  private dirtyValue = false
+  private readonly listeners = new Set<Listener>()
+  private readonly unsubscribe: Array<() => void> = []
+  private snapshotWaiters: Array<(ok: boolean) => void> = []
+
+  constructor(docId: string, profile: ActorProfile) {
+    this.docId = docId
+    this.profile = profile
+    this.doc = new LoroDoc()
+    configureDocument(this.doc)
+    this.presence = new CursorEphemeralStore(this.doc.peerIdStr, EPHEMERAL_TIMEOUT_MS)
+    this.undoManager = new UndoManager(this.doc, {
+      maxUndoSteps: 200,
+      mergeInterval: 500,
+      excludeOriginPrefixes: [SYSTEM_ORIGIN_PREFIX]
+    })
+
+    this.unsubscribe.push(
+      this.doc.subscribeLocalUpdates((bytes) => this.send('update', bytes)),
+      this.presence.subscribeLocalUpdates((bytes) => this.send('ephemeral', bytes)),
+      this.doc.subscribe((event) => {
+        const meta = this.doc.getMap(META_KEY)
+        const title = meta.get('title')
+        if (typeof title === 'string' && title !== this.titleValue) {
+          this.titleValue = title
+          this.emit({ type: 'title', title })
+        }
+        this.refreshDirty()
+        this.emit({ type: 'change', by: event.by })
+      })
+    )
+  }
+
+  get status(): ClientStatus {
+    return this.statusValue
+  }
+
+  get title(): string {
+    return this.titleValue
+  }
+
+  get dirty(): boolean {
+    return this.dirtyValue
+  }
+
+  /** Resolves once the first snapshot has been imported. */
+  whenLive(): Promise<boolean> {
+    if (this.statusValue === 'live') return Promise.resolve(true)
+    if (this.statusValue === 'detached') return Promise.resolve(false)
+    return new Promise((resolve) => this.snapshotWaiters.push(resolve))
+  }
+
+  bind(port: MessagePort): void {
+    if (this.port) throw new Error('DocumentClient is already bound to a port.')
+    this.port = port
+    port.onmessage = (event) => this.receive(event.data)
+    port.addEventListener('close', () => this.detach())
+    port.start()
+  }
+
+  subscribe(listener: Listener): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+
+  setTitle(title: string): void {
+    if (this.statusValue !== 'live') return
+    if (readMeta(this.doc).title === title) return
+    this.doc.getMap(META_KEY).set('title', title)
+    this.doc.commit({
+      origin: `actor:${this.profile.actorId}`,
+      message: 'rename',
+      timestamp: Date.now()
+    })
+  }
+
+  /** Replace an empty document's body with parsed file content, as one commit. */
+  seed(content: JSONContent): void {
+    writeJsonToLoro(this.doc, content)
+    this.markClean()
+  }
+
+  toJSON(): JSONContent {
+    return docJsonFromLoro(this.doc)
+  }
+
+  markClean(): void {
+    this.savedVersion = this.doc.version()
+    this.refreshDirty()
+  }
+
+  detach(): void {
+    if (this.statusValue === 'detached') return
+    this.setStatus('detached')
+    for (const waiter of this.snapshotWaiters.splice(0)) waiter(false)
+    for (const stop of this.unsubscribe.splice(0)) stop()
+    this.presence.setLocal({})
+    this.port?.close()
+    this.port = null
+  }
+
+  private receive(data: unknown): void {
+    let frame
+    try {
+      frame = decodeDocFrame(data)
+    } catch (error) {
+      console.warn(
+        `[collabdoc] dropped a malformed frame from the hub: ${error instanceof FrameError ? error.reason : 'error'}`
+      )
+      return
+    }
+    try {
+      if (frame.kind === 'ephemeral') {
+        this.presence.apply(frame.bytes)
+        return
+      }
+      this.doc.import(frame.bytes)
+    } catch (error) {
+      console.warn(`[collabdoc] could not apply a ${frame.kind} frame`, error)
+      return
+    }
+    if (frame.kind === 'snapshot' && this.statusValue === 'connecting') {
+      this.titleValue = readMeta(this.doc).title
+      // Attribution: this peer is in the document's authors map from now on.
+      ensureAuthor(this.doc, {
+        actorId: this.profile.actorId,
+        name: this.profile.name,
+        color: this.profile.color,
+        role: this.profile.role
+      })
+      this.markClean()
+      this.setStatus('live')
+      for (const waiter of this.snapshotWaiters.splice(0)) waiter(true)
+      this.emit({ type: 'title', title: this.titleValue })
+    }
+  }
+
+  private send(kind: 'update' | 'ephemeral', bytes: Uint8Array): void {
+    if (!this.port || this.statusValue === 'detached') return
+    try {
+      this.port.postMessage(encodeDocFrame(kind, bytes))
+    } catch (error) {
+      console.warn(`[collabdoc] could not send ${kind} frame`, error)
+    }
+  }
+
+  private refreshDirty(): void {
+    const dirty = this.savedVersion ? this.doc.version().compare(this.savedVersion) !== 0 : false
+    if (dirty !== this.dirtyValue) {
+      this.dirtyValue = dirty
+      this.emit({ type: 'dirty', dirty })
+    }
+  }
+
+  private setStatus(status: ClientStatus): void {
+    if (this.statusValue === status) return
+    this.statusValue = status
+    this.emit({ type: 'status', status })
+  }
+
+  private emit(event: ClientEvent): void {
+    for (const listener of this.listeners) listener(event)
+  }
+}

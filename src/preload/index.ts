@@ -1,5 +1,14 @@
-import { contextBridge } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+
+/**
+ * Main hands the renderer one end of a MessageChannel per attached document.
+ * A port cannot cross the context bridge, but `window.postMessage` can
+ * transfer it into the page — the documented way to keep `sandbox: true`.
+ */
+ipcRenderer.on('documents:port', (event, payload: { type: string; docId: string }) => {
+  window.postMessage(payload, '*', event.ports)
+})
 
 // Support both process.argv flag passed by main process and environment variable
 const isWsl = process.argv.includes('--is-wsl=true') || Boolean(process.env.WSL_DISTRO_NAME)
@@ -23,7 +32,14 @@ const api = {
       base64: string
     }): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:saveBytes', payload),
     readBytes: (filePath: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:readBytes', filePath)
+      electronAPI.ipcRenderer.invoke('documents:readBytes', filePath),
+    create: (payload: { title?: string }): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:create', payload),
+    attach: (docId: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:attach', docId),
+    release: (docId: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:release', docId),
+    debug: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:debug')
   },
   shell: {
     openExternal: (url: string): Promise<unknown> =>

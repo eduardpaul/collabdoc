@@ -334,6 +334,29 @@ export function createBlock(parent: LoroMap, index: number, input: NodeInput): L
   return node
 }
 
+/**
+ * Give every text-bearing block an (empty) `LoroText` child.
+ *
+ * `loro-prosemirror` writes an empty paragraph with no text container and
+ * creates one with the first keystroke. Undoing that keystroke then deletes
+ * the container together with anything another participant typed into it.
+ * Returns how many containers were added; the caller commits under a `sys:`
+ * origin so the shaping itself is never an undo step.
+ */
+export function ensureTextShape(doc: LoroDoc): number {
+  let added = 0
+  for (const { node } of allBlocks(doc)) {
+    const type = nodeName(node)
+    // Figures keep their caption in the text child; rules have no children at all.
+    if (isBlockContainerType(type) || type === 'horizontalRule') continue
+    const children = getChildren(node)
+    if (children.length > 0) continue
+    children.insertContainer(0, new LoroText())
+    added += 1
+  }
+  return added
+}
+
 /** Every blockId inside `node`, not counting `node` itself. */
 export function descendantBlockIds(node: LoroMap): Set<BlockId> {
   const out = new Set<BlockId>()

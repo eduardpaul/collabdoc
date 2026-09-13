@@ -68,6 +68,7 @@ export function ShareDialog(): React.JSX.Element | null {
 
 export function JoinDialog(): React.JSX.Element | null {
   const { state, dispatch } = useAppState()
+  const actions = useSessionActions()
   const [code, setCode] = useState('')
   if (!state.joinOpen) {
     return null
@@ -79,7 +80,7 @@ export function JoinDialog(): React.JSX.Element | null {
       dispatch({ type: 'notice', message: 'Enter a connection code from the host.' })
       return
     }
-    dispatch({ type: 'join-session', code: next })
+    void actions.joinSession(next)
   }
 
   return (

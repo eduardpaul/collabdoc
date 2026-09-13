@@ -13,8 +13,15 @@ import {
   type DocumentSavePayload
 } from './documents'
 import { applyWslChromiumFlags, isWsl } from './wsl'
+import { DocumentRegistry } from '@core/registry'
+import { registerDocumentIpc } from './documents/ipc'
 
 let mainWindow: BrowserWindow | null = null
+
+/** Every open document lives here; renderers, agents and peers attach to it. */
+const documents = new DocumentRegistry({
+  warn: (message, detail) => console.warn(`[collabdoc] ${message}`, detail ?? '')
+})
 
 function openExternalUrl(url: string): void {
   // Validate URL protocol to prevent arbitrary scheme execution
@@ -127,6 +134,8 @@ if (!gotTheLock) {
       optimizer.watchWindowShortcuts(window)
     })
 
+    registerDocumentIpc(documents)
+
     ipcMain.handle('documents:open', async (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) {
@@ -176,6 +185,10 @@ if (!gotTheLock) {
         mainWindow = createWindow()
       }
     })
+  })
+
+  app.on('before-quit', () => {
+    documents.closeAll()
   })
 
   // Quit when all windows are closed, except on macOS.

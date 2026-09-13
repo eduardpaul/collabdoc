@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { EditorContent, useEditorState } from '@tiptap/react'
-import type { JSONContent } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
 import { AssetError, bytesToBase64, putFile, setAssetDocument } from '../editor/assets'
 import { currentBlockMarkdown } from '../editor/current-block'
 import { configureFigureHost } from '../editor/figure-host'
 import { exportSelectedFigure } from '../editor/figures/export'
 import { useCollabEditor } from '../editor/useCollabEditor'
+import type { DocumentClient } from '../sync/DocumentClient'
 import { EditorToolbar } from './EditorToolbar'
 import { FigureControls } from './FigureControls'
 import { SearchReplace } from './SearchReplace'
@@ -15,21 +15,18 @@ import { SourcePanel, type SourceKind } from './SourcePanel'
 import { Button } from './ui'
 
 export function DocumentEditor({
-  content,
-  onChange,
+  client,
   title,
-  docId,
   onNotice,
   onMarkdown
 }: {
-  content: JSONContent
-  onChange: (content: JSONContent) => void
+  client: DocumentClient
   title: ReactNode
-  docId: string
   onNotice: (message: string) => void
   onMarkdown: (markdown: string) => void
 }): React.JSX.Element {
-  const editor = useCollabEditor({ content, onChange })
+  const editor = useCollabEditor(client)
+  const docId = client.docId
   const [searchOpen, setSearchOpen] = useState(false)
   const [source, setSource] = useState<{ kind: SourceKind; text: string } | null>(null)
   const [mermaidPrompt, setMermaidPrompt] = useState<string | null>(null)

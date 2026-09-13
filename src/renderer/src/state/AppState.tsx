@@ -8,7 +8,6 @@ import {
   type ReactNode
 } from 'react'
 import { clearAssets } from '../editor/assets'
-import { coerceDocJson, emptyDoc, markdownToDoc, previewOf } from '../lib/document-file'
 import { createId, createShareCode, shareUrlForCode } from '../lib/ids'
 import { loadPersisted, savePersisted } from '../lib/persist'
 import type {
@@ -16,27 +15,30 @@ import type {
   Agent,
   AppState,
   CloseIntent,
-  DocJson,
   DocumentSession,
   LlmProvider,
   McpConnection,
   RecentDocument,
   RightTab,
-  SettingsTab
+  SettingsTab,
+  ShareState
 } from '../types'
 import { defaultAgents, defaultMcp, defaultProvider, emptyAppState } from './defaults'
 
 export type Action =
   | { type: 'home' }
-  | { type: 'new-document' }
   | {
-      type: 'load-document'
-      doc: { path: string | null; title: string; content: DocJson; id?: string }
+      /** A document is live in the host and attached; show it. */
+      type: 'open-session'
+      session: { id: string; title: string; path: string | null; share?: ShareState }
+      summary: string
+      kind?: ActivityEvent['kind']
     }
-  | { type: 'join-session'; code: string }
   | { type: 'set-title'; title: string }
-  | { type: 'set-content'; content: DocJson }
-  | { type: 'mark-saved'; path: string }
+  | { type: 'set-dirty'; dirty: boolean }
+  | { type: 'set-preview'; preview: string }
+  | { type: 'remove-recent'; id: string }
+  | { type: 'mark-saved'; path: string; preview: string }
   | { type: 'open-settings'; tab?: SettingsTab }
   | { type: 'close-settings' }
   | { type: 'set-settings-tab'; tab: SettingsTab }
@@ -74,33 +76,32 @@ function activity(event: Omit<ActivityEvent, 'id' | 'at'>): ActivityEvent {
   return { ...event, id: createId('act'), at: nowIso() }
 }
 
-function createSession(
-  partial: Partial<DocumentSession> & Pick<DocumentSession, 'title'>
-): DocumentSession {
-  return {
-    id: createId('doc'),
-    path: null,
-    content: emptyDoc(),
-    dirty: false,
-    share: { active: false, url: null, code: null },
-    ...partial
-  }
-}
-
-function toRecent(session: DocumentSession): RecentDocument {
+function toRecent(
+  session: DocumentSession,
+  recents: RecentDocument[],
+  preview?: string
+): RecentDocument {
+  const previous = recents.find((item) => item.id === session.id)
   return {
     id: session.id,
     title: session.title,
     path: session.path,
     updatedAt: nowIso(),
-    preview: previewOf(session.content),
-    content: session.content
+    preview: preview ?? previous?.preview ?? ''
   }
 }
 
 function upsertRecent(recents: RecentDocument[], doc: RecentDocument): RecentDocument[] {
   const rest = recents.filter((item) => item.id !== doc.id && (!doc.path || item.path !== doc.path))
   return [doc, ...rest].slice(0, 20)
+}
+
+function touchRecent(state: AppState, session: DocumentSession, preview?: string): AppState {
+  return {
+    ...state,
+    session,
+    recents: upsertRecent(state.recents, toRecent(session, state.recents, preview))
+  }
 }
 
 function mergeMcp(defaults: McpConnection[], stored: McpConnection[] | undefined): McpConnection[] {
@@ -125,10 +126,7 @@ function createInitialState(): AppState {
       invited: false,
       status: 'idle'
     })),
-    recents: (persisted?.recents ?? []).map((item) => ({
-      ...item,
-      content: coerceDocJson(item.content)
-    }))
+    recents: persisted?.recents ?? []
   }
 }
 
@@ -147,7 +145,7 @@ function withSession(
     ...extra,
     screen: 'workspace',
     session,
-    recents: upsertRecent(state.recents, toRecent(session))
+    recents: upsertRecent(state.recents, toRecent(session, state.recents))
   }
 }
 
@@ -166,75 +164,50 @@ function reducer(state: AppState, action: Action): AppState {
         activity: [],
         agents: resetSessionAgents(state.agents)
       }
-    case 'new-document': {
+    case 'open-session': {
       clearAssets()
-      const session = createSession({ title: 'Untitled' })
-      return withSession(state, session, {
-        activity: [activity({ actor: 'You', kind: 'system', summary: 'Created a new document' })],
-        unsavedIntent: null,
-        joinOpen: false
-      })
-    }
-    case 'load-document': {
-      const session = createSession({
-        id: action.doc.id ?? createId('doc'),
-        title: action.doc.title,
-        path: action.doc.path,
-        content: action.doc.content,
-        dirty: false
-      })
+      const session: DocumentSession = {
+        id: action.session.id,
+        title: action.session.title,
+        path: action.session.path,
+        dirty: false,
+        share: action.session.share ?? { active: false, url: null, code: null }
+      }
       return withSession(state, session, {
         activity: [
-          activity({
-            actor: 'You',
-            kind: 'system',
-            summary: action.doc.path
-              ? `Opened ${action.doc.title}`
-              : `Opened ${action.doc.title} from recents`
-          })
+          activity({ actor: 'You', kind: action.kind ?? 'system', summary: action.summary })
         ],
         unsavedIntent: null,
         joinOpen: false
       })
     }
-    case 'join-session': {
-      const code = action.code.trim().toUpperCase()
-      const session = createSession({
-        title: 'Joined session',
-        share: { active: true, code, url: shareUrlForCode(code) },
-        content: markdownToDoc(
-          'Waiting for the host document.\n\nOnce Loro sync and the local tunnel are wired, this page will fill in from the peer session.'
-        )
-      })
-      return withSession(state, session, {
-        activity: [activity({ actor: 'You', kind: 'join', summary: `Joined session ${code}` })],
-        joinOpen: false,
-        unsavedIntent: null
-      })
-    }
     case 'set-title': {
+      if (!state.session || state.session.title === action.title) {
+        return state
+      }
+      return touchRecent(state, { ...state.session, title: action.title })
+    }
+    case 'set-dirty': {
+      if (!state.session || state.session.dirty === action.dirty) {
+        return state
+      }
+      return { ...state, session: { ...state.session, dirty: action.dirty } }
+    }
+    case 'set-preview': {
       if (!state.session) {
         return state
       }
-      const session = { ...state.session, title: action.title, dirty: true }
-      return { ...state, session, recents: upsertRecent(state.recents, toRecent(session)) }
+      return touchRecent(state, state.session, action.preview)
     }
-    case 'set-content': {
-      if (!state.session) {
-        return state
-      }
-      const session = { ...state.session, content: action.content, dirty: true }
-      return { ...state, session, recents: upsertRecent(state.recents, toRecent(session)) }
-    }
+    case 'remove-recent':
+      return { ...state, recents: state.recents.filter((item) => item.id !== action.id) }
     case 'mark-saved': {
       if (!state.session) {
         return state
       }
       const session = { ...state.session, path: action.path, dirty: false }
       return {
-        ...state,
-        session,
-        recents: upsertRecent(state.recents, toRecent(session)),
+        ...touchRecent(state, session, action.preview),
         notice: 'Document saved',
         unsavedIntent: null
       }

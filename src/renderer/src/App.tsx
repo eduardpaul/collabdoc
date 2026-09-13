@@ -1,14 +1,27 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { JoinDialog, NoticeBar, ShareDialog, UnsavedDialog } from './components/Dialogs'
 import { SettingsModal } from './components/SettingsModal'
 import { StartScreen } from './screens/StartScreen'
 import { Workspace } from './screens/Workspace'
 import { AppStateProvider, useAppState } from './state/AppState'
 import { useSessionActions } from './state/useSessionActions'
+import { currentDocId } from './sync/clients'
 
 function AppShell(): React.JSX.Element {
   const { state, dispatch } = useAppState()
   const actions = useSessionActions()
+  const resumeRef = useRef(actions.resumeDocument)
+  useEffect(() => {
+    resumeRef.current = actions.resumeDocument
+  })
+
+  // A reload (HMR, Ctrl+R) keeps the document alive in the host; re-attach.
+  useEffect(() => {
+    const docId = currentDocId()
+    if (docId) {
+      void resumeRef.current(docId)
+    }
+  }, [])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {

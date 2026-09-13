@@ -5,6 +5,7 @@ import { hostLabel } from '../lib/host'
 import { useAppState } from '../state/AppState'
 import { aiReady } from '../state/selectors'
 import { useSessionActions } from '../state/useSessionActions'
+import { useDocumentClient } from '../sync/useDocumentClient'
 import type { Agent } from '../types'
 
 function formatClock(iso: string): string {
@@ -15,6 +16,7 @@ export function Workspace(): React.JSX.Element | null {
   const { state, dispatch } = useAppState()
   const actions = useSessionActions()
   const session = state.session
+  const client = useDocumentClient(session?.id ?? '')
   const [ask, setAsk] = useState('')
   const [blockMarkdown, setBlockMarkdown] = useState('')
   const ready = aiReady(state)
@@ -199,22 +201,29 @@ export function Workspace(): React.JSX.Element | null {
       </aside>
 
       <main className="editor">
-        <DocumentEditor
-          key={session.id}
-          docId={session.id}
-          content={session.content}
-          onChange={(content) => dispatch({ type: 'set-content', content })}
-          onNotice={(message) => dispatch({ type: 'notice', message })}
-          onMarkdown={setBlockMarkdown}
-          title={
-            <TextInput
-              className="page__title"
-              value={session.title}
-              aria-label="Document title"
-              onChange={(event) => dispatch({ type: 'set-title', title: event.target.value })}
-            />
-          }
-        />
+        {client ? (
+          <DocumentEditor
+            key={session.id}
+            client={client}
+            onNotice={(message) => dispatch({ type: 'notice', message })}
+            onMarkdown={setBlockMarkdown}
+            title={
+              <TextInput
+                className="page__title"
+                value={session.title}
+                aria-label="Document title"
+                onChange={(event) => {
+                  dispatch({ type: 'set-title', title: event.target.value })
+                  client.setTitle(event.target.value)
+                }}
+              />
+            }
+          />
+        ) : (
+          <div className="editor__connecting" data-testid="editor-connecting">
+            <p className="muted">Connecting to the document…</p>
+          </div>
+        )}
       </main>
 
       <aside className="rail">

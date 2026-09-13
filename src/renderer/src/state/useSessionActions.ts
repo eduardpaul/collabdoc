@@ -1,12 +1,18 @@
 import { useAppState } from './AppState'
 import { agentCanRun } from './selectors'
+import { previewOf } from '../lib/document-file'
 import { openDocumentFromHost, readDocumentFromHost, saveDocumentToHost } from '../lib/files'
+import { shareUrlForCode } from '../lib/ids'
+import { closeClient, createAndOpen, getClient, openClient } from '../sync/clients'
+import { textFromDoc } from '../editor/document'
 import type { Agent, CloseIntent } from '../types'
 
 export function useSessionActions(): {
   newDocument: () => void
   openDocument: () => void
   openRecent: (id: string) => Promise<void>
+  joinSession: (code: string) => Promise<void>
+  resumeDocument: (docId: string) => Promise<boolean>
   saveDocument: () => Promise<boolean>
   goHome: () => void
   request: (intent: CloseIntent) => void
@@ -25,52 +31,89 @@ export function useSessionActions(): {
     dispatch({ type: 'notice', message })
   }
 
+  /** Leave the current document: remember its preview, detach, release. */
+  const leaveCurrent = async (): Promise<void> => {
+    const current = state.session
+    if (!current) {
+      return
+    }
+    const client = getClient(current.id)
+    if (client && client.status === 'live') {
+      dispatch({ type: 'set-preview', preview: previewOf(textFromDoc(client.toJSON())) })
+    }
+    await closeClient(current.id)
+  }
+
+  const createNew = async (): Promise<void> => {
+    await leaveCurrent()
+    const client = await createAndOpen({ title: 'Untitled' })
+    dispatch({
+      type: 'open-session',
+      session: { id: client.docId, title: client.title, path: null },
+      summary: 'Created a new document'
+    })
+  }
+
+  const openFromDisk = async (): Promise<void> => {
+    const loaded = await openDocumentFromHost()
+    if (!loaded) {
+      return
+    }
+    await leaveCurrent()
+    const client = await createAndOpen({ title: loaded.title, seed: loaded.content })
+    dispatch({
+      type: 'open-session',
+      session: { id: client.docId, title: loaded.title, path: loaded.path },
+      summary: `Opened ${loaded.title}`
+    })
+  }
+
   const loadRecent = async (id: string): Promise<void> => {
     const recent = state.recents.find((item) => item.id === id)
     if (!recent) {
       return
     }
-    if (recent.path) {
-      try {
-        const loaded = await readDocumentFromHost(recent.path)
-        dispatch({ type: 'load-document', doc: { ...loaded, id: recent.id } })
-        return
-      } catch {
-        dispatch({
-          type: 'notice',
-          message: 'Could not read that file. Opening the last local copy.'
-        })
-      }
-    }
-    dispatch({
-      type: 'load-document',
-      doc: { id: recent.id, path: recent.path, title: recent.title, content: recent.content }
-    })
-  }
-
-  const proceed = async (intent: CloseIntent): Promise<void> => {
-    if (intent === 'home') {
-      dispatch({ type: 'home' })
-      return
-    }
-    if (intent === 'new') {
-      dispatch({ type: 'new-document' })
-      return
-    }
-    if (intent === 'recent') {
-      const recentId = state.pendingRecentId
-      dispatch({ type: 'clear-unsaved' })
-      if (recentId) {
-        await loadRecent(recentId)
-      }
+    if (!recent.path) {
+      // Unsaved drafts only live while the app runs; 04 keeps them on disk.
+      dispatch({ type: 'remove-recent', id })
+      dispatch({ type: 'notice', message: 'That draft is no longer available.' })
       return
     }
     try {
-      const loaded = await openDocumentFromHost()
-      if (!loaded) {
+      const loaded = await readDocumentFromHost(recent.path)
+      await leaveCurrent()
+      const client = await createAndOpen({ title: loaded.title, seed: loaded.content })
+      dispatch({ type: 'remove-recent', id })
+      dispatch({
+        type: 'open-session',
+        session: { id: client.docId, title: loaded.title, path: loaded.path },
+        summary: `Opened ${loaded.title}`
+      })
+    } catch (error) {
+      fail(error)
+    }
+  }
+
+  const proceed = async (intent: CloseIntent): Promise<void> => {
+    try {
+      if (intent === 'home') {
+        await leaveCurrent()
+        dispatch({ type: 'home' })
         return
       }
-      dispatch({ type: 'load-document', doc: loaded })
+      if (intent === 'new') {
+        await createNew()
+        return
+      }
+      if (intent === 'recent') {
+        const recentId = state.pendingRecentId
+        dispatch({ type: 'clear-unsaved' })
+        if (recentId) {
+          await loadRecent(recentId)
+        }
+        return
+      }
+      await openFromDisk()
     } catch (error) {
       fail(error)
     }
@@ -85,22 +128,22 @@ export function useSessionActions(): {
   }
 
   const saveDocument = async (): Promise<boolean> => {
-    if (!state.session) {
+    const session = state.session
+    const client = session ? getClient(session.id) : undefined
+    if (!session || !client || client.status !== 'live') {
       return false
     }
     try {
-      const saved = await saveDocumentToHost({
-        path: state.session.path,
-        title: state.session.title,
-        content: state.session.content
-      })
+      const content = client.toJSON()
+      const saved = await saveDocumentToHost({ path: session.path, title: session.title, content })
       if (!saved) {
         return false
       }
-      dispatch({ type: 'mark-saved', path: saved.path })
+      client.markClean()
+      dispatch({ type: 'mark-saved', path: saved.path, preview: previewOf(textFromDoc(content)) })
       dispatch({
         type: 'push-activity',
-        event: { actor: 'You', kind: 'system', summary: `Saved ${state.session.title}` }
+        event: { actor: 'You', kind: 'system', summary: `Saved ${session.title}` }
       })
       return true
     } catch (error) {
@@ -122,6 +165,49 @@ export function useSessionActions(): {
     }
     dispatch({ type: 'clear-unsaved' })
     await proceed(intent)
+  }
+
+  const joinSession = async (rawCode: string): Promise<void> => {
+    const code = rawCode.trim().toUpperCase()
+    try {
+      await leaveCurrent()
+      // 08 replaces this with a real peer connection; until then the join
+      // opens a local document that says so.
+      const client = await createAndOpen({ title: 'Joined session' })
+      dispatch({
+        type: 'open-session',
+        session: {
+          id: client.docId,
+          title: 'Joined session',
+          path: null,
+          share: { active: true, code, url: shareUrlForCode(code) }
+        },
+        summary: `Joined session ${code}`,
+        kind: 'join'
+      })
+      dispatch({
+        type: 'notice',
+        message: 'Peer sessions arrive with Hyperswarm sharing; this document is local for now.'
+      })
+    } catch (error) {
+      fail(error)
+    }
+  }
+
+  /** After a reload: re-attach to the document this window had open (AC-03.7). */
+  const resumeDocument = async (docId: string): Promise<boolean> => {
+    try {
+      const client = await openClient(docId)
+      const recent = state.recents.find((item) => item.id === docId)
+      dispatch({
+        type: 'open-session',
+        session: { id: docId, title: client.title, path: recent?.path ?? null },
+        summary: `Resumed ${client.title}`
+      })
+      return true
+    } catch {
+      return false
+    }
   }
 
   const connectMcp = (id: string): void => {
@@ -191,6 +277,8 @@ export function useSessionActions(): {
       }
       await loadRecent(id)
     },
+    joinSession,
+    resumeDocument,
     saveDocument,
     goHome: () => request('home'),
     request,

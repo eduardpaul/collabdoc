@@ -1,4 +1,4 @@
-import { LoroDoc, LoroList, LoroMap } from 'loro-crdt'
+import { LoroDoc, LoroList, LoroMap, LoroText } from 'loro-crdt'
 import {
   ATTRIBUTES_KEY,
   BLOCK_ID_ATTR,
@@ -50,9 +50,10 @@ export function createDocument(options: { docId?: string; title?: string } = {})
   const paragraph = children.insertContainer(0, new LoroMap())
   paragraph.set(NODE_NAME_KEY, 'paragraph')
   paragraph.getOrCreateContainer(ATTRIBUTES_KEY, new LoroMap()).set(BLOCK_ID_ATTR, newBlockId())
-  // No text child yet: this is the shape `loro-prosemirror` writes for an
-  // empty paragraph, so the editor and the core agree on what "empty" is.
-  paragraph.getOrCreateContainer(CHILDREN_KEY, new LoroList())
+  // An empty text child from the start. `loro-prosemirror` would create the
+  // container with the first keystroke, and undoing that keystroke would then
+  // remove the container — and any text a collaborator typed into it.
+  paragraph.getOrCreateContainer(CHILDREN_KEY, new LoroList()).insertContainer(0, new LoroText())
 
   doc.commit({ origin: INIT_ORIGIN, message: 'create document', timestamp: Date.now() })
   return doc

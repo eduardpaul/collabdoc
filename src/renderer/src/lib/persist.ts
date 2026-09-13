@@ -19,6 +19,13 @@ export function loadPersisted(): Persisted | null {
     if (!parsed || typeof parsed !== 'object') {
       return null
     }
+    // Earlier builds stored the full document in each recent; content now
+    // lives in the host, so drop it and keep only the listing.
+    parsed.recents = (parsed.recents ?? []).map((item) => {
+      const { content: _content, ...rest } = item as RecentDocument & { content?: unknown }
+      void _content
+      return rest
+    })
     return parsed
   } catch {
     return null

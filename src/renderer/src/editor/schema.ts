@@ -13,7 +13,8 @@ import { InfographicFigure } from './figures/infographic'
 import { MermaidFigure } from './figures/mermaid'
 import { MarkdownSubscript, MarkdownSuperscript, MarkdownUnderline } from './markdown-marks'
 
-export const ENABLE_TIPTAP_HISTORY = true
+/** Undo is Loro's (`LoroUndoPlugin`); Tiptap's history must stay off. */
+export const ENABLE_TIPTAP_HISTORY = false
 
 export function schemaExtensions(): AnyExtension[] {
   return [

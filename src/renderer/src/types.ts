@@ -50,11 +50,14 @@ export type ShareState = {
   code: string | null
 }
 
+/**
+ * What the reducer knows about the open document. The content itself lives
+ * in the `DocumentClient` for `id` (see `sync/clients.ts`), never here.
+ */
 export type DocumentSession = {
   id: string
   title: string
   path: string | null
-  content: DocJson
   dirty: boolean
   share: ShareState
 }
@@ -65,7 +68,6 @@ export type RecentDocument = {
   path: string | null
   updatedAt: string
   preview: string
-  content: DocJson
 }
 
 export type ActivityKind = 'edit' | 'comment' | 'agent' | 'share' | 'join' | 'system'

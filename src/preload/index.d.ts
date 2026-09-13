@@ -5,6 +5,20 @@ type DocumentReadResult =
 
 type DocumentSaveResult = { ok: true; path: string; name: string } | { ok: false; error: string }
 
+type DocumentCreateResult =
+  { ok: true; docId: string; title: string } | { ok: false; error: string }
+type DocumentAttachResult = { ok: true; docId: string } | { ok: false; error: string }
+type DocumentReleaseResult = { ok: true } | { ok: false; error: string }
+type DocumentDebugEntry = {
+  docId: string
+  title: string
+  subscribers: string[]
+  changes: number
+  text: string
+}
+type DocumentDebugResult =
+  { ok: true; documents: DocumentDebugEntry[] } | { ok: false; error: string }
+
 type HostApi = {
   platform: NodeJS.Platform
   isWsl: boolean
@@ -25,6 +39,14 @@ type HostApi = {
     readBytes: (
       filePath: string
     ) => Promise<{ ok: true; base64: string } | { ok: false; error: string }>
+    /** Create an empty document in main; attach to it to receive its port. */
+    create: (payload: { title?: string }) => Promise<DocumentCreateResult>
+    /** Ask main for a MessagePort; it arrives as a `collabdoc:port` window message. */
+    attach: (docId: string) => Promise<DocumentAttachResult>
+    /** Detach and, when nobody else holds the document, dispose it now. */
+    release: (docId: string) => Promise<DocumentReleaseResult>
+    /** Development only: every open hub in main. */
+    debug: () => Promise<DocumentDebugResult>
   }
   shell: {
     openExternal: (url: string) => Promise<{ ok: boolean }>
