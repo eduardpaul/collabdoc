@@ -95,7 +95,7 @@ Build installers on the matching OS:
 | `npm run build:win`   | Windows     | NSIS installer + portable exe in `dist/` |
 | `npm run build:mac`   | macOS       | dmg                                      |
 
-Windows installers from WSL need Wine and extra electron-builder binaries; prefer `npm run build:win` on Windows.
+Windows installers from WSL need Wine (`sudo apt install wine`). `npm run build:win` disables V8 bytecode in that case — bytecode compiled on Linux will not load in Windows Electron. Prefer native Windows for the fastest NSIS build.
 
 Unsigned local Windows builds may print a signing warning. That is expected until a cert is configured:
 

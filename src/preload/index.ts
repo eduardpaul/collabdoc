@@ -1,97 +1,88 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
 
 /**
  * Main hands the renderer one end of a MessageChannel per attached document.
  * A port cannot cross the context bridge, but `window.postMessage` can
  * transfer it into the page — the documented way to keep `sandbox: true`.
+ *
+ * Sandboxed preloads can `require('electron')` only. Do not import npm
+ * packages here (`@electron-toolkit/preload` included): packaged Windows
+ * builds then fail to expose `window.api`, and Share looks like a browser.
  */
 ipcRenderer.on('documents:port', (event, payload: { type: string; docId: string }) => {
   window.postMessage(payload, '*', event.ports)
 })
 
-// Support both process.argv flag passed by main process and environment variable
 const isWsl = process.argv.includes('--is-wsl=true') || Boolean(process.env.WSL_DISTRO_NAME)
+
+const invoke = (channel: string, ...args: unknown[]): Promise<unknown> =>
+  ipcRenderer.invoke(channel, ...args)
+
+const onChannel = (
+  channel: string,
+  listener: (payload: unknown) => void
+): (() => void) => {
+  const wrapped = (_event: unknown, payload: unknown): void => listener(payload)
+  ipcRenderer.on(channel, wrapped)
+  return () => {
+    ipcRenderer.removeListener(channel, wrapped)
+  }
+}
 
 const api = {
   platform: process.platform,
   isWsl,
   documents: {
-    open: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:open'),
-    openPath: (filePath: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:openPath', filePath),
-    importMarkdown: (): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:importMarkdown'),
+    open: (): Promise<unknown> => invoke('documents:open'),
+    openPath: (filePath: string): Promise<unknown> => invoke('documents:openPath', filePath),
+    importMarkdown: (): Promise<unknown> => invoke('documents:importMarkdown'),
     exportMarkdown: (payload: {
       content: string
       suggestedName?: string
       extras?: { relativePath: string; base64: string }[]
-    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:exportMarkdown', payload),
-    saveNow: (docId: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:saveNow', docId),
-    saveAs: (docId: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:saveAs', docId),
-    flush: (docId: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:flush', docId),
+    }): Promise<unknown> => invoke('documents:exportMarkdown', payload),
+    saveNow: (docId: string): Promise<unknown> => invoke('documents:saveNow', docId),
+    saveAs: (docId: string): Promise<unknown> => invoke('documents:saveAs', docId),
+    flush: (docId: string): Promise<unknown> => invoke('documents:flush', docId),
     saveBytes: (payload: {
       suggestedName: string
       mime?: string
       base64: string
-    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:saveBytes', payload),
-    readBytes: (filePath: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:readBytes', filePath),
-    create: (payload: { title?: string }): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:create', payload),
-    attach: (docId: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:attach', docId),
-    release: (docId: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:release', docId),
-    debug: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:debug'),
+    }): Promise<unknown> => invoke('documents:saveBytes', payload),
+    readBytes: (filePath: string): Promise<unknown> => invoke('documents:readBytes', filePath),
+    create: (payload: { title?: string }): Promise<unknown> => invoke('documents:create', payload),
+    attach: (docId: string): Promise<unknown> => invoke('documents:attach', docId),
+    release: (docId: string): Promise<unknown> => invoke('documents:release', docId),
+    debug: (): Promise<unknown> => invoke('documents:debug'),
     putAsset: (payload: {
       docId: string
       hash: string
       mime: string
       base64: string
-    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:putAsset', payload),
-    getAssets: (docId: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:getAssets', docId),
-    listing: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:listing'),
-    removeRecent: (docId: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:removeRecent', docId),
-    locateRecent: (docId: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:locateRecent', docId),
-    recover: (docId: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:recover', docId),
-    discardDraft: (docId: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('documents:discardDraft', docId),
+    }): Promise<unknown> => invoke('documents:putAsset', payload),
+    getAssets: (docId: string): Promise<unknown> => invoke('documents:getAssets', docId),
+    listing: (): Promise<unknown> => invoke('documents:listing'),
+    removeRecent: (docId: string): Promise<unknown> => invoke('documents:removeRecent', docId),
+    locateRecent: (docId: string): Promise<unknown> => invoke('documents:locateRecent', docId),
+    recover: (docId: string): Promise<unknown> => invoke('documents:recover', docId),
+    discardDraft: (docId: string): Promise<unknown> => invoke('documents:discardDraft', docId),
     rememberRecent: (payload: {
       docId: string
       title: string
       path: string | null
       updatedAt: string
       preview: string
-    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:rememberRecent', payload),
-    onState: (listener: (state: unknown) => void): (() => void) => {
-      const wrapped = (_event: unknown, state: unknown): void => listener(state)
-      ipcRenderer.on('documents:state', wrapped)
-      return () => {
-        ipcRenderer.removeListener('documents:state', wrapped)
-      }
-    },
-    onListing: (listener: (listing: unknown) => void): (() => void) => {
-      const wrapped = (_event: unknown, listing: unknown): void => listener(listing)
-      ipcRenderer.on('documents:listing', wrapped)
-      return () => {
-        ipcRenderer.removeListener('documents:listing', wrapped)
-      }
-    }
+    }): Promise<unknown> => invoke('documents:rememberRecent', payload),
+    onState: (listener: (state: unknown) => void): (() => void) =>
+      onChannel('documents:state', listener),
+    onListing: (listener: (listing: unknown) => void): (() => void) =>
+      onChannel('documents:listing', listener)
   },
   share: {
     start: (payload: { docId: string; hostName: string }): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('share:start', payload),
-    stop: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('share:stop'),
-    removeGuest: (id: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('share:removeGuest', id),
+      invoke('share:start', payload),
+    stop: (): Promise<unknown> => invoke('share:stop'),
+    removeGuest: (id: string): Promise<unknown> => invoke('share:removeGuest', id),
     join: (payload: {
       code: string
       profile: {
@@ -102,65 +93,43 @@ const api = {
         installPublicKey: string
       }
       expectedDocId?: string
-    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('share:join', payload),
-    leave: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('share:leave'),
-    onState: (listener: (state: unknown) => void): (() => void) => {
-      const wrapped = (_event: unknown, state: unknown): void => listener(state)
-      ipcRenderer.on('share:state', wrapped)
-      return () => {
-        ipcRenderer.removeListener('share:state', wrapped)
-      }
-    },
-    onActivity: (listener: (summary: string) => void): (() => void) => {
-      const wrapped = (_event: unknown, summary: unknown): void => {
+    }): Promise<unknown> => invoke('share:join', payload),
+    leave: (): Promise<unknown> => invoke('share:leave'),
+    onState: (listener: (state: unknown) => void): (() => void) =>
+      onChannel('share:state', listener),
+    onActivity: (listener: (summary: string) => void): (() => void) =>
+      onChannel('share:activity', (summary) => {
         if (typeof summary === 'string') listener(summary)
-      }
-      ipcRenderer.on('share:activity', wrapped)
-      return () => {
-        ipcRenderer.removeListener('share:activity', wrapped)
-      }
-    }
+      })
   },
   profile: {
-    get: (): Promise<unknown> => electronAPI.ipcRenderer.invoke('profile:get'),
+    get: (): Promise<unknown> => invoke('profile:get'),
     save: (profile: {
       userId: string
       name: string
       handle: string
       color: string
       setupComplete: boolean
-    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('profile:save', profile)
+    }): Promise<unknown> => invoke('profile:save', profile)
   },
   app: {
-    onCommand: (listener: (command: string) => void): (() => void) => {
-      const wrapped = (_event: unknown, command: unknown): void => {
+    onCommand: (listener: (command: string) => void): (() => void) =>
+      onChannel('app:command', (command) => {
         if (typeof command === 'string') listener(command)
-      }
-      ipcRenderer.on('app:command', wrapped)
-      return () => {
-        ipcRenderer.removeListener('app:command', wrapped)
-      }
-    }
+      })
   },
   shell: {
-    openExternal: (url: string): Promise<unknown> =>
-      electronAPI.ipcRenderer.invoke('shell:openExternal', url)
+    openExternal: (url: string): Promise<unknown> => invoke('shell:openExternal', url)
   }
 }
 
-// Use `contextBridge` APIs to expose Electron APIs to
-// renderer only if context isolation is enabled, otherwise
-// just add to the DOM global.
 if (process.contextIsolated) {
   try {
-    contextBridge.exposeInMainWorld('electron', electronAPI)
     contextBridge.exposeInMainWorld('api', api)
   } catch (error) {
     console.error(error)
   }
 } else {
-  // @ts-ignore (define in dts)
-  window.electron = electronAPI
-  // @ts-ignore (define in dts)
+  // @ts-expect-error isolated world is the packaged path; this is tests/dev only
   window.api = api
 }

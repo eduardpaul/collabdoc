@@ -4,6 +4,11 @@ import react from '@vitejs/plugin-react'
 
 const isWsl = Boolean(process.env.WSL_DISTRO_NAME)
 
+// V8 bytecode is host-OS specific. Packing Windows from WSL with bytecode
+// enabled yields "Invalid or incompatible cached data" in Module._extensions.jsc.
+const packOs = process.env.COLLABDOC_PACK_OS
+const useBytecode = packOs ? packOs === process.platform : true
+
 const sharedAliases = {
   '@shared': resolve('src/shared'),
   '@core': resolve('src/core')
@@ -16,7 +21,7 @@ export default defineConfig({
     },
     build: {
       target: 'node24',
-      bytecode: true,
+      bytecode: useBytecode,
       minify: true,
       rollupOptions: {
         // loro-crdt's Node build reads its .wasm next to its own file via
