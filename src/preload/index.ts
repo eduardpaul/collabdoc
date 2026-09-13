@@ -15,7 +15,19 @@ const api = {
       path: string | null
       content: string
       suggestedName?: string
-    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:save', payload)
+      extras?: { relativePath: string; base64: string }[]
+    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:save', payload),
+    saveBytes: (payload: {
+      suggestedName: string
+      mime?: string
+      base64: string
+    }): Promise<unknown> => electronAPI.ipcRenderer.invoke('documents:saveBytes', payload),
+    readBytes: (filePath: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('documents:readBytes', filePath)
+  },
+  shell: {
+    openExternal: (url: string): Promise<unknown> =>
+      electronAPI.ipcRenderer.invoke('shell:openExternal', url)
   }
 }
 

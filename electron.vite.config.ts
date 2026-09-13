@@ -30,7 +30,13 @@ export default defineConfig({
       rollupOptions: {
         output: {
           manualChunks: {
-            'react-vendor': ['react', 'react-dom']
+            'react-vendor': ['react', 'react-dom'],
+            'tiptap-vendor': [
+              '@tiptap/core',
+              '@tiptap/react',
+              '@tiptap/starter-kit',
+              '@tiptap/markdown'
+            ]
           }
         }
       }

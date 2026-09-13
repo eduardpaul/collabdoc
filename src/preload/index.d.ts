@@ -15,7 +15,19 @@ type HostApi = {
       path: string | null
       content: string
       suggestedName?: string
+      extras?: { relativePath: string; base64: string }[]
     }) => Promise<DocumentSaveResult>
+    saveBytes: (payload: {
+      suggestedName: string
+      mime?: string
+      base64: string
+    }) => Promise<DocumentSaveResult>
+    readBytes: (
+      filePath: string
+    ) => Promise<{ ok: true; base64: string } | { ok: false; error: string }>
+  }
+  shell: {
+    openExternal: (url: string) => Promise<{ ok: boolean }>
   }
 }
 

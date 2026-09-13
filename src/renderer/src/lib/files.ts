@@ -1,3 +1,5 @@
+import type { JSONContent } from '@tiptap/core'
+import { getAsset, hashFromSrc, putBytes, putDataUri, restoreAssets } from '../editor/assets'
 import { parseDocument, serializeDocument, titleFromPath } from './document-file'
 import { hasNativeDocuments } from './host'
 import type { DocumentReadResult, DocumentSaveResult } from '../types'
@@ -5,12 +7,95 @@ import type { DocumentReadResult, DocumentSaveResult } from '../types'
 export type LoadedDocument = {
   path: string | null
   title: string
-  content: string
+  content: JSONContent
 }
 
-function asLoaded(result: Extract<DocumentReadResult, { ok: true }>): LoadedDocument {
+async function hydrateImages(doc: JSONContent, mdPath: string | null): Promise<JSONContent> {
+  const walk = async (node: JSONContent): Promise<JSONContent> => {
+    const next: JSONContent = { ...node }
+    if (node.type === 'imageFigure' && typeof node.attrs?.src === 'string') {
+      const src = node.attrs.src
+      try {
+        if (src.startsWith('data:')) {
+          const record = await putDataUri(src)
+          next.attrs = { ...node.attrs, src: `asset:${record.sha256}` }
+        } else if (mdPath && (src.startsWith('assets/') || src.startsWith('./assets/'))) {
+          const relative = src.replace(/^\.\//, '')
+          const bytes = await readRelativeBytes(mdPath, relative)
+          if (bytes) {
+            const hash = hashFromSrc(src)
+            const ext = relative.split('.').pop() ?? 'png'
+            const mime =
+              ext === 'jpg' || ext === 'jpeg'
+                ? 'image/jpeg'
+                : ext === 'svg'
+                  ? 'image/svg+xml'
+                  : `image/${ext}`
+            const record = await putBytes(bytes, mime)
+            next.attrs = { ...node.attrs, src: `asset:${hash ?? record.sha256}` }
+          }
+        }
+      } catch {
+        next.attrs = node.attrs
+      }
+    }
+    if (node.content) {
+      next.content = await Promise.all(node.content.map(walk))
+    }
+    return next
+  }
+  return walk(doc)
+}
+
+function resolveBeside(filePath: string, relative: string): string {
+  const slash = filePath.includes('\\') ? '\\' : '/'
+  const dir = filePath.split(/[/\\]/).slice(0, -1).join(slash)
+  return `${dir}${slash}${relative.replaceAll('/', slash)}`
+}
+
+async function readRelativeBytes(mdPath: string, relative: string): Promise<Uint8Array | null> {
+  if (!window.api?.documents.readBytes) {
+    return null
+  }
+  const result = await window.api.documents.readBytes(resolveBeside(mdPath, relative))
+  if (!result.ok) {
+    return null
+  }
+  const binary = atob(result.base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  return bytes
+}
+
+function extrasFromDoc(doc: JSONContent): { relativePath: string; base64: string }[] {
+  const extras: { relativePath: string; base64: string }[] = []
+  const seen = new Set<string>()
+  const visit = (node: JSONContent): void => {
+    if (node.type === 'imageFigure' && typeof node.attrs?.src === 'string') {
+      const hash = hashFromSrc(node.attrs.src)
+      const asset = hash ? getAsset(hash) : undefined
+      if (asset && !seen.has(asset.sha256)) {
+        seen.add(asset.sha256)
+        extras.push({ relativePath: `assets/${asset.sha256}.${asset.ext}`, base64: asset.data })
+      }
+    }
+    for (const child of node.content ?? []) {
+      visit(child)
+    }
+  }
+  visit(doc)
+  return extras
+}
+
+async function asLoaded(
+  result: Extract<DocumentReadResult, { ok: true }>
+): Promise<LoadedDocument> {
   const parsed = parseDocument(result.content, titleFromPath(result.name))
-  return { path: result.path, title: parsed.title, content: parsed.content }
+  restoreAssets({})
+  const content = await hydrateImages(parsed.content, result.path)
+  return { path: result.path, title: parsed.title, content }
 }
 
 function pickFileInBrowser(): Promise<LoadedDocument | null> {
@@ -24,9 +109,10 @@ function pickFileInBrowser(): Promise<LoadedDocument | null> {
         resolve(null)
         return
       }
-      void file.text().then((raw) => {
+      void file.text().then(async (raw) => {
         const parsed = parseDocument(raw, titleFromPath(file.name))
-        resolve({ path: null, title: parsed.title, content: parsed.content })
+        const content = await hydrateImages(parsed.content, null)
+        resolve({ path: null, title: parsed.title, content })
       })
     })
     input.click()
@@ -69,12 +155,13 @@ export async function readDocumentFromHost(filePath: string): Promise<LoadedDocu
 export async function saveDocumentToHost(input: {
   path: string | null
   title: string
-  content: string
+  content: JSONContent
 }): Promise<{ path: string; title: string } | null> {
-  const serialized = serializeDocument(input.title, input.content)
+  const native = hasNativeDocuments()
+  const serialized = serializeDocument(input.title, input.content, { singleFile: !native })
   const suggestedName = `${input.title.trim() || 'Untitled'}.md`
 
-  if (!hasNativeDocuments()) {
+  if (!native) {
     downloadInBrowser(suggestedName, serialized)
     return { path: input.path ?? suggestedName, title: input.title }
   }
@@ -82,7 +169,8 @@ export async function saveDocumentToHost(input: {
   const result: DocumentSaveResult = await window.api!.documents.save({
     path: input.path,
     content: serialized,
-    suggestedName
+    suggestedName,
+    extras: extrasFromDoc(input.content)
   })
   if (!result.ok) {
     throw new Error(result.error)

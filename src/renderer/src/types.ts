@@ -1,3 +1,7 @@
+import type { JSONContent } from '@tiptap/core'
+
+export type DocJson = JSONContent
+
 export type LlmKind = 'openai-compatible' | 'anthropic' | 'custom'
 
 export type LlmProvider = {
@@ -50,7 +54,7 @@ export type DocumentSession = {
   id: string
   title: string
   path: string | null
-  content: string
+  content: DocJson
   dirty: boolean
   share: ShareState
 }
@@ -61,7 +65,7 @@ export type RecentDocument = {
   path: string | null
   updatedAt: string
   preview: string
-  content: string
+  content: DocJson
 }
 
 export type ActivityKind = 'edit' | 'comment' | 'agent' | 'share' | 'join' | 'system'
@@ -76,7 +80,7 @@ export type ActivityEvent = {
 
 export type AppScreen = 'start' | 'workspace'
 export type SettingsTab = 'provider' | 'mcp' | 'agents'
-export type RightTab = 'agents' | 'activity'
+export type RightTab = 'agents' | 'activity' | 'markdown'
 export type CloseIntent = 'home' | 'new' | 'open' | 'recent'
 
 export type AppState = {
@@ -106,6 +110,7 @@ export type DocumentSavePayload = {
   path: string | null
   content: string
   suggestedName?: string
+  extras?: { relativePath: string; base64: string }[]
 }
 
 export type DocumentSaveResult =

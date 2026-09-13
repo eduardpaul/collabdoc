@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { DocumentEditor } from '../components/DocumentEditor'
 import { Button, Icon, StatusDot, TextArea, TextInput } from '../components/ui'
 import { hostLabel } from '../lib/host'
 import { useAppState } from '../state/AppState'
@@ -10,22 +11,12 @@ function formatClock(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-function insertAround(
-  value: string,
-  start: number,
-  end: number,
-  before: string,
-  after = ''
-): string {
-  return value.slice(0, start) + before + value.slice(start, end) + after + value.slice(end)
-}
-
 export function Workspace(): React.JSX.Element | null {
   const { state, dispatch } = useAppState()
   const actions = useSessionActions()
   const session = state.session
-  const bodyRef = useRef<HTMLTextAreaElement>(null)
   const [ask, setAsk] = useState('')
+  const [blockMarkdown, setBlockMarkdown] = useState('')
   const ready = aiReady(state)
 
   useEffect(() => {
@@ -77,21 +68,6 @@ export function Workspace(): React.JSX.Element | null {
 
   if (!session) {
     return null
-  }
-
-  const applyWrap = (before: string, after = ''): void => {
-    const el = bodyRef.current
-    if (!el) {
-      dispatch({ type: 'set-content', content: `${before}${session.content}${after}` })
-      return
-    }
-    const next = insertAround(el.value, el.selectionStart, el.selectionEnd, before, after)
-    dispatch({ type: 'set-content', content: next })
-    window.requestAnimationFrame(() => {
-      el.focus()
-      const cursor = el.selectionStart + before.length
-      el.setSelectionRange(cursor, cursor + (el.selectionEnd - el.selectionStart))
-    })
   }
 
   const runAsk = (agent: Agent): void => {
@@ -223,43 +199,22 @@ export function Workspace(): React.JSX.Element | null {
       </aside>
 
       <main className="editor">
-        <div className="toolbar">
-          <Button size="sm" variant="ghost" onClick={() => applyWrap('# ', '')}>
-            H1
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => applyWrap('## ', '')}>
-            H2
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => applyWrap('**', '**')}>
-            Bold
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => applyWrap('_', '_')}>
-            Italic
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => applyWrap('@', '')}>
-            @ mention
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => applyWrap('«', '»')}>
-            Comment
-          </Button>
-          <span className="toolbar__hint">Markdown · @mentions and comments are placeholders</span>
-        </div>
-        <article className="page">
-          <TextInput
-            className="page__title"
-            value={session.title}
-            aria-label="Document title"
-            onChange={(event) => dispatch({ type: 'set-title', title: event.target.value })}
-          />
-          <TextArea
-            ref={bodyRef}
-            className="page__body"
-            value={session.content}
-            placeholder="Start writing. Invite a Writer or Reviewer from the right. Everything stays on this machine until you share a tunnel."
-            aria-label="Document body"
-            onChange={(event) => dispatch({ type: 'set-content', content: event.target.value })}
-          />
-        </article>
+        <DocumentEditor
+          key={session.id}
+          docId={session.id}
+          content={session.content}
+          onChange={(content) => dispatch({ type: 'set-content', content })}
+          onNotice={(message) => dispatch({ type: 'notice', message })}
+          onMarkdown={setBlockMarkdown}
+          title={
+            <TextInput
+              className="page__title"
+              value={session.title}
+              aria-label="Document title"
+              onChange={(event) => dispatch({ type: 'set-title', title: event.target.value })}
+            />
+          }
+        />
       </main>
 
       <aside className="rail">
@@ -277,6 +232,13 @@ export function Workspace(): React.JSX.Element | null {
             onClick={() => dispatch({ type: 'set-right-tab', tab: 'activity' })}
           >
             Activity
+          </button>
+          <button
+            type="button"
+            className={`tabs__btn ${state.rightTab === 'markdown' ? 'is-active' : ''}`}
+            onClick={() => dispatch({ type: 'set-right-tab', tab: 'markdown' })}
+          >
+            Markdown
           </button>
         </div>
 
@@ -380,6 +342,13 @@ export function Workspace(): React.JSX.Element | null {
             >
               <Icon name="plus" /> Manage agents
             </Button>
+          </div>
+        ) : state.rightTab === 'markdown' ? (
+          <div className="rail__body">
+            <p className="rail__lede">Markdown for the current block. Read-only.</p>
+            <pre className="markdown-source" aria-label="Markdown source">
+              {blockMarkdown || 'Select a block to see its Markdown.'}
+            </pre>
           </div>
         ) : (
           <div className="rail__body">

@@ -7,7 +7,8 @@ import {
   type Dispatch,
   type ReactNode
 } from 'react'
-import { previewOf } from '../lib/document-file'
+import { clearAssets } from '../editor/assets'
+import { coerceDocJson, emptyDoc, markdownToDoc, previewOf } from '../lib/document-file'
 import { createId, createShareCode, shareUrlForCode } from '../lib/ids'
 import { loadPersisted, savePersisted } from '../lib/persist'
 import type {
@@ -15,6 +16,7 @@ import type {
   Agent,
   AppState,
   CloseIntent,
+  DocJson,
   DocumentSession,
   LlmProvider,
   McpConnection,
@@ -29,11 +31,11 @@ export type Action =
   | { type: 'new-document' }
   | {
       type: 'load-document'
-      doc: { path: string | null; title: string; content: string; id?: string }
+      doc: { path: string | null; title: string; content: DocJson; id?: string }
     }
   | { type: 'join-session'; code: string }
   | { type: 'set-title'; title: string }
-  | { type: 'set-content'; content: string }
+  | { type: 'set-content'; content: DocJson }
   | { type: 'mark-saved'; path: string }
   | { type: 'open-settings'; tab?: SettingsTab }
   | { type: 'close-settings' }
@@ -78,7 +80,7 @@ function createSession(
   return {
     id: createId('doc'),
     path: null,
-    content: '',
+    content: emptyDoc(),
     dirty: false,
     share: { active: false, url: null, code: null },
     ...partial
@@ -123,7 +125,10 @@ function createInitialState(): AppState {
       invited: false,
       status: 'idle'
     })),
-    recents: persisted?.recents ?? []
+    recents: (persisted?.recents ?? []).map((item) => ({
+      ...item,
+      content: coerceDocJson(item.content)
+    }))
   }
 }
 
@@ -149,6 +154,7 @@ function withSession(
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'home':
+      clearAssets()
       return {
         ...state,
         screen: 'start',
@@ -161,6 +167,7 @@ function reducer(state: AppState, action: Action): AppState {
         agents: resetSessionAgents(state.agents)
       }
     case 'new-document': {
+      clearAssets()
       const session = createSession({ title: 'Untitled' })
       return withSession(state, session, {
         activity: [activity({ actor: 'You', kind: 'system', summary: 'Created a new document' })],
@@ -195,8 +202,9 @@ function reducer(state: AppState, action: Action): AppState {
       const session = createSession({
         title: 'Joined session',
         share: { active: true, code, url: shareUrlForCode(code) },
-        content:
+        content: markdownToDoc(
           'Waiting for the host document.\n\nOnce Loro sync and the local tunnel are wired, this page will fill in from the peer session.'
+        )
       })
       return withSession(state, session, {
         activity: [activity({ actor: 'You', kind: 'join', summary: `Joined session ${code}` })],

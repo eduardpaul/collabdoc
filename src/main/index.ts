@@ -3,7 +3,15 @@ import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import { openDocument, readDocument, saveDocument, type DocumentSavePayload } from './documents'
+import {
+  openDocument,
+  readBytes,
+  readDocument,
+  saveBytes,
+  saveDocument,
+  type BytesSavePayload,
+  type DocumentSavePayload
+} from './documents'
 import { applyWslChromiumFlags, isWsl } from './wsl'
 
 let mainWindow: BrowserWindow | null = null
@@ -138,6 +146,26 @@ if (!gotTheLock) {
         return { ok: false, error: 'No window' }
       }
       return saveDocument(win, payload)
+    })
+    ipcMain.handle('documents:saveBytes', async (event, payload: BytesSavePayload) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (!win) {
+        return { ok: false, error: 'No window' }
+      }
+      return saveBytes(win, payload)
+    })
+    ipcMain.handle('documents:readBytes', async (_event, filePath: string) => {
+      if (typeof filePath !== 'string' || filePath.length === 0) {
+        return { ok: false, error: 'Invalid path' }
+      }
+      return readBytes(filePath)
+    })
+    ipcMain.handle('shell:openExternal', async (_event, url: string) => {
+      if (typeof url !== 'string') {
+        return { ok: false }
+      }
+      openExternalUrl(url)
+      return { ok: true }
     })
 
     mainWindow = createWindow()
