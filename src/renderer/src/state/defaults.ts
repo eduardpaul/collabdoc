@@ -1,4 +1,5 @@
 import { colorForId, USER_COLORS } from '@shared/actors'
+import { DEFAULT_DOCX_CONFIG } from '@shared/docx-config'
 import { createId } from '../lib/ids'
 import type { Agent, AppState, LlmProvider } from '../types'
 
@@ -112,6 +113,11 @@ export const emptyAppState: Omit<AppState, 'provider' | 'agents' | 'recents' | '
   notice: null,
   rightTab: 'agents',
   mentionAutoSendSeconds: 0,
+  docxDefaults: DEFAULT_DOCX_CONFIG,
+  docxExportOpen: false,
+  saveAsOpen: false,
+  noticeCancel: null,
+  noticeWarnings: null,
   leftCollapsed: false,
   rightCollapsed: false,
   backends: [],

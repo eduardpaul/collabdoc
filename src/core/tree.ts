@@ -176,7 +176,11 @@ export function setCaption(node: LoroMap, caption: string): void {
 
 export function blockMarks(node: LoroMap): MarkView[] {
   const text = firstText(node)
-  if (!text) return []
+  return text ? textMarks(text) : []
+}
+
+/** Marks of one text run, offsets relative to that run. */
+export function textMarks(text: LoroText): MarkView[] {
   const marks: MarkView[] = []
   let offset = 0
   for (const run of text.toDelta()) {

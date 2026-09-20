@@ -233,18 +233,89 @@ export function UnsavedDialog(): React.JSX.Element | null {
   )
 }
 
+export function BrowserSaveAsDialog(): React.JSX.Element | null {
+  const { state, dispatch } = useAppState()
+  const actions = useSessionActions()
+  if (!state.saveAsOpen || !state.session) return null
+  return (
+    <Modal
+      title="Save As"
+      subtitle="Choose an export format. The open document stays a CollabDoc draft."
+      onClose={() => dispatch({ type: 'set-save-as-open', open: false })}
+    >
+      <div className="modal__actions" data-testid="save-as-dialog">
+        <Button
+          onClick={() => {
+            dispatch({ type: 'set-save-as-open', open: false })
+            actions.exportMarkdown()
+          }}
+        >
+          Markdown
+        </Button>
+        <Button
+          data-testid="save-as-docx"
+          onClick={() => {
+            dispatch({ type: 'set-save-as-open', open: false })
+            actions.exportDocx()
+          }}
+        >
+          Word (.docx)
+        </Button>
+        <Button onClick={() => dispatch({ type: 'set-save-as-open', open: false })}>Cancel</Button>
+      </div>
+    </Modal>
+  )
+}
+
 export function NoticeBar(): React.JSX.Element | null {
-  const { state } = useAppState()
+  const { state, dispatch } = useAppState()
   const actions = useSessionActions()
   const missing = state.missingRecentId
     ? state.recents.find((item) => item.id === state.missingRecentId)
     : undefined
+  const warnings = state.noticeWarnings
   if (!state.notice && !missing) {
     return null
   }
   return (
-    <div className={`notice ${missing ? 'notice--actions' : ''}`} role="status">
+    <div
+      className={`notice ${missing || state.noticeCancel || warnings ? 'notice--actions' : ''}`}
+      role="status"
+    >
       <span>{missing ? `“${missing.title}” was moved or deleted.` : state.notice}</span>
+      {state.noticeCancel ? (
+        <span className="notice__actions">
+          <Button
+            size="sm"
+            data-testid="docx-export-cancel-progress"
+            onClick={() => state.noticeCancel?.()}
+          >
+            Cancel
+          </Button>
+        </span>
+      ) : null}
+      {warnings?.length ? (
+        <ul className="warning-list">
+          {warnings.map((warning, index) => (
+            <li key={`${warning.code}-${index}`}>
+              <button
+                type="button"
+                className="warning-list__btn"
+                onClick={() => {
+                  if (warning.blockId) {
+                    window.dispatchEvent(
+                      new CustomEvent('collabdoc:focus-block', { detail: warning.blockId })
+                    )
+                  }
+                  dispatch({ type: 'notice', message: null })
+                }}
+              >
+                {warning.message}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {missing ? (
         <span className="notice__actions">
           <Button size="sm" onClick={() => void actions.locateRecent(missing.id)}>

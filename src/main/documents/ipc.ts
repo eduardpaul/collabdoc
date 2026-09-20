@@ -8,10 +8,13 @@ import {
 } from 'electron'
 import { is } from '@electron-toolkit/utils'
 import { mkdir, readFile, writeFile } from 'fs/promises'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, extname, join } from 'path'
 import { homedir } from 'os'
 import type { FrameLink } from '@core/link'
 import { CollabdocError, isCollabdocPath } from '@core/collabdoc-file'
+import { buildDocx } from '@core/docx'
+import { normalizeDocxConfig } from '../../shared/docx-config'
+import { atomicWriteFile } from '../persist/atomic'
 import { DocumentRegistry, type RegistryDebugEntry } from '@core/registry'
 import { base64ToBytes, bytesToBase64 } from '../../shared/base64'
 import { PersistAssetError } from '../persist/assets'
@@ -50,7 +53,13 @@ export type OpenDocResult =
   | { ok: false; error: string }
 
 export type SaveDocResult =
-  { ok: true; path: string; name: string } | { ok: false; error: string; canceled?: boolean }
+  | { ok: true; path: string; name: string }
+  | { ok: true; exportTo: { format: 'markdown' | 'docx'; path: string } }
+  | { ok: false; error: string; canceled?: boolean }
+
+export type ExportDocxResult =
+  | { ok: true; path: string; name: string; warnings: import('@core/docx').DocxExportWarning[] }
+  | { ok: false; error: string; canceled?: boolean }
 
 const MAX_TITLE_CHARS = 200
 
@@ -325,25 +334,89 @@ export function registerDocumentIpc(registry: DocumentRegistry, store: DocumentS
       const rec = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
       if (typeof rec.content !== 'string') return { ok: false, error: 'Invalid export' }
       const suggested = typeof rec.suggestedName === 'string' ? rec.suggestedName : 'Untitled.md'
-      const picked = await dialog.showSaveDialog(win, {
-        title: 'Export Markdown',
-        defaultPath: suggested,
-        filters: markdownFilters
-      })
-      if (picked.canceled || !picked.filePath)
-        return { ok: false, error: 'canceled', canceled: true }
+      let filePath = typeof rec.path === 'string' && rec.path ? rec.path : ''
+      if (!filePath) {
+        const picked = await dialog.showSaveDialog(win, {
+          title: 'Export Markdown',
+          defaultPath: suggested,
+          filters: markdownFilters
+        })
+        if (picked.canceled || !picked.filePath)
+          return { ok: false, error: 'canceled', canceled: true }
+        filePath = picked.filePath
+      }
       try {
-        await writeFile(picked.filePath, rec.content, 'utf8')
+        await writeFile(filePath, rec.content, 'utf8')
         const extras = Array.isArray(rec.extras) ? rec.extras : []
         for (const extra of extras) {
           if (!extra || typeof extra !== 'object') continue
           const item = extra as { relativePath?: unknown; base64?: unknown }
           if (typeof item.relativePath !== 'string' || typeof item.base64 !== 'string') continue
-          const extraPath = join(dirname(picked.filePath), item.relativePath)
+          const extraPath = join(dirname(filePath), item.relativePath)
           await mkdir(dirname(extraPath), { recursive: true })
           await writeFile(extraPath, Buffer.from(item.base64, 'base64'))
         }
-        return { ok: true, path: picked.filePath, name: basename(picked.filePath) }
+        return { ok: true, path: filePath, name: basename(filePath) }
+      } catch (error) {
+        return fail(error)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    'documents:exportDocx',
+    async (event, payload: unknown): Promise<ExportDocxResult> => {
+      const rec = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+      if (typeof rec.docId !== 'string' || !rec.docId) return { ok: false, error: 'Invalid docId' }
+      const entry = registry.get(rec.docId)
+      if (!entry) return { ok: false, error: 'Document is not open' }
+      const config = normalizeDocxConfig(rec.config)
+      const figures = Array.isArray(rec.figures) ? rec.figures : []
+      let total = 0
+      const MAX_ONE = 8 * 1024 * 1024
+      const MAX_ALL = 64 * 1024 * 1024
+      for (const figure of figures) {
+        if (!figure || typeof figure !== 'object') continue
+        const b64 = (figure as { pngBase64?: unknown }).pngBase64
+        if (typeof b64 !== 'string' || !b64) continue
+        const size = Math.floor((b64.length * 3) / 4)
+        if (size > MAX_ONE) return { ok: false, error: 'A figure PNG is larger than 8 MB.' }
+        total += size
+        if (total > MAX_ALL) return { ok: false, error: 'Exported figures exceed 64 MB.' }
+      }
+      const win = windowOf(event)
+      let filePath = typeof rec.path === 'string' && rec.path ? rec.path : ''
+      if (!filePath) {
+        if (!win) return { ok: false, error: 'No window' }
+        const title = typeof rec.suggestedName === 'string' ? rec.suggestedName : 'Untitled.docx'
+        const picked = await dialog.showSaveDialog(win, {
+          title: 'Export Word document',
+          defaultPath: title,
+          filters: [{ name: 'Word document', extensions: ['docx'] }]
+        })
+        if (picked.canceled || !picked.filePath)
+          return { ok: false, error: 'canceled', canceled: true }
+        filePath = picked.filePath.endsWith('.docx') ? picked.filePath : `${picked.filePath}.docx`
+      }
+      try {
+        const built = await buildDocx({
+          doc: entry.hub.doc,
+          config,
+          figures: figures as import('@core/docx').RenderedFigure[],
+          assets: store.getAssets(rec.docId).map((asset) => ({
+            hash: asset.hash,
+            mime: asset.mime,
+            bytes: asset.bytes
+          })),
+          author: typeof rec.author === 'string' ? rec.author : ''
+        })
+        await atomicWriteFile(filePath, built.bytes)
+        return {
+          ok: true,
+          path: filePath,
+          name: basename(filePath),
+          warnings: built.warnings
+        }
       } catch (error) {
         return fail(error)
       }
@@ -409,9 +482,20 @@ async function saveAs(
   const picked = await dialog.showSaveDialog(win, {
     title: 'Save document',
     defaultPath: store.suggestedSavePath(docId, state?.title || 'Untitled') || fallback,
-    filters: [{ name: 'CollabDoc', extensions: ['collabdoc'] }]
+    filters: [
+      { name: 'CollabDoc', extensions: ['collabdoc'] },
+      { name: 'Markdown', extensions: ['md'] },
+      { name: 'Word document', extensions: ['docx'] }
+    ]
   })
   if (picked.canceled || !picked.filePath) return { ok: false, error: 'canceled', canceled: true }
+  const ext = extname(picked.filePath).toLowerCase()
+  if (ext === '.md' || ext === '.markdown') {
+    return { ok: true, exportTo: { format: 'markdown', path: picked.filePath } }
+  }
+  if (ext === '.docx') {
+    return { ok: true, exportTo: { format: 'docx', path: picked.filePath } }
+  }
   try {
     const saved = await store.saveTo(docId, picked.filePath)
     return { ok: true, ...saved }

@@ -12,6 +12,7 @@ import {
   TEXT_STYLE_CONFIG
 } from '../shared/constants'
 import { newBlockId, newDocId } from '../shared/ids'
+import { normalizeDocxConfig, type DocxExportConfig } from '../shared/docx-config'
 
 export type DocumentMeta = {
   docId: string
@@ -102,6 +103,28 @@ export function readMeta(doc: LoroDoc): DocumentMeta {
 export function setTitle(doc: LoroDoc, title: string, origin: string): void {
   doc.getMap(META_KEY).set('title', title)
   commitBoundary(doc, { origin, message: `rename to “${title}”` })
+}
+
+const DOCX_EXPORT_KEY = 'docxExport'
+
+/** Stored export settings, or `null` when the document has never set them. */
+export function readDocxConfig(doc: LoroDoc): DocxExportConfig | null {
+  const raw = doc.getMap(META_KEY).get(DOCX_EXPORT_KEY)
+  if (raw == null) return null
+  if (typeof raw === 'string') {
+    try {
+      return normalizeDocxConfig(JSON.parse(raw) as unknown)
+    } catch {
+      return normalizeDocxConfig(undefined)
+    }
+  }
+  return normalizeDocxConfig(raw)
+}
+
+export function setDocxConfig(doc: LoroDoc, config: DocxExportConfig, origin: string): void {
+  const normalized = normalizeDocxConfig(config)
+  doc.getMap(META_KEY).set(DOCX_EXPORT_KEY, JSON.stringify(normalized))
+  commitBoundary(doc, { origin, message: 'docx export settings' })
 }
 
 /**

@@ -8,7 +8,8 @@ type InfographicHandle = {
 export async function renderInfographic(
   source: string,
   el: HTMLElement,
-  signal: AbortSignal
+  signal: AbortSignal,
+  options: { theme?: string; widthPx?: number; heightPx?: number } = {}
 ): Promise<void> {
   const { Infographic } = await import('@antv/infographic')
   markLibraryLoaded('infographic')
@@ -18,8 +19,9 @@ export async function renderInfographic(
   el.replaceChildren()
   const chart = new Infographic({
     container: el,
-    width: '100%',
-    height: '240px',
+    width: options.widthPx ?? '100%',
+    height: options.heightPx ?? '240px',
+    theme: options.theme,
     editable: false
   }) as InfographicHandle
   try {

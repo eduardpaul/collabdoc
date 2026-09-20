@@ -2,37 +2,90 @@ import type { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
 import { base64ToBytes, getAsset, hashFromSrc } from '../assets'
 
-export async function svgToPng(svg: string): Promise<Blob> {
-  const blob = new Blob([svg], { type: 'image/svg+xml' })
-  const url = URL.createObjectURL(blob)
-  try {
-    const image = new Image()
-    await new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve()
-      image.onerror = () => reject(new Error('Could not rasterize SVG'))
-      image.src = url
-    })
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.max(1, image.naturalWidth)
-    canvas.height = Math.max(1, image.naturalHeight)
-    const ctx = canvas.getContext('2d')
-    if (!ctx) {
-      throw new Error('No canvas')
-    }
-    ctx.drawImage(image, 0, 0)
-    const png = await new Promise<Blob>((resolve, reject) => {
+export type SvgToPngOptions = {
+  scale?: number
+  background?: 'white' | 'transparent'
+  maxWidthPx?: number
+}
+
+function svgDataUri(svg: string): string {
+  const trimmed = svg.includes('xmlns=')
+    ? svg
+    : svg.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"')
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(trimmed)}`
+}
+
+function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    try {
       canvas.toBlob((result) => {
         if (result) {
           resolve(result)
-        } else {
-          reject(new Error('PNG export failed'))
+          return
+        }
+        try {
+          const dataUrl = canvas.toDataURL('image/png')
+          resolve(dataUrlToBlob(dataUrl))
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error('PNG export failed'))
         }
       }, 'image/png')
-    })
-    return png
+    } catch {
+      try {
+        resolve(dataUrlToBlob(canvas.toDataURL('image/png')))
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error('PNG export failed'))
+      }
+    }
+  })
+}
+
+function dataUrlToBlob(dataUrl: string): Blob {
+  const [, encoded = ''] = dataUrl.split(',', 2)
+  return new Blob([base64ToBytes(encoded).buffer as ArrayBuffer], { type: 'image/png' })
+}
+
+export async function svgToPng(svg: string, options: SvgToPngOptions = {}): Promise<Blob> {
+  return imageUrlToPng(svgDataUri(svg), options)
+}
+
+/** Re-encode any bitmap the browser can decode (WebP, AVIF, …) as PNG. */
+export async function blobToPng(blob: Blob, options: SvgToPngOptions = {}): Promise<Blob> {
+  const url = URL.createObjectURL(blob)
+  try {
+    return await imageUrlToPng(url, options)
   } finally {
     URL.revokeObjectURL(url)
   }
+}
+
+async function imageUrlToPng(url: string, options: SvgToPngOptions): Promise<Blob> {
+  const image = new Image()
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve()
+    image.onerror = () => reject(new Error('Could not decode image'))
+    image.src = url
+  })
+  const naturalWidth = Math.max(1, image.naturalWidth || image.width || 1)
+  const naturalHeight = Math.max(1, image.naturalHeight || image.height || 1)
+  let scale = options.scale ?? 1
+  const maxWidth = options.maxWidthPx
+  if (maxWidth && naturalWidth * scale > maxWidth) {
+    scale = maxWidth / naturalWidth
+  }
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(naturalWidth * scale))
+  canvas.height = Math.max(1, Math.round(naturalHeight * scale))
+  const ctx = canvas.getContext('2d')
+  if (!ctx) {
+    throw new Error('No canvas')
+  }
+  if (options.background === 'white') {
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+  }
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+  return canvasToPngBlob(canvas)
 }
 
 export async function exportSelectedFigure(

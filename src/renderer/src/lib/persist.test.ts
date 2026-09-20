@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { localStorageHasDocumentContent, savePersisted, takeLegacyRecents } from './persist'
+import { DEFAULT_DOCX_CONFIG } from '@shared/docx-config'
+import {
+  loadPersisted,
+  localStorageHasDocumentContent,
+  savePersisted,
+  takeLegacyRecents
+} from './persist'
 
 describe('persisted settings', () => {
   afterEach(() => {
@@ -32,10 +38,18 @@ describe('persisted settings', () => {
     expect(localStorageHasDocumentContent()).toBe(false)
     savePersisted({
       provider: { enabled: false, kind: 'custom', label: 'x', endpoint: '', apiKey: '', model: '' },
-      mcp: [],
       agents: []
     })
     expect(localStorage.getItem('collabdoc.v1') ?? '').not.toContain('# Notes')
     expect(takeLegacyRecents()).toEqual([])
+  })
+
+  it('round-trips export defaults (AC-22.17)', () => {
+    savePersisted({
+      provider: { enabled: false, kind: 'custom', label: 'x', endpoint: '', apiKey: '', model: '' },
+      agents: [],
+      docxDefaults: { ...DEFAULT_DOCX_CONFIG, page: { ...DEFAULT_DOCX_CONFIG.page, size: 'Letter' } }
+    })
+    expect(loadPersisted()?.docxDefaults?.page.size).toBe('Letter')
   })
 })

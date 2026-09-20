@@ -20,6 +20,8 @@ import type {
   RunEvent,
   RunRecord
 } from '@shared/agents'
+import type { DocxExportConfig } from '@shared/docx-config'
+import type { DocxExportWarning } from '@core/docx'
 import type {
   ActivityEvent,
   Agent,
@@ -101,7 +103,16 @@ export type Action =
   | { type: 'collapse-chrome' }
   | { type: 'ask-unsaved'; intent: CloseIntent; recentId?: string }
   | { type: 'clear-unsaved' }
-  | { type: 'notice'; message: string | null }
+  | {
+      type: 'notice'
+      message: string | null
+      /** Keeps the notice up with a Cancel button until the next notice. */
+      onCancel?: () => void
+      warnings?: DocxExportWarning[] | null
+    }
+  | { type: 'set-docx-defaults'; config: DocxExportConfig }
+  | { type: 'set-docx-export-open'; open: boolean }
+  | { type: 'set-save-as-open'; open: boolean }
   | { type: 'push-activity'; event: Omit<ActivityEvent, 'id' | 'at'> }
 
 type Store = {
@@ -159,6 +170,7 @@ function createInitialState(): AppState {
     profileSetupOpen: !profile.setupComplete,
     provider: { ...defaultProvider, ...persisted?.provider },
     mentionAutoSendSeconds: persisted?.mentionAutoSendSeconds ?? 0,
+    docxDefaults: persisted?.docxDefaults ?? emptyAppState.docxDefaults,
     agents: agents.map((agent) => ({ ...agent, invited: false, status: 'idle' })),
     recents: [],
     recoveries: [],
@@ -310,6 +322,8 @@ function persistReducer(state: AppState, action: Action): AppState | null {
   switch (action.type) {
     case 'set-mention-autosend':
       return { ...state, mentionAutoSendSeconds: Math.max(0, Math.floor(action.seconds)) }
+    case 'set-docx-defaults':
+      return { ...state, docxDefaults: action.config }
     case 'set-listing':
       return { ...state, recents: action.recents, recoveries: action.recoveries }
     case 'apply-persist-state': {
@@ -348,6 +362,8 @@ function reducer(state: AppState, action: Action): AppState {
         unsavedIntent: null,
         pendingRecentId: null,
         missingRecentId: null,
+        docxExportOpen: false,
+        saveAsOpen: false,
         activity: [],
         runs: [],
         agents: resetSessionAgents(state.agents)
@@ -473,7 +489,16 @@ function reducer(state: AppState, action: Action): AppState {
     case 'clear-unsaved':
       return { ...state, unsavedIntent: null, pendingRecentId: null }
     case 'notice':
-      return { ...state, notice: action.message }
+      return {
+        ...state,
+        notice: action.message,
+        noticeCancel: action.message ? (action.onCancel ?? null) : null,
+        noticeWarnings: action.message ? (action.warnings ?? null) : null
+      }
+    case 'set-docx-export-open':
+      return { ...state, docxExportOpen: action.open }
+    case 'set-save-as-open':
+      return { ...state, saveAsOpen: action.open }
     case 'push-activity':
       return { ...state, activity: [activity(action.event), ...state.activity].slice(0, 50) }
     default: {
@@ -482,6 +507,7 @@ function reducer(state: AppState, action: Action): AppState {
         action.type === 'apply-persist-state' ||
         action.type === 'set-missing-recent' ||
         action.type === 'set-mention-autosend' ||
+        action.type === 'set-docx-defaults' ||
         action.type === 'set-backends' ||
         action.type === 'set-backend' ||
         action.type === 'set-mcp-server' ||
@@ -504,9 +530,10 @@ export function AppStateProvider({ children }: { children: ReactNode }): React.J
     savePersisted({
       provider: state.provider,
       agents: state.agents,
-      mentionAutoSendSeconds: state.mentionAutoSendSeconds
+      mentionAutoSendSeconds: state.mentionAutoSendSeconds,
+      docxDefaults: state.docxDefaults
     })
-  }, [state.provider, state.agents, state.mentionAutoSendSeconds])
+  }, [state.provider, state.agents, state.mentionAutoSendSeconds, state.docxDefaults])
 
   // Backends (17), the document MCP server (16) and sources (18) live in main.
   useEffect(() => {
@@ -595,12 +622,12 @@ export function AppStateProvider({ children }: { children: ReactNode }): React.J
   }, [])
 
   useEffect(() => {
-    if (!state.notice) {
+    if (!state.notice || state.noticeCancel || state.noticeWarnings) {
       return
     }
     const timer = window.setTimeout(() => dispatch({ type: 'notice', message: null }), 3600)
     return () => window.clearTimeout(timer)
-  }, [state.notice])
+  }, [state.notice, state.noticeCancel, state.noticeWarnings])
 
   const value = useMemo(() => ({ state, dispatch }), [state])
 

@@ -4,6 +4,7 @@ import type { LlmKind } from '../types'
 import { ProfileFields } from './ProfileFields'
 import { AgentsTab } from './settings/AgentsTab'
 import { BackendsTab } from './settings/BackendsTab'
+import { ExportTab } from './settings/ExportTab'
 import { SourcesTab } from './settings/SourcesTab'
 import { Button, Field, Modal, Select, TextInput } from './ui'
 
@@ -21,14 +22,15 @@ const providerPresets: Record<LlmKind, { label: string; endpoint: string; model:
   custom: { label: 'Custom endpoint', endpoint: 'http://127.0.0.1:11434/v1', model: '' }
 }
 
-const TABS = ['you', 'provider', 'backends', 'sources', 'agents'] as const
+const TABS = ['you', 'provider', 'backends', 'sources', 'agents', 'export'] as const
 
 const TAB_LABELS: Record<(typeof TABS)[number], string> = {
   you: 'You',
   provider: 'LLM provider',
   backends: 'Backends',
   sources: 'Sources',
-  agents: 'Agents'
+  agents: 'Agents',
+  export: 'Export'
 }
 
 export function SettingsModal(): React.JSX.Element | null {
@@ -158,6 +160,7 @@ export function SettingsModal(): React.JSX.Element | null {
       {state.settingsTab === 'backends' ? <BackendsTab /> : null}
       {state.settingsTab === 'sources' ? <SourcesTab /> : null}
       {state.settingsTab === 'agents' ? <AgentsTab /> : null}
+      {state.settingsTab === 'export' ? <ExportTab /> : null}
     </Modal>
   )
 }

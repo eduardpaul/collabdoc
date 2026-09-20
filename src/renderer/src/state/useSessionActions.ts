@@ -2,7 +2,9 @@ import type { RunRequest } from '@shared/agents'
 import { useAppState } from './AppState'
 import { resolveBackend } from './selectors'
 import type { AppState } from '../types'
+import type { DocxExportConfig } from '@shared/docx-config'
 import { parseDocument, previewOf, serializeDocument } from '../lib/document-file'
+import { configForDocument, runDocxExport } from '../lib/docx-export'
 import { listThreads, threadsAsFootnotes } from '@core/comments'
 import { extrasFromDoc, hydrateImages, saveDocumentToHost } from '../lib/files'
 import { emptyShare } from '../lib/share-state'
@@ -60,7 +62,9 @@ export function useSessionActions(): {
   newDocument: () => void
   openDocument: () => void
   importMarkdown: () => void
-  exportMarkdown: (options?: { includeComments?: boolean }) => void
+  exportMarkdown: (options?: { includeComments?: boolean; path?: string }) => void
+  exportDocx: (options?: { config?: DocxExportConfig; path?: string }) => void
+  openDocxExport: () => void
   openRecent: (id: string) => Promise<void>
   recoverDocument: (id: string) => Promise<void>
   locateRecent: (id: string) => Promise<void>
@@ -267,6 +271,10 @@ export function useSessionActions(): {
     if (!session || !client || client.status !== 'live') return false
     try {
       if (!nativePersist()) {
+        if (saveAs) {
+          dispatch({ type: 'set-save-as-open', open: true })
+          return false
+        }
         const content = client.toJSON()
         const saved = await saveDocumentToHost({
           path: session.path,
@@ -285,6 +293,16 @@ export function useSessionActions(): {
         if (result.canceled) return false
         throw new Error(result.error)
       }
+      if ('exportTo' in result && result.exportTo) {
+        // Save As to .md/.docx is an export: the .collabdoc path and dirty state stay as they are.
+        if (result.exportTo.format === 'markdown') {
+          await exportMarkdown({ path: result.exportTo.path })
+        } else {
+          await exportDocx({ path: result.exportTo.path })
+        }
+        return false
+      }
+      if (!('path' in result)) return false
       client.markClean()
       dispatch({
         type: 'mark-saved',
@@ -445,7 +463,9 @@ export function useSessionActions(): {
     await refreshListing()
   }
 
-  const exportMarkdown = async (options: { includeComments?: boolean } = {}): Promise<void> => {
+  const exportMarkdown = async (
+    options: { includeComments?: boolean; path?: string } = {}
+  ): Promise<void> => {
     const session = state.session
     const client = session ? getClient(session.id) : undefined
     if (!session || !client || client.status !== 'live') return
@@ -463,13 +483,66 @@ export function useSessionActions(): {
     const result = await window.api.documents.exportMarkdown({
       content: markdown,
       suggestedName,
+      path: options.path,
       extras: extrasFromDoc(content)
     })
     if (!result.ok) {
       if (!result.canceled) fail(new Error(result.error))
       return
     }
-    dispatch({ type: 'notice', message: 'Exported Markdown' })
+    const name = 'name' in result ? result.name : 'Markdown'
+    dispatch({ type: 'notice', message: `Exported ${name}` })
+  }
+
+  const exportDocx = async (
+    options: { config?: DocxExportConfig; path?: string } = {}
+  ): Promise<void> => {
+    const session = state.session
+    const client = session ? getClient(session.id) : undefined
+    if (!session || !client || client.status !== 'live') return
+    const config = options.config ?? configForDocument(client, state.docxDefaults)
+    const abort = new AbortController()
+    const onCancel = (): void => abort.abort()
+    dispatch({ type: 'notice', message: 'Exporting Word document…', onCancel })
+    const result = await runDocxExport({
+      client,
+      config,
+      author: state.profile.name,
+      title: session.title,
+      path: options.path,
+      signal: abort.signal,
+      onProgress: (message) => dispatch({ type: 'notice', message, onCancel })
+    })
+    if (!result.ok) {
+      if (result.canceled) {
+        dispatch({ type: 'notice', message: 'Export cancelled' })
+        return
+      }
+      fail(new Error(result.error))
+      return
+    }
+    const warnings = result.report.warnings
+    const count = warnings.length
+    dispatch({
+      type: 'push-activity',
+      event: {
+        actor: 'You',
+        kind: 'system',
+        summary:
+          count === 0
+            ? `Exported ${result.name}`
+            : `Exported ${result.name} with ${count} warning${count === 1 ? '' : 's'}`
+      }
+    })
+    if (count === 0) {
+      dispatch({ type: 'notice', message: `Exported ${result.name}` })
+      return
+    }
+    dispatch({
+      type: 'notice',
+      message: `Exported with ${count} warning${count === 1 ? '' : 's'} — Details`,
+      warnings
+    })
   }
 
   const importMarkdown = (): void => {
@@ -597,6 +670,14 @@ export function useSessionActions(): {
     importMarkdown,
     exportMarkdown: (options) => {
       void exportMarkdown(options)
+    },
+    exportDocx: (options) => {
+      void exportDocx(options)
+    },
+    openDocxExport: () => {
+      if (!state.session) return
+      dispatch({ type: 'notice', message: null })
+      dispatch({ type: 'set-docx-export-open', open: true })
     },
     openRecent: async (id: string) => {
       if (state.session?.id === id) return

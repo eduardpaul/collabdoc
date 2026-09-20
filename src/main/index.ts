@@ -304,10 +304,16 @@ function installAppMenu(): void {
       { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: () => send('open') },
       { type: 'separator' },
       { label: 'Import Markdown…', click: () => send('import-markdown') },
-      { label: 'Export Markdown…', click: () => send('export-markdown') },
       {
-        label: 'Export Markdown with Comments…',
-        click: () => send('export-markdown-comments')
+        label: 'Export',
+        submenu: [
+          { label: 'Markdown…', click: () => send('export-markdown') },
+          {
+            label: 'Markdown with Comments…',
+            click: () => send('export-markdown-comments')
+          },
+          { label: 'Word (.docx)…', click: () => send('export-docx') }
+        ]
       },
       { type: 'separator' },
       { label: 'Save', accelerator: 'CmdOrCtrl+S', click: () => send('save') },

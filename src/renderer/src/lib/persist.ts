@@ -1,6 +1,11 @@
 import { colorForId } from '@shared/actors'
 import { isBackendId } from '@shared/agents'
 import { handleFromName } from '@shared/handles'
+import {
+  DEFAULT_DOCX_CONFIG,
+  normalizeDocxConfig,
+  type DocxExportConfig
+} from '@shared/docx-config'
 import type { Agent, AgentProvider, LlmProvider, RecentDocument } from '../types'
 
 const KEY = 'collabdoc.v1'
@@ -10,6 +15,7 @@ export type Persisted = {
   agents: Agent[]
   /** Idle seconds before an agent request paragraph is sent on its own; 0 = off (10). */
   mentionAutoSendSeconds?: number
+  docxDefaults?: DocxExportConfig
 }
 
 /** Pre-17 agents carried `routing: 'llm' | 'mcp'` and an `mcpId` naming a fake connection. */
@@ -72,7 +78,10 @@ export function loadPersisted(): Persisted | null {
         ? parsed.agents.map(migrateAgent).filter((a): a is Agent => a !== null)
         : [],
       mentionAutoSendSeconds:
-        typeof parsed.mentionAutoSendSeconds === 'number' ? parsed.mentionAutoSendSeconds : 0
+        typeof parsed.mentionAutoSendSeconds === 'number' ? parsed.mentionAutoSendSeconds : 0,
+      docxDefaults: parsed.docxDefaults
+        ? normalizeDocxConfig(parsed.docxDefaults)
+        : DEFAULT_DOCX_CONFIG
     }
   } catch {
     return null
@@ -83,7 +92,8 @@ export function savePersisted(data: Persisted): void {
   const sanitized: Persisted = {
     provider: data.provider,
     agents: data.agents.map((agent) => ({ ...agent, status: 'idle', invited: false })),
-    mentionAutoSendSeconds: data.mentionAutoSendSeconds ?? 0
+    mentionAutoSendSeconds: data.mentionAutoSendSeconds ?? 0,
+    docxDefaults: normalizeDocxConfig(data.docxDefaults ?? DEFAULT_DOCX_CONFIG)
   }
   localStorage.setItem(KEY, JSON.stringify(sanitized))
 }

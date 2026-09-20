@@ -1,7 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { AUTHORS_KEY, META_KEY, ROOT_DOC_KEY } from '../shared/constants'
-import { createDocument, openDocument, readMeta, setTitle } from './document'
+import { DEFAULT_DOCX_CONFIG, normalizeDocxConfig } from '../shared/docx-config'
+import { createDocument, openDocument, readDocxConfig, readMeta, setDocxConfig, setTitle } from './document'
+import { listHistory } from './history'
 import { allBlocks, blockIdOf, blockPlainText, nodeName } from './tree'
 
 describe('createDocument', () => {
@@ -57,5 +59,25 @@ describe('createDocument', () => {
     const doc = openDocument(createDocument().export({ mode: 'snapshot' }))
     doc.getMap(META_KEY).delete('title')
     expect(readMeta(doc).title).toBe('')
+  })
+
+  it('stores docx export settings and reopens them (AC-22.15)', () => {
+    const doc = createDocument({ title: 'Export' })
+    expect(readDocxConfig(doc)).toBeNull()
+    const config = normalizeDocxConfig({ page: { size: 'Letter' }, toc: { depth: 2 } })
+    setDocxConfig(doc, config, 'actor:ana')
+    expect(readDocxConfig(doc)?.page.size).toBe('Letter')
+    expect(readDocxConfig(doc)?.toc.depth).toBe(2)
+    const reopened = openDocument(doc.export({ mode: 'snapshot' }))
+    expect(readDocxConfig(reopened)?.page.size).toBe('Letter')
+    expect(listHistory(doc).some((entry) => entry.message === 'docx export settings')).toBe(true)
+  })
+
+  it('normalises a hostile stored blob (AC-22.16)', () => {
+    const doc = createDocument()
+    doc.getMap(META_KEY).set('docxExport', '{"typography":{"body":"<script>"},"page":{"marginsMm":{"left":-5}}}')
+    const config = readDocxConfig(doc)
+    expect(config?.typography.body).toBe(DEFAULT_DOCX_CONFIG.typography.body)
+    expect(config?.page.marginsMm.left).toBe(5)
   })
 })

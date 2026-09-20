@@ -1,4 +1,6 @@
 import type { JSONContent } from '@tiptap/core'
+import type { DocxExportConfig } from '@shared/docx-config'
+import type { DocxExportWarning } from '@core/docx'
 import type {
   BackendAvailability,
   BackendId,
@@ -106,7 +108,7 @@ export type ActivityEvent = {
 }
 
 export type AppScreen = 'start' | 'workspace'
-export type SettingsTab = 'you' | 'provider' | 'backends' | 'sources' | 'agents'
+export type SettingsTab = 'you' | 'provider' | 'backends' | 'sources' | 'agents' | 'export'
 export type RightTab = 'agents' | 'comments' | 'history' | 'activity' | 'markdown'
 export type CloseIntent = 'home' | 'new' | 'open' | 'recent'
 
@@ -144,6 +146,12 @@ export type AppState = {
   runs: RunRecord[]
   /** Seconds of idleness before an agent request is sent on its own; 0 = off (10). */
   mentionAutoSendSeconds: number
+  docxDefaults: DocxExportConfig
+  docxExportOpen: boolean
+  saveAsOpen: boolean
+  /** Set while a long operation reports into the notice bar; calling it cancels the operation. */
+  noticeCancel: (() => void) | null
+  noticeWarnings: DocxExportWarning[] | null
   recents: RecentDocument[]
   recoveries: RecoveryOffer[]
   missingRecentId: string | null

@@ -51,7 +51,18 @@ type OpenDocResult =
   | { ok: false; error: string }
 
 type SaveDocResult =
-  { ok: true; path: string; name: string } | { ok: false; error: string; canceled?: boolean }
+  | { ok: true; path: string; name: string }
+  | { ok: true; exportTo: { format: 'markdown' | 'docx'; path: string } }
+  | { ok: false; error: string; canceled?: boolean }
+
+type DocxExportResult =
+  | {
+      ok: true
+      path: string
+      name: string
+      warnings: Array<{ code: string; blockId?: string; message: string }>
+    }
+  | { ok: false; error: string; canceled?: boolean }
 
 type PersistState = {
   docId: string
@@ -85,8 +96,17 @@ type HostApi = {
     exportMarkdown: (payload: {
       content: string
       suggestedName?: string
+      path?: string
       extras?: { relativePath: string; base64: string }[]
     }) => Promise<SaveDocResult>
+    exportDocx: (payload: {
+      docId: string
+      path?: string
+      config: unknown
+      figures: unknown[]
+      author?: string
+      suggestedName?: string
+    }) => Promise<DocxExportResult>
     saveNow: (docId: string) => Promise<SaveDocResult>
     saveAs: (docId: string) => Promise<SaveDocResult>
     flush: (docId: string) => Promise<SaveDocResult>

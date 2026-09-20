@@ -1,7 +1,8 @@
 import type { JSONContent } from '@tiptap/core'
 import { LoroDoc, type UndoManager, type VersionVector } from 'loro-crdt'
 import { ensureAuthor, writeAuthor } from '@core/authors'
-import { commitTimestamp, configureDocument, readMeta } from '@core/document'
+import { commitTimestamp, configureDocument, readMeta, setDocxConfig as writeDocxConfig } from '@core/document'
+import type { DocxExportConfig } from '@shared/docx-config'
 import { createUndoManager } from '@core/undo'
 import { PresenceStore } from './presence-store'
 import { AUTHOR_ORIGIN, META_KEY, UNDO_STEP_MAX_MS } from '@shared/constants'
@@ -143,6 +144,11 @@ export class DocumentClient {
       message: 'rename',
       timestamp: commitTimestamp()
     })
+  }
+
+  setDocxConfig(config: DocxExportConfig): void {
+    if (this.statusValue !== 'live') return
+    writeDocxConfig(this.doc, config, `actor:${this.profile.actorId}`)
   }
 
   /** Replace an empty document's body with parsed file content, as one commit. */

@@ -36,8 +36,17 @@ const api = {
     exportMarkdown: (payload: {
       content: string
       suggestedName?: string
+      path?: string
       extras?: { relativePath: string; base64: string }[]
     }): Promise<unknown> => invoke('documents:exportMarkdown', payload),
+    exportDocx: (payload: {
+      docId: string
+      path?: string
+      config: unknown
+      figures: unknown[]
+      author?: string
+      suggestedName?: string
+    }): Promise<unknown> => invoke('documents:exportDocx', payload),
     saveNow: (docId: string): Promise<unknown> => invoke('documents:saveNow', docId),
     saveAs: (docId: string): Promise<unknown> => invoke('documents:saveAs', docId),
     flush: (docId: string): Promise<unknown> => invoke('documents:flush', docId),

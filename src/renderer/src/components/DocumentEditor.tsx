@@ -8,7 +8,8 @@ import {
   type ReactNode
 } from 'react'
 import { EditorContent, useEditorState } from '@tiptap/react'
-import { NodeSelection } from '@tiptap/pm/state'
+import { NodeSelection, TextSelection } from '@tiptap/pm/state'
+import { BLOCK_ID_ATTR } from '@shared/constants'
 import { currentSpan } from '@core/comments'
 import type { HistoryBlock, HistoryEntry } from '@core/history'
 import type { RegistryPerson } from '@core/participants'
@@ -166,6 +167,24 @@ export function DocumentEditor({
         delete window.__collabEditor
       }
     }
+  }, [editor])
+
+  useEffect(() => {
+    const onFocus = (event: Event): void => {
+      const blockId = (event as CustomEvent<string>).detail
+      if (!blockId || !editor) return
+      editor.state.doc.descendants((node, pos) => {
+        if (node.attrs?.[BLOCK_ID_ATTR] !== blockId) return true
+        const selection = node.isTextblock
+          ? TextSelection.create(editor.state.doc, pos + 1)
+          : NodeSelection.create(editor.state.doc, pos)
+        editor.view.dispatch(editor.state.tr.setSelection(selection).scrollIntoView())
+        editor.view.focus()
+        return false
+      })
+    }
+    window.addEventListener('collabdoc:focus-block', onFocus)
+    return () => window.removeEventListener('collabdoc:focus-block', onFocus)
   }, [editor])
 
   useEffect(() => {

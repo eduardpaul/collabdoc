@@ -1,11 +1,13 @@
 import { useEffect, useRef } from 'react'
 import {
+  BrowserSaveAsDialog,
   JoinDialog,
   NoticeBar,
   ProfileSetupDialog,
   ShareDialog,
   UnsavedDialog
 } from './components/Dialogs'
+import { DocxExportDialog } from './components/DocxExportDialog'
 import { SettingsModal } from './components/SettingsModal'
 import { StartScreen } from './screens/StartScreen'
 import { Workspace } from './screens/Workspace'
@@ -37,6 +39,14 @@ function AppShell(): React.JSX.Element {
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
+        if (state.docxExportOpen) {
+          dispatch({ type: 'set-docx-export-open', open: false })
+          return
+        }
+        if (state.saveAsOpen) {
+          dispatch({ type: 'set-save-as-open', open: false })
+          return
+        }
         if (state.settingsOpen) {
           dispatch({ type: 'close-settings' })
           return
@@ -97,7 +107,9 @@ function AppShell(): React.JSX.Element {
     state.settingsOpen,
     state.shareOpen,
     state.unsavedIntent,
-    state.profileSetupOpen
+    state.profileSetupOpen,
+    state.docxExportOpen,
+    state.saveAsOpen
   ])
 
   useEffect(() => {
@@ -106,8 +118,10 @@ function AppShell(): React.JSX.Element {
     })
   }, [dispatch])
 
+  // Menu commands arrive over IPC in the desktop app; browser-mode tests dispatch the
+  // same names as a `collabdoc:command` window event.
   useEffect(() => {
-    const stop = window.api?.app?.onCommand?.((command) => {
+    const runCommand = (command: string): void => {
       if (command === 'new') actions.newDocument()
       if (command === 'open') void actions.openDocument()
       if (command === 'save') void actions.saveDocument()
@@ -115,14 +129,26 @@ function AppShell(): React.JSX.Element {
       if (command === 'import-markdown') actions.importMarkdown()
       if (command === 'export-markdown') actions.exportMarkdown()
       if (command === 'export-markdown-comments') actions.exportMarkdown({ includeComments: true })
-    })
-    return () => stop?.()
+      if (command === 'export-docx') actions.openDocxExport()
+    }
+    const stop = window.api?.app?.onCommand?.(runCommand)
+    const onWindowCommand = (event: Event): void =>
+      runCommand((event as CustomEvent<string>).detail)
+    window.addEventListener('collabdoc:command', onWindowCommand)
+    return () => {
+      stop?.()
+      window.removeEventListener('collabdoc:command', onWindowCommand)
+    }
   }, [actions])
 
   return (
     <div className="app">
       {state.screen === 'start' ? <StartScreen /> : <Workspace />}
       <SettingsModal />
+      {state.docxExportOpen ? (
+        <DocxExportDialog onExport={(config) => actions.exportDocx({ config })} />
+      ) : null}
+      <BrowserSaveAsDialog />
       <ShareDialog />
       <JoinDialog />
       <UnsavedDialog />
