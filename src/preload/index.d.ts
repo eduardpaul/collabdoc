@@ -1,5 +1,19 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type { InboxEntry } from '../shared/types'
+import type {
+  BackendAvailability,
+  BackendId,
+  CustomCliConfig,
+  McpClientRole,
+  McpServerState,
+  McpSource,
+  McpSourceInput,
+  RunEvent,
+  RunRecord,
+  RunRequest
+} from '../shared/agents'
+
+type Fail = { ok: false; error: string }
 
 type DocumentSaveResult = { ok: true; path: string; name: string } | { ok: false; error: string }
 
@@ -222,6 +236,44 @@ type HostApi = {
   }
   shell: {
     openExternal: (url: string) => Promise<{ ok: boolean }>
+  }
+  /** The document MCP server (16). */
+  mcp: {
+    getState: () => Promise<{ ok: true; state: McpServerState }>
+    setEnabled: (enabled: boolean) => Promise<{ ok: true; state: McpServerState } | Fail>
+    rotateToken: () => Promise<{ ok: true; state: McpServerState } | Fail>
+    setClientRole: (payload: {
+      name: string
+      role: McpClientRole
+    }) => Promise<{ ok: true; state: McpServerState } | Fail>
+    forgetClient: (name: string) => Promise<{ ok: true; state: McpServerState } | Fail>
+    disconnectClient: (sessionId: string) => Promise<{ ok: true; state: McpServerState } | Fail>
+    setupCommand: (backendId: BackendId) => Promise<{ ok: true; command: string } | Fail>
+    onState: (listener: (state: McpServerState) => void) => () => void
+  }
+  /** Agent backends and runs (17). */
+  agents: {
+    listBackends: (force?: boolean) => Promise<{ ok: true; backends: BackendAvailability[] } | Fail>
+    detect: (id: BackendId) => Promise<{ ok: true; backend: BackendAvailability } | Fail>
+    getCustomCli: () => Promise<{ ok: true; config: CustomCliConfig }>
+    setCustomCli: (
+      config: CustomCliConfig
+    ) => Promise<{ ok: true; config: CustomCliConfig; backend: BackendAvailability } | Fail>
+    run: (request: RunRequest) => Promise<{ ok: true; record: RunRecord } | Fail>
+    cancel: (runId: string) => Promise<{ ok: true; cancelled: boolean } | Fail>
+    cancelAgent: (payload: { agentId: string; docId?: string }) => Promise<{ ok: true } | Fail>
+    listRuns: (docId?: string) => Promise<{ ok: true; runs: RunRecord[] }>
+    onEvents: (listener: (events: RunEvent[]) => void) => () => void
+    /** One backend's Detect result as soon as it is known. */
+    onBackend: (listener: (backend: BackendAvailability) => void) => () => void
+  }
+  /** External MCP knowledge sources (18). */
+  sources: {
+    list: () => Promise<{ ok: true; sources: McpSource[]; secretsUnencrypted: boolean }>
+    upsert: (input: McpSourceInput) => Promise<{ ok: true; source: McpSource } | Fail>
+    remove: (id: string) => Promise<{ ok: true } | Fail>
+    refresh: (id: string) => Promise<{ ok: true; source: McpSource } | Fail>
+    pickFolder: () => Promise<{ ok: true; path: string | null } | Fail>
   }
 }
 

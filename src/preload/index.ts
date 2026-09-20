@@ -124,6 +124,40 @@ const api = {
   },
   shell: {
     openExternal: (url: string): Promise<unknown> => invoke('shell:openExternal', url)
+  },
+  mcp: {
+    getState: (): Promise<unknown> => invoke('mcp:getState'),
+    setEnabled: (enabled: boolean): Promise<unknown> => invoke('mcp:setEnabled', enabled),
+    rotateToken: (): Promise<unknown> => invoke('mcp:rotateToken'),
+    setClientRole: (payload: { name: string; role: string }): Promise<unknown> =>
+      invoke('mcp:setClientRole', payload),
+    forgetClient: (name: string): Promise<unknown> => invoke('mcp:forgetClient', name),
+    disconnectClient: (sessionId: string): Promise<unknown> =>
+      invoke('mcp:disconnectClient', sessionId),
+    setupCommand: (backendId: string): Promise<unknown> => invoke('mcp:setupCommand', backendId),
+    onState: (listener: (state: unknown) => void): (() => void) => onChannel('mcp:state', listener)
+  },
+  agents: {
+    listBackends: (force?: boolean): Promise<unknown> => invoke('agents:listBackends', force),
+    detect: (id: string): Promise<unknown> => invoke('agents:detect', id),
+    getCustomCli: (): Promise<unknown> => invoke('agents:getCustomCli'),
+    setCustomCli: (config: unknown): Promise<unknown> => invoke('agents:setCustomCli', config),
+    run: (request: unknown): Promise<unknown> => invoke('agents:run', request),
+    cancel: (runId: string): Promise<unknown> => invoke('agents:cancel', runId),
+    cancelAgent: (payload: { agentId: string; docId?: string }): Promise<unknown> =>
+      invoke('agents:cancelAgent', payload),
+    listRuns: (docId?: string): Promise<unknown> => invoke('agents:listRuns', docId),
+    onEvents: (listener: (events: unknown) => void): (() => void) =>
+      onChannel('agents:event', listener),
+    onBackend: (listener: (backend: unknown) => void): (() => void) =>
+      onChannel('agents:backend', listener)
+  },
+  sources: {
+    list: (): Promise<unknown> => invoke('sources:list'),
+    upsert: (input: unknown): Promise<unknown> => invoke('sources:upsert', input),
+    remove: (id: string): Promise<unknown> => invoke('sources:remove', id),
+    refresh: (id: string): Promise<unknown> => invoke('sources:refresh', id),
+    pickFolder: (): Promise<unknown> => invoke('sources:pickFolder')
   }
 }
 

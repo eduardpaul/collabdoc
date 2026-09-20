@@ -1,4 +1,11 @@
 import type { JSONContent } from '@tiptap/core'
+import type {
+  BackendAvailability,
+  BackendId,
+  McpServerState,
+  McpSource,
+  RunRecord
+} from '@shared/agents'
 
 export type DocJson = JSONContent
 
@@ -13,33 +20,27 @@ export type LlmProvider = {
   model: string
 }
 
-export type McpKind = 'claude' | 'codex' | 'custom'
-export type McpTransport = 'stdio' | 'sse'
-export type McpStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
-
-export type McpConnection = {
-  id: string
-  kind: McpKind
-  label: string
-  transport: McpTransport
-  command: string
-  url: string
-  status: McpStatus
-  error?: string
-}
-
 export type AgentRole = 'writer' | 'reviewer'
-export type AgentRouting = 'llm' | 'mcp'
-export type AgentStatus = 'idle' | 'working'
+export type AgentStatus = 'idle' | 'queued' | 'working'
+
+/**
+ * How an agent's runs execute (17). `default` picks the first available
+ * backend; a `backend` pins one CLI. The in-process LLM runtime (12) will
+ * join this union when it lands.
+ */
+export type AgentProvider = { kind: 'default' } | { kind: 'backend'; id: BackendId }
 
 export type Agent = {
   id: string
   name: string
+  handle: string
   role: AgentRole
+  color: string
   persona: string
   skills: string[]
-  routing: AgentRouting
-  mcpId: string | null
+  provider: AgentProvider
+  /** External MCP sources (18) this agent may use, by id. */
+  sources: string[]
   invited: boolean
   status: AgentStatus
 }
@@ -105,7 +106,7 @@ export type ActivityEvent = {
 }
 
 export type AppScreen = 'start' | 'workspace'
-export type SettingsTab = 'you' | 'provider' | 'mcp' | 'agents'
+export type SettingsTab = 'you' | 'provider' | 'backends' | 'sources' | 'agents'
 export type RightTab = 'agents' | 'comments' | 'history' | 'activity' | 'markdown'
 export type CloseIntent = 'home' | 'new' | 'open' | 'recent'
 
@@ -132,8 +133,15 @@ export type AppState = {
   leftCollapsed: boolean
   rightCollapsed: boolean
   provider: LlmProvider
-  mcp: McpConnection[]
   agents: Agent[]
+  /** What Detect found for each CLI backend (17); from main, not persisted here. */
+  backends: BackendAvailability[]
+  /** The document MCP server (16); from main. */
+  mcpServer: McpServerState | null
+  /** External MCP sources (18); from main. */
+  sources: McpSource[]
+  /** Runs for the open document, newest first (17). */
+  runs: RunRecord[]
   /** Seconds of idleness before an agent request is sent on its own; 0 = off (10). */
   mentionAutoSendSeconds: number
   recents: RecentDocument[]

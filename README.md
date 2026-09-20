@@ -84,6 +84,25 @@ COLLABDOC_DISABLE_GPU=1 npm run dev
 | `npm run typecheck` | Main/preload + renderer TypeScript    |
 | `npm run lint`      | ESLint                                |
 | `npm run format`    | Prettier                              |
+| `npm test`          | Vitest (unit + main-process tests)    |
+| `npm run test:e2e`  | Playwright, browser build             |
+
+### Agents on your own CLI
+
+Personas run on a CLI agent you already have installed and signed in — Claude Code, grok, Antigravity (`agy`), Gemini CLI or Codex — through the document's own MCP server; no API key is entered in CollabDoc. Open **Settings → Backends**, click **Detect**, then invite an agent in a document and ask it to draft or review. Every edit is attributed to the persona, not to the CLI.
+
+Your interactive CLI session can join too: keep the **Document MCP server** running (same tab), paste the **setup command** into your CLI, and approve the client the first time it calls in. Knowledge sources (Microsoft Learn, a read-only folder, any MCP server) live under **Settings → Sources** and are attached per agent.
+
+Opt-in checks against the real binaries:
+
+```bash
+# unit-level, each CLI drives a document as a persona
+COLLABDOC_REAL_CLI=claude-code,grok,antigravity npx vitest run real-cli
+# the whole flow in the built app
+npx electron-vite build && COLLABDOC_ELECTRON_E2E=1 npx playwright test e2e/electron-agent.spec.ts
+```
+
+`COLLABDOC_USER_DATA=<dir>` points the app at a separate profile (tests and side-by-side setups).
 
 ## Build
 

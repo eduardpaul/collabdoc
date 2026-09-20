@@ -14,13 +14,19 @@ import { loadPersisted, savePersisted } from '../lib/persist'
 import { getClient } from '../sync/clients'
 import { asActorProfile, loadProfileSync } from '../sync/identity'
 import type {
+  BackendAvailability,
+  McpServerState,
+  McpSource,
+  RunEvent,
+  RunRecord
+} from '@shared/agents'
+import type {
   ActivityEvent,
   Agent,
   AppState,
   CloseIntent,
   DocumentSession,
   LlmProvider,
-  McpConnection,
   RecentDocument,
   RecoveryOffer,
   RightTab,
@@ -28,7 +34,7 @@ import type {
   ShareState,
   UserProfile
 } from '../types'
-import { defaultAgents, defaultMcp, defaultProvider, emptyAppState } from './defaults'
+import { defaultAgents, defaultProvider, emptyAppState, withInstallIds } from './defaults'
 
 export type Action =
   | { type: 'home' }
@@ -74,9 +80,13 @@ export type Action =
   | { type: 'set-settings-tab'; tab: SettingsTab }
   | { type: 'set-profile'; profile: UserProfile }
   | { type: 'update-provider'; patch: Partial<LlmProvider> }
-  | { type: 'add-mcp'; connection: McpConnection }
-  | { type: 'update-mcp'; id: string; patch: Partial<McpConnection> }
-  | { type: 'remove-mcp'; id: string }
+  | { type: 'set-backends'; backends: BackendAvailability[] }
+  | { type: 'set-backend'; backend: BackendAvailability }
+  | { type: 'set-mcp-server'; state: McpServerState }
+  | { type: 'set-sources'; sources: McpSource[] }
+  | { type: 'set-runs'; runs: RunRecord[] }
+  /** A batch of run events from main; updates runs, agent status and Activity. */
+  | { type: 'run-events'; events: RunEvent[] }
   | { type: 'add-agent'; agent: Agent }
   | { type: 'update-agent'; id: string; patch: Partial<Agent> }
   | { type: 'set-mention-autosend'; seconds: number }
@@ -137,32 +147,19 @@ function touchRecent(state: AppState, session: DocumentSession, preview?: string
   }
 }
 
-function mergeMcp(defaults: McpConnection[], stored: McpConnection[] | undefined): McpConnection[] {
-  if (!stored?.length) {
-    return defaults
-  }
-  const extras = stored.filter((item) => !defaults.some((preset) => preset.id === item.id))
-  const merged = defaults.map((preset) => stored.find((item) => item.id === preset.id) ?? preset)
-  return [...merged, ...extras]
-}
-
 function createInitialState(): AppState {
   const persisted = loadPersisted()
-  const agents = persisted?.agents?.length ? persisted.agents : defaultAgents
   const profile = loadProfileSync()
+  const agents = persisted?.agents?.length
+    ? withInstallIds(persisted.agents, profile.userId)
+    : defaultAgents(profile.userId)
   return {
     ...emptyAppState,
     profile,
     profileSetupOpen: !profile.setupComplete,
     provider: { ...defaultProvider, ...persisted?.provider },
     mentionAutoSendSeconds: persisted?.mentionAutoSendSeconds ?? 0,
-    mcp: mergeMcp(defaultMcp, persisted?.mcp),
-    agents: agents.map((agent) => ({
-      ...agent,
-      skills: agent.skills ?? [],
-      invited: false,
-      status: 'idle'
-    })),
+    agents: agents.map((agent) => ({ ...agent, invited: false, status: 'idle' })),
     recents: [],
     recoveries: [],
     missingRecentId: null
@@ -185,6 +182,127 @@ function withSession(
     screen: 'workspace',
     session,
     recents: upsertRecent(state.recents, toRecent(session, state.recents))
+  }
+}
+
+const MAX_RUNS = 50
+
+function statusOf(runs: RunRecord[], agentId: string): Agent['status'] {
+  if (runs.some((r) => r.agentId === agentId && r.status === 'working')) return 'working'
+  if (runs.some((r) => r.agentId === agentId && r.status === 'queued')) return 'queued'
+  return 'idle'
+}
+
+function editsLabel(writes: number): string {
+  if (writes === 0) return 'No edits'
+  return `${writes} edit${writes === 1 ? '' : 's'}`
+}
+
+function runActivity(record: RunRecord): ActivityEvent | null {
+  const who = record.personaName
+  switch (record.status) {
+    case 'working':
+      return activity({
+        actor: who,
+        kind: 'agent',
+        summary: `Started: ${record.input.slice(0, 120)}`
+      })
+    case 'done':
+      return activity({
+        actor: who,
+        kind: 'agent',
+        summary: [editsLabel(record.writes), record.summary.slice(0, 160)]
+          .filter(Boolean)
+          .join(' — ')
+      })
+    case 'error':
+      return activity({
+        actor: who,
+        kind: 'agent',
+        summary: `Failed: ${record.error?.message ?? 'unknown error'}`
+      })
+    case 'cancelled':
+      return activity({ actor: who, kind: 'agent', summary: 'Cancelled' })
+    case 'limit':
+      return activity({
+        actor: who,
+        kind: 'agent',
+        summary: `Stopped: ${record.error?.message ?? 'limit reached'}`
+      })
+    default:
+      return null
+  }
+}
+
+/**
+ * Fold a batch of run events into state: the run list (newest first), each
+ * agent's status, and one Activity row per lifecycle change. Steps and text
+ * update the run record in place so the agent card can show progress.
+ */
+function applyRunEvents(state: AppState, events: RunEvent[]): AppState {
+  let runs = state.runs
+  const rows: ActivityEvent[] = []
+  for (const event of events) {
+    if (event.type === 'run') {
+      if (state.session && event.record.docId !== state.session.id) continue
+      const previous = runs.find((r) => r.runId === event.record.runId)
+      runs = [event.record, ...runs.filter((r) => r.runId !== event.record.runId)].slice(
+        0,
+        MAX_RUNS
+      )
+      // One Activity row per status change; `queued` has no row.
+      if (previous?.status !== event.record.status) {
+        const row = runActivity(event.record)
+        if (row) rows.push(row)
+      }
+      continue
+    }
+    const index = runs.findIndex((r) => r.runId === event.runId)
+    if (index < 0) continue
+    const record = runs[index]
+    if (event.type === 'step') {
+      runs = runs.map((r, i) => (i === index ? { ...r, steps: [...r.steps, event.step] } : r))
+    } else if (event.type === 'text') {
+      runs = runs.map((r, i) =>
+        i === index ? { ...r, transcript: [...r.transcript.slice(-20), event.text] } : r
+      )
+    } else if (event.type === 'warning') {
+      rows.push(activity({ actor: record.personaName, kind: 'agent', summary: event.message }))
+    }
+  }
+  if (runs === state.runs && rows.length === 0) return state
+  const agents = state.agents.map((agent) => {
+    const status = statusOf(runs, agent.id)
+    return status === agent.status ? agent : { ...agent, status }
+  })
+  return {
+    ...state,
+    runs,
+    agents,
+    activity: rows.length ? [...rows.reverse(), ...state.activity].slice(0, 50) : state.activity
+  }
+}
+
+/** Backends, the MCP server, sources and runs: state mirrored from main (16–18). */
+function runtimeReducer(state: AppState, action: Action): AppState | null {
+  switch (action.type) {
+    case 'set-backends':
+      return { ...state, backends: action.backends }
+    case 'set-backend':
+      return {
+        ...state,
+        backends: [...state.backends.filter((b) => b.id !== action.backend.id), action.backend]
+      }
+    case 'set-mcp-server':
+      return { ...state, mcpServer: action.state }
+    case 'set-sources':
+      return { ...state, sources: action.sources }
+    case 'set-runs':
+      return { ...state, runs: action.runs }
+    case 'run-events':
+      return applyRunEvents(state, action.events)
+    default:
+      return null
   }
 }
 
@@ -216,7 +334,7 @@ function persistReducer(state: AppState, action: Action): AppState | null {
 }
 
 function reducer(state: AppState, action: Action): AppState {
-  const persisted = persistReducer(state, action)
+  const persisted = persistReducer(state, action) ?? runtimeReducer(state, action)
   if (persisted) return persisted
   switch (action.type) {
     case 'home':
@@ -231,6 +349,7 @@ function reducer(state: AppState, action: Action): AppState {
         pendingRecentId: null,
         missingRecentId: null,
         activity: [],
+        runs: [],
         agents: resetSessionAgents(state.agents)
       }
     case 'open-session': {
@@ -248,6 +367,7 @@ function reducer(state: AppState, action: Action): AppState {
         activity: [
           activity({ actor: 'You', kind: action.kind ?? 'system', summary: action.summary })
         ],
+        runs: [],
         unsavedIntent: null,
         joinOpen: false
       })
@@ -302,6 +422,8 @@ function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         profile: action.profile,
+        // Starter agents keyed by a provisional id follow the real install id.
+        agents: withInstallIds(state.agents, action.profile.userId, state.profile.userId),
         profileSetupOpen: !action.profile.setupComplete
       }
     }
@@ -310,15 +432,6 @@ function reducer(state: AppState, action: Action): AppState {
       provider.enabled = Boolean(provider.endpoint.trim())
       return { ...state, provider }
     }
-    case 'add-mcp':
-      return { ...state, mcp: [...state.mcp, action.connection] }
-    case 'update-mcp':
-      return {
-        ...state,
-        mcp: state.mcp.map((item) => (item.id === action.id ? { ...item, ...action.patch } : item))
-      }
-    case 'remove-mcp':
-      return { ...state, mcp: state.mcp.filter((item) => item.id !== action.id) }
     case 'add-agent':
       return { ...state, agents: [...state.agents, action.agent] }
     case 'update-agent':
@@ -368,7 +481,13 @@ function reducer(state: AppState, action: Action): AppState {
         action.type === 'set-listing' ||
         action.type === 'apply-persist-state' ||
         action.type === 'set-missing-recent' ||
-        action.type === 'set-mention-autosend'
+        action.type === 'set-mention-autosend' ||
+        action.type === 'set-backends' ||
+        action.type === 'set-backend' ||
+        action.type === 'set-mcp-server' ||
+        action.type === 'set-sources' ||
+        action.type === 'set-runs' ||
+        action.type === 'run-events'
       ) {
         return state
       }
@@ -384,11 +503,39 @@ export function AppStateProvider({ children }: { children: ReactNode }): React.J
   useEffect(() => {
     savePersisted({
       provider: state.provider,
-      mcp: state.mcp,
       agents: state.agents,
       mentionAutoSendSeconds: state.mentionAutoSendSeconds
     })
-  }, [state.provider, state.mcp, state.agents, state.mentionAutoSendSeconds])
+  }, [state.provider, state.agents, state.mentionAutoSendSeconds])
+
+  // Backends (17), the document MCP server (16) and sources (18) live in main.
+  useEffect(() => {
+    const api = window.api
+    if (!api?.agents) return
+    void api.agents.listBackends().then((result) => {
+      if (result.ok) dispatch({ type: 'set-backends', backends: result.backends })
+    })
+    void api.mcp.getState().then((result) => {
+      if (result.ok) dispatch({ type: 'set-mcp-server', state: result.state })
+    })
+    void api.sources.list().then((result) => {
+      if (result.ok) dispatch({ type: 'set-sources', sources: result.sources })
+    })
+    const stopMcp = api.mcp.onState((mcpState) =>
+      dispatch({ type: 'set-mcp-server', state: mcpState })
+    )
+    const stopEvents = api.agents.onEvents((events) => {
+      if (Array.isArray(events)) dispatch({ type: 'run-events', events })
+    })
+    const stopBackend = api.agents.onBackend((backend) =>
+      dispatch({ type: 'set-backend', backend })
+    )
+    return () => {
+      stopMcp()
+      stopEvents()
+      stopBackend()
+    }
+  }, [])
 
   useEffect(() => {
     const api = window.api?.documents

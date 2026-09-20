@@ -555,11 +555,13 @@ describe('DocumentSession · attribution (AC-02.9)', () => {
     const b = writer(hub, 'rex')
     expect(hub.doc.getMap('authors').size).toBe(0)
     const blockId = addParagraph(a, 'mine')
+    // The handle travels too, so other machines resolve @nova to this actor.
     expect(hub.doc.getMap('authors').get(a.peerId)).toEqual({
       actorId: 'nova',
       name: 'Nova',
       color: '#123456',
-      role: 'agent'
+      role: 'agent',
+      handle: 'nova'
     })
     expect(hub.doc.getMap('authors').get(b.peerId)).toBeUndefined()
 

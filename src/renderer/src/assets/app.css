@@ -1150,6 +1150,55 @@ kbd {
   box-shadow: inset 3px 0 0 var(--author-color, var(--accent));
 }
 
+/* Selectable chips (agent colour swatches, source toggles) in Settings. */
+button.chip,
+label.chip {
+  border: 1px solid transparent;
+  cursor: pointer;
+  line-height: 1.4;
+  min-width: 22px;
+}
+
+.chip.is-active {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.12);
+  border-color: var(--line);
+}
+
+.chip input[type='checkbox'] {
+  margin: 0 2px 0 0;
+  vertical-align: middle;
+}
+
+/* Last run line and stderr tail on an agent card (17). */
+.agent-card__run {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.agent-card__stderr summary {
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agent-card__stderr pre {
+  font-size: 10px;
+  line-height: 1.4;
+  max-height: 140px;
+  overflow: auto;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.settings-row code {
+  font-size: 11px;
+  word-break: break-all;
+}
+
 .history-panel {
   display: flex;
   flex-direction: column;

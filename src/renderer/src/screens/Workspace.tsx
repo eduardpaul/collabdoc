@@ -8,7 +8,7 @@ import { InboxBell } from '../components/InboxBell'
 import { Button, Icon, StatusDot, TextArea, TextInput } from '../components/ui'
 import { hostLabel } from '../lib/host'
 import { useAppState } from '../state/AppState'
-import { aiReady } from '../state/selectors'
+import { aiReady, backendLabel } from '../state/selectors'
 import { useSessionActions } from '../state/useSessionActions'
 import { useComments } from '../sync/useComments'
 import { useDocumentClient } from '../sync/useDocumentClient'
@@ -81,15 +81,30 @@ export function Workspace(): React.JSX.Element | null {
   // Agent requests run through the agent actions; the chip follows `status`.
   const agentDispatch = useMemo<AgentDispatch>(
     () => ({
-      invoke: (target, instruction) => {
+      invoke: (target, instruction, context) => {
         const agent = state.agents.find((a) => a.id === target.id && a.invited)
         if (!agent) {
-          dispatch({ type: 'notice', message: `${target.label} is no longer in this document.` })
+          // Every participant runs their own agents: another person's agent shows up in the
+          // picker (it edited here), but only its owner can ask it or stop it.
+          const mine = state.agents.some((a) => a.id === target.id)
+          dispatch({
+            type: 'notice',
+            message: mine
+              ? `${target.label} is no longer in this document.`
+              : `${target.label} belongs to another participant — only they can ask it.`
+          })
           return false
         }
-        return actions.askAgent(agent, instruction)
+        return actions.askAgent(agent, instruction, {
+          kind: 'mention',
+          context: {
+            blockId: context.blockId,
+            threadId: context.threadId,
+            requestId: context.requestId
+          }
+        })
       },
-      working: new Set(state.agents.filter((a) => a.status === 'working').map((a) => a.id))
+      working: new Set(state.agents.filter((a) => a.status !== 'idle').map((a) => a.id))
     }),
     // askAgent reads state through its own closure each call.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -396,54 +411,121 @@ export function Workspace(): React.JSX.Element | null {
               review.
             </p>
             <ul className="agent-list">
-              {state.agents.map((agent) => (
-                <li key={agent.id} className={`agent-card ${agent.invited ? 'is-invited' : ''}`}>
-                  <header>
-                    <span className={`role-badge role-badge--${agent.role}`}>{agent.role}</span>
-                    <strong>{agent.name}</strong>
-                    <StatusDot
-                      tone={agent.status === 'working' ? 'work' : agent.invited ? 'live' : 'off'}
-                    />
-                  </header>
-                  <p>{agent.persona}</p>
-                  <div className="chips">
-                    {agent.skills.map((skill) => (
-                      <span key={skill} className="chip">
-                        {skill}
+              {state.agents.map((agent) => {
+                const lastRun = state.runs.find((run) => run.agentId === agent.id)
+                // The status flips to queued the moment the person asks; the run record follows.
+                const live =
+                  agent.status !== 'idle' ||
+                  (lastRun && (lastRun.status === 'queued' || lastRun.status === 'working'))
+                return (
+                  <li key={agent.id} className={`agent-card ${agent.invited ? 'is-invited' : ''}`}>
+                    <header>
+                      <span className={`role-badge role-badge--${agent.role}`}>{agent.role}</span>
+                      <strong style={{ color: agent.color }}>{agent.name}</strong>
+                      <StatusDot
+                        tone={
+                          agent.status === 'working'
+                            ? 'work'
+                            : agent.status === 'queued'
+                              ? 'idle'
+                              : agent.invited
+                                ? 'live'
+                                : 'off'
+                        }
+                      />
+                    </header>
+                    <p>{agent.persona}</p>
+                    <div className="chips">
+                      {agent.skills.map((skill) => (
+                        <span key={skill} className="chip">
+                          {skill}
+                        </span>
+                      ))}
+                      <span className="chip chip--mute" title="Where this agent runs">
+                        {backendLabel(state, agent)}
                       </span>
-                    ))}
-                    <span className="chip chip--mute">
-                      {agent.routing === 'mcp' ? 'MCP' : 'LLM'}
-                    </span>
-                  </div>
-                  <div className="agent-card__actions">
-                    <Button
-                      size="sm"
-                      variant={agent.invited ? 'secondary' : 'primary'}
-                      onClick={() =>
-                        dispatch({
-                          type: 'update-agent',
-                          id: agent.id,
-                          patch: { invited: !agent.invited }
-                        })
-                      }
-                    >
-                      {agent.invited ? 'Remove from session' : 'Invite'}
-                    </Button>
-                    <Button
-                      size="sm"
-                      disabled={agent.status === 'working'}
-                      onClick={() => runAsk(agent)}
-                    >
-                      {agent.status === 'working'
-                        ? 'Working…'
-                        : agent.role === 'writer'
-                          ? 'Ask to draft'
-                          : 'Ask to review'}
-                    </Button>
-                  </div>
-                </li>
-              ))}
+                    </div>
+                    {!lastRun && agent.status === 'queued' ? (
+                      <p className="muted agent-card__run">Queued</p>
+                    ) : null}
+                    {lastRun ? (
+                      <p className="muted agent-card__run">
+                        {live
+                          ? `${lastRun.status === 'queued' ? 'Queued' : 'Working'} · ${lastRun.steps.length} tool call${lastRun.steps.length === 1 ? '' : 's'}${
+                              lastRun.transcript.length
+                                ? ` · ${lastRun.transcript[lastRun.transcript.length - 1].slice(0, 120)}`
+                                : ''
+                            }`
+                          : lastRun.status === 'done'
+                            ? [
+                                'Done',
+                                `${lastRun.writes} edit${lastRun.writes === 1 ? '' : 's'}`,
+                                lastRun.summary.slice(0, 160)
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')
+                            : `${lastRun.status === 'cancelled' ? 'Cancelled' : lastRun.status === 'limit' ? 'Stopped' : 'Failed'}${
+                                lastRun.error ? ` · ${lastRun.error.message}` : ''
+                              }`}
+                      </p>
+                    ) : null}
+                    {lastRun?.error?.stderrTail.length ? (
+                      <details className="agent-card__stderr">
+                        <summary className="muted">Last lines from the CLI</summary>
+                        <pre>{lastRun.error.stderrTail.join('\n')}</pre>
+                      </details>
+                    ) : null}
+                    <div className="agent-card__actions">
+                      <Button
+                        size="sm"
+                        variant={agent.invited ? 'secondary' : 'primary'}
+                        onClick={() => {
+                          if (agent.invited) {
+                            void window.api?.agents.cancelAgent({
+                              agentId: agent.id,
+                              docId: session.id
+                            })
+                          }
+                          dispatch({
+                            type: 'update-agent',
+                            id: agent.id,
+                            patch: { invited: !agent.invited }
+                          })
+                        }}
+                      >
+                        {agent.invited ? 'Remove from session' : 'Invite'}
+                      </Button>
+                      {live ? (
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          disabled={!lastRun}
+                          onClick={() => lastRun && actions.cancelRun(lastRun.runId)}
+                        >
+                          Cancel
+                        </Button>
+                      ) : (
+                        <Button size="sm" onClick={() => runAsk(agent)}>
+                          {agent.role === 'writer' ? 'Ask to draft' : 'Ask to review'}
+                        </Button>
+                      )}
+                      {lastRun?.error?.kind === 'auth' ||
+                      lastRun?.error?.kind === 'not_available' ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            void actions.refreshBackends()
+                            dispatch({ type: 'open-settings', tab: 'backends' })
+                          }}
+                        >
+                          Re-check auth
+                        </Button>
+                      ) : null}
+                    </div>
+                  </li>
+                )
+              })}
             </ul>
             <form
               className="ask-box"
@@ -465,7 +547,7 @@ export function Workspace(): React.JSX.Element | null {
                 placeholder={
                   ready
                     ? 'e.g. Expand the second section in a calmer voice'
-                    : 'Configure a provider or MCP to enable this'
+                    : 'Install and sign in to a CLI agent (Claude Code, grok…) to enable this'
                 }
                 onChange={(event) => setAsk(event.target.value)}
               />
@@ -476,9 +558,9 @@ export function Workspace(): React.JSX.Element | null {
                 <button
                   type="button"
                   className="text-link"
-                  onClick={() => dispatch({ type: 'open-settings', tab: 'provider' })}
+                  onClick={() => dispatch({ type: 'open-settings', tab: 'backends' })}
                 >
-                  Set up a provider or MCP
+                  Detect a CLI backend
                 </button>
               ) : null}
             </form>

@@ -1,5 +1,7 @@
+import type { RunRequest } from '@shared/agents'
 import { useAppState } from './AppState'
-import { agentCanRun } from './selectors'
+import { resolveBackend } from './selectors'
+import type { AppState } from '../types'
 import { parseDocument, previewOf, serializeDocument } from '../lib/document-file'
 import { listThreads, threadsAsFootnotes } from '@core/comments'
 import { extrasFromDoc, hydrateImages, saveDocumentToHost } from '../lib/files'
@@ -75,10 +77,15 @@ export function useSessionActions(): {
   request: (intent: CloseIntent) => void
   confirmUnsaved: (mode: 'save' | 'discard') => Promise<void>
   hydratePersist: () => Promise<void>
-  connectMcp: (id: string) => void
-  disconnectMcp: (id: string) => void
-  /** Start a turn; false when no provider or MCP server can run it. */
-  askAgent: (agent: Agent, prompt: string) => boolean
+  /** Start a turn on the agent's backend; false when nothing can run it. */
+  askAgent: (
+    agent: Agent,
+    prompt: string,
+    options?: { kind?: RunRequest['kind']; context?: RunRequest['context'] }
+  ) => boolean
+  cancelRun: (runId: string) => void
+  /** Re-detect the CLI backends (after signing in, installing, …). */
+  refreshBackends: () => Promise<void>
 } {
   const { state, dispatch } = useAppState()
 
@@ -482,29 +489,29 @@ export function useSessionActions(): {
     void run().catch(fail)
   }
 
-  const connectMcp = (id: string): void => {
-    dispatch({ type: 'update-mcp', id, patch: { status: 'connecting', error: undefined } })
-    window.setTimeout(() => {
-      dispatch({ type: 'update-mcp', id, patch: { status: 'connected' } })
-      dispatch({
-        type: 'notice',
-        message:
-          'MCP marked connected. The local client will spawn when the agent runtime is wired.'
-      })
-    }, 700)
+  const refreshBackends = async (): Promise<void> => {
+    const result = await window.api?.agents.listBackends(true)
+    if (result?.ok) dispatch({ type: 'set-backends', backends: result.backends })
   }
 
-  const disconnectMcp = (id: string): void => {
-    dispatch({ type: 'update-mcp', id, patch: { status: 'disconnected', error: undefined } })
-  }
-
-  const askAgent = (agent: Agent, prompt: string): boolean => {
-    if (!agentCanRun(state, agent)) {
+  /**
+   * One turn for an invited agent (17). The run lives in main: the CLI is
+   * launched against the document MCP server as the persona, and progress
+   * comes back as `agents:event` batches that the reducer folds into
+   * `runs`, the agent's status and Activity.
+   */
+  const askAgent = (
+    agent: Agent,
+    prompt: string,
+    options: { kind?: RunRequest['kind']; context?: RunRequest['context'] } = {}
+  ): boolean => {
+    const session = state.session
+    if (!session) return false
+    if (!window.api?.agents) {
       dispatch({
         type: 'notice',
-        message: 'Connect an LLM provider or a local MCP server before asking agents to work.'
+        message: 'Agents need the desktop app: CLI backends run in main.'
       })
-      dispatch({ type: 'open-settings', tab: agent.routing === 'mcp' ? 'mcp' : 'provider' })
       return false
     }
     const trimmed = prompt.trim()
@@ -513,28 +520,75 @@ export function useSessionActions(): {
         ? 'Draft the next section from the current document.'
         : 'Review the document for structure, claims, and tone.'
     const task = trimmed || fallback
-    dispatch({ type: 'update-agent', id: agent.id, patch: { status: 'working', invited: true } })
-    dispatch({
-      type: 'push-activity',
-      event: {
-        actor: agent.name,
-        kind: 'agent',
-        summary: `${agent.role === 'writer' ? 'Drafting' : 'Reviewing'}: ${task}`
-      }
-    })
-    window.setTimeout(() => {
-      dispatch({ type: 'update-agent', id: agent.id, patch: { status: 'idle' } })
-      dispatch({
-        type: 'push-activity',
-        event: {
-          actor: agent.name,
-          kind: 'agent',
-          summary:
-            'Finished the turn. Output will land in the document once LangChain DeepAgents is connected.'
-        }
-      })
-    }, 1400)
+    dispatch({ type: 'update-agent', id: agent.id, patch: { status: 'queued', invited: true } })
+    void startRun(state, agent, session, task, options)
     return true
+  }
+
+  /**
+   * Resolve the backend, waiting for Detect when nothing has answered yet
+   * (the first seconds after launch), then hand the run to main.
+   */
+  const startRun = async (
+    snapshot: AppState,
+    agent: Agent,
+    session: NonNullable<AppState['session']>,
+    task: string,
+    options: { kind?: RunRequest['kind']; context?: RunRequest['context'] }
+  ): Promise<void> => {
+    let current = snapshot
+    if (current.backends.length === 0) {
+      const result = await window.api!.agents.listBackends()
+      if (result.ok) {
+        dispatch({ type: 'set-backends', backends: result.backends })
+        current = { ...current, backends: result.backends }
+      }
+    }
+    const backend = resolveBackend(current, agent)
+    if (!backend) {
+      dispatch({ type: 'update-agent', id: agent.id, patch: { status: 'idle' } })
+      const pinned = agent.provider.kind === 'backend' ? agent.provider.id : null
+      dispatch({
+        type: 'notice',
+        message: pinned
+          ? `${agent.name} is set to ${pinned}, which is not available. Detect it in Settings → Backends or pick another.`
+          : 'No CLI backend is available. Install and sign in to Claude Code, grok or another CLI, then Detect.'
+      })
+      dispatch({ type: 'open-settings', tab: 'backends' })
+      return
+    }
+    const request: RunRequest = {
+      docId: session.id,
+      docTitle: session.title,
+      kind: options.kind ?? 'ask',
+      persona: {
+        id: agent.id,
+        name: agent.name,
+        handle: agent.handle,
+        role: agent.role,
+        color: agent.color,
+        instructions: agent.persona,
+        skills: agent.skills
+      },
+      backendId: backend.id,
+      prompt: task,
+      sourceIds: agent.sources,
+      context: options.context
+    }
+    const result = await window.api!.agents.run(request)
+    if (!result.ok) {
+      dispatch({ type: 'update-agent', id: agent.id, patch: { status: 'idle' } })
+      dispatch({ type: 'notice', message: result.error })
+      return
+    }
+    dispatch({ type: 'run-events', events: [{ type: 'run', record: result.record }] })
+    if (result.record.status === 'error' && result.record.error) {
+      dispatch({ type: 'notice', message: result.record.error.message })
+    }
+  }
+
+  const cancelRun = (runId: string): void => {
+    void window.api?.agents.cancel(runId)
   }
 
   return {
@@ -594,8 +648,8 @@ export function useSessionActions(): {
     request,
     confirmUnsaved,
     hydratePersist,
-    connectMcp,
-    disconnectMcp,
-    askAgent
+    askAgent,
+    cancelRun,
+    refreshBackends
   }
 }

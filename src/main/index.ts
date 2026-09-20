@@ -1,5 +1,13 @@
 import { execFile } from 'child_process'
-import { app, Menu, shell, BrowserWindow, ipcMain, type MenuItemConstructorOptions } from 'electron'
+import {
+  app,
+  Menu,
+  shell,
+  BrowserWindow,
+  ipcMain,
+  safeStorage,
+  type MenuItemConstructorOptions
+} from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -12,6 +20,12 @@ import { addToInbox, readInbox, setInboxRead } from './inbox'
 import { readProfile, writeProfile } from './profile'
 import { ShareService } from './share/service'
 import { broadcastShare, broadcastShareActivity, registerShareIpc } from './share/ipc'
+import { DocumentMcpServer } from './mcp/DocumentMcpServer'
+import { broadcastMcpState, registerMcpIpc } from './mcp/ipc'
+import { AgentRuntime } from './agents/AgentRuntime'
+import { createEventBroadcaster, registerAgentIpc } from './agents/ipc'
+import { SecretStore } from './agents/secrets'
+import { McpSourceStore } from './agents/sources'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -21,6 +35,9 @@ const documents = new DocumentRegistry({
 })
 
 let persist: DocumentStore | null = null
+/** The document tool surface for CLIs (16) and the runs that use it (17). */
+let mcpServer: DocumentMcpServer | null = null
+let agents: AgentRuntime | null = null
 let quitting = false
 
 function openExternalUrl(url: string): void {
@@ -43,6 +60,11 @@ function openExternalUrl(url: string): void {
 }
 
 applyWslChromiumFlags()
+
+// Tests and side-by-side dev profiles: keep everything under a directory of their own.
+if (process.env.COLLABDOC_USER_DATA) {
+  app.setPath('userData', process.env.COLLABDOC_USER_DATA)
+}
 
 function createWindow(): BrowserWindow {
   // Create the browser window with optimized visual, security, and process flags.
@@ -153,6 +175,36 @@ if (!gotTheLock) {
     registerShareIpc(sharing)
     installAppMenu()
 
+    const userData = app.getPath('userData')
+    mcpServer = new DocumentMcpServer({
+      registry: documents,
+      userData,
+      onState: broadcastMcpState,
+      log: (message, detail) => console.log(`[collabdoc] ${message}`, detail ?? '')
+    })
+    const secrets = new SecretStore(userData, safeStorage)
+    const sources = new McpSourceStore({
+      userData,
+      secrets,
+      log: (message, detail) => console.warn(`[collabdoc] ${message}`, detail ?? '')
+    })
+    const events = createEventBroadcaster()
+    agents = new AgentRuntime({
+      registry: documents,
+      mcp: mcpServer,
+      sources,
+      userData,
+      onEvent: events.push,
+      log: (message) => console.log(`[collabdoc] ${message}`)
+    })
+    registerMcpIpc(mcpServer)
+    registerAgentIpc(agents, sources, secrets)
+    void mcpServer
+      .init()
+      .catch((error) => console.warn('[collabdoc] mcp server init failed', error))
+    void sources.load()
+    void agents.init()
+
     ipcMain.handle('documents:saveBytes', async (event, payload: BytesSavePayload) => {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) {
@@ -219,7 +271,12 @@ if (!gotTheLock) {
     if (quitting) return
     event.preventDefault()
     quitting = true
-    void (persist?.flushAll() ?? Promise.resolve())
+    void Promise.all([
+      persist?.flushAll() ?? Promise.resolve(),
+      // Kill every CLI run and its MCP sessions before the documents go away (AC-17.5).
+      agents?.dispose() ?? Promise.resolve(),
+      mcpServer?.stop() ?? Promise.resolve()
+    ])
       .catch((error) => console.warn('[collabdoc] flush before quit failed', error))
       .finally(() => {
         persist?.dispose()

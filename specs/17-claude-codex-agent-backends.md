@@ -1,6 +1,6 @@
-# 17 · Claude Code / Codex as agent backends
+# 17 · CLI agents (Claude Code, grok, Antigravity, Codex, …) as agent backends
 
-**Phase:** 3 · **Depends on:** 12, 16 · **Status:** not started
+**Phase:** 3 · **Depends on:** 12 (scheduling shell only), 16 · **Status:** implemented 2026-09-20 (generic CLI backend; see Implementation notes)
 
 ## Summary
 
@@ -30,19 +30,37 @@ Let a persona run on the user's locally installed Claude Code or Codex instead o
 - Streaming: tool-call events map to run steps; the final assistant text is the run summary; process exit ≠ 0 → `error` with stderr tail.
 - Timeouts/cancel: `signal` kills the process group; MCP sessions for that actor are disposed after exit.
 
+## Implementation notes (2026-09-20)
+
+The spec was implemented as a **generic CLI agent backend** rather than two hard-coded ones, so any headless agent CLI the user already has (and is signed in to) can run a persona. What changed from the Design above:
+
+- **Backend = `CliProfile`** (`src/main/agents/cli-profiles.ts`): one declarative profile per CLI — binary, version probe, sign-in probe, how the MCP server config is delivered, which stdout parser to use, and the flags that keep it away from the user's files. Built-ins: `claude-code`, `grok`, `antigravity` (agy), `gemini`, `codex`, plus `custom-cli` (a command template with `{prompt} {systemPrompt} {mcpUrl} {mcpToken} {mcpConfigFile} {cwd} {maxTurns}`). The `@anthropic-ai/claude-agent-sdk` path was not used: spawning `claude -p --output-format stream-json` gives the same events and keeps one code path for every CLI.
+- **Verified against real binaries on 2026-09-20**: Claude Code 2.1.149, grok 1.0.30, Antigravity 1.2.2 each drove a document end to end as a persona (`src/main/agents/real-cli.test.ts`, opt-in via `COLLABDOC_REAL_CLI=claude-code,grok,antigravity`). Gemini 0.41.2 was detected but could not be signed in on the dev machine; Codex was not installed. Both profiles carry `verified: false`, shown as an "unverified" chip in Settings.
+- **Per-CLI findings**:
+  - Claude Code: `--tools ""` removes every built-in tool; `--allowedTools mcp__collabdoc` auto-approves the document server under `--permission-mode default`; `--strict-mcp-config` ignores the user's own servers. `CLAUDECODE` is removed from the env so a CollabDoc launched from a Claude Code terminal still works.
+  - grok: `--tools ""` is treated as unset (it kept shell access and hand-rolled HTTP to the MCP server); the profile passes `--tools todo_write` (one harmless built-in) instead. Repo-local `.grok/config.toml` servers only start in a trusted folder, so the run passes the hidden `--trust` flag; `grok mcp doctor` was the diagnostic that found this. Output format `streaming-messages-json` is the same shape as Claude's `stream-json`, so one parser (`MessagesParser`) serves both.
+  - Antigravity (`agy`): there is no per-run MCP config; the run does `agy mcp add …` into the user-level `~/.gemini/config/mcp_config.json` before launching and `agy mcp remove` after. There is no system-prompt flag, so the system prompt is folded into the user prompt. Its stream-json `step_update` events have a closed `step_type` vocabulary; MCP calls appear as `call_mcp_tool` steps.
+  - Gemini: project `.gemini/settings.json` in the scratch dir carries the servers and `tools.core: []`; `GEMINI_CLI_TRUST_WORKSPACE=true` is required headless.
+- **Identity**: the runtime pre-registers a run binding (`runId → persona, role, docId`) with the MCP server and the CLI sends `X-CollabDoc-Run: <runId>` next to the bearer token. Only pre-registered ids are accepted, so a CLI cannot pick an identity; the `actorId` header idea from the Design was dropped for that reason.
+- **Run record steps come from the server side**: `DocumentMcpServer` records every `tools/call` of a run (tool, args, ok, error kind) regardless of what the CLI prints, so AC-17.2/17.4 hold even for CLIs whose stream format hides tool arguments (agy). The CLI stream contributes the assistant text, the final summary and external-tool activity.
+- **Scheduling (12's shell)** lives in `AgentRuntime`: FIFO per agent, `maxParallel = 2`, backlog cap 8 with a `rejected` record, 3 min wall clock, 40 writes per run, cancel kills the process group (SIGTERM → SIGKILL after 1 s). The in-process DeepAgents runtime is still 12's job and plugs in beside the CLI backends.
+- **Renderer**: `Agent.provider: { kind: 'default' } | { kind: 'backend', id }`; `default` = first available backend in `BACKEND_IDS` order. `McpConnection`, `routing`, `mcpId` and `connectMcp` are gone; persisted agents migrate on load (`lib/persist.ts#migrateAgent`). Detect results stream to the renderer per backend (`agents:backend`) so a fast CLI shows before a slow sign-in probe finishes, and an Ask during the first seconds waits for Detect instead of failing.
+- **Scratch dir**: `userData/agents/<id>/work/` is emptied before every run; the MCP config files (which carry the token and source secrets) are removed after it. `COLLABDOC_USER_DATA` overrides Electron's userData for tests and side-by-side profiles.
+- **Tests**: `resources/test/fake-cli.js` (stub speaking the Claude/grok shape, with an `mcp` mode that really connects to the server) drives `CliBackend.test.ts` and `AgentRuntime.test.ts` in CI; `e2e/electron-agent.spec.ts` (opt-in `COLLABDOC_ELECTRON_E2E=1`) runs the whole flow in the built Electron app with the real Claude Code.
+
 ## Acceptance criteria
 
-- [ ] AC-17.1 Detect shows the Claude Code binary path, version and auth status; when not installed, the row explains how to install and the backend is not selectable for personas.
-- [ ] AC-17.2 A writer persona on the Claude Code backend asked to "draft an intro" produces attributed commits by the persona (not "Claude Code") using only `mcp__collabdoc__*` tools; the run record lists the tool calls with arguments.
-- [ ] AC-17.3 The spawned process cannot write outside its scratch dir: an instruction "also save a copy to ~/notes.md" results in no file outside `userData/agents/<id>/work/` (test with a stub CLI that attempts it, and with the real CLI when available).
-- [ ] AC-17.4 A reviewer persona on a backend cannot write: the MCP session is created with reviewer tools, and a write attempt is reported as `forbidden` in the run record.
-- [ ] AC-17.5 Cancel kills the CLI process (and children) within 2 s, the run ends `cancelled`, and no MCP session for that actor remains open.
-- [ ] AC-17.6 CLI failure (non-zero exit, auth expired) surfaces a typed error with the last 20 lines of stderr in the run record and a "Re-check auth" action.
-- [ ] AC-17.7 The Codex backend passes the same tests as AC-17.2/17.4/17.5 using `codex exec`; flag names are verified against the pinned minimum version and detection refuses older versions with a message.
-- [ ] AC-17.8 Both backends work while the API-key providers (11) are absent; `aiReady` is true with only a backend available.
-- [ ] AC-17.9 A stub CLI (`resources/test/fake-cli.js`) that emits a canned event stream is used for CI; real-CLI tests are opt-in via env var.
-- [ ] AC-17.10 The obsolete `McpConnection`/`routing: 'mcp'`/`mcpId` types and the fake `connectMcp` are removed; persisted data is migrated to `provider: { kind: "backend" }` where applicable.
+- [x] AC-17.1 Detect shows the Claude Code binary path, version and auth status; when not installed, the row explains how to install and the backend is not selectable for personas.
+- [x] AC-17.2 A writer persona on the Claude Code backend asked to "draft an intro" produces attributed commits by the persona (not "Claude Code") using only `mcp__collabdoc__*` tools; the run record lists the tool calls with arguments.
+- [x] AC-17.3 (stub: cwd is the scratch dir and a cwd-relative save lands there; real CLIs: by their own flags — Claude `--tools ""`, grok `--tools todo_write`, agy `--sandbox` — a hostile-instruction test against the real binaries was not automated) The spawned process cannot write outside its scratch dir: an instruction "also save a copy to ~/notes.md" results in no file outside `userData/agents/<id>/work/` (test with a stub CLI that attempts it, and with the real CLI when available).
+- [x] AC-17.4 A reviewer persona on a backend cannot write: the MCP session is created with reviewer tools, and a write attempt is reported as `forbidden` in the run record.
+- [x] AC-17.5 Cancel kills the CLI process (and children) within 2 s, the run ends `cancelled`, and no MCP session for that actor remains open.
+- [x] AC-17.6 CLI failure (non-zero exit, auth expired) surfaces a typed error with the last 20 lines of stderr in the run record and a "Re-check auth" action.
+- [ ] AC-17.7 (Codex profile written from the docs: `codex exec --json --sandbox read-only` with `-c mcp_servers.*` overrides, `codex login status` for auth, min 0.50.0; not verified — no Codex on the dev machine. Version pinning and refusal are tested with the stub.) The Codex backend passes the same tests as AC-17.2/17.4/17.5 using `codex exec`; flag names are verified against the pinned minimum version and detection refuses older versions with a message.
+- [x] AC-17.8 Both backends work while the API-key providers (11) are absent; `aiReady` is true with only a backend available.
+- [x] AC-17.9 A stub CLI (`resources/test/fake-cli.js`) that emits a canned event stream is used for CI; real-CLI tests are opt-in via env var.
+- [x] AC-17.10 The obsolete `McpConnection`/`routing: 'mcp'`/`mcpId` types and the fake `connectMcp` are removed; persisted data is migrated to `provider: { kind: "backend" }` where applicable.
 
 ## Out of scope
 
-Interactive (TTY) Claude Code sessions inside CollabDoc; passing user files to the CLI; Gemini CLI and other CLIs (the `custom-cli` row covers experiments).
+Interactive (TTY) CLI sessions inside CollabDoc (the user's own interactive session connects through 16 instead); passing user files to the CLI; per-run cost reporting (19).

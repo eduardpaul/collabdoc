@@ -239,7 +239,9 @@ export class DocumentSession implements SessionContext {
       actorId: this.profile.actorId,
       name: this.profile.name,
       color: this.profile.color,
-      role: this.profile.role
+      role: this.profile.role,
+      // Other machines resolve @mentions from `authors`; a persona's handle must travel with it.
+      ...(this.profile.handle ? { handle: this.profile.handle } : {})
     })
     this.undoManager.groupStart()
     try {

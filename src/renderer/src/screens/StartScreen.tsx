@@ -25,7 +25,7 @@ export function StartScreen(): React.JSX.Element {
   const { state, dispatch } = useAppState()
   const actions = useSessionActions()
   const ready = aiReady(state)
-  const connectedMcp = state.mcp.filter((item) => item.status === 'connected')
+  const availableBackends = state.backends.filter((item) => item.available)
   const mod = modLabel()
 
   return (
@@ -49,8 +49,8 @@ export function StartScreen(): React.JSX.Element {
         <p className="eyebrow">Documents · agents · no server</p>
         <h1>Write together. Keep every keystroke on this machine.</h1>
         <p className="lede">
-          Open a document, optionally connect an LLM or a local Claude/Codex MCP, then invite Writer
-          and Reviewer agents into the session.
+          Open a document, optionally connect an LLM or your own CLI agent (Claude Code, grok…),
+          then invite Writer and Reviewer agents into the session.
         </p>
       </div>
 
@@ -153,22 +153,22 @@ export function StartScreen(): React.JSX.Element {
           </div>
           <div className="ai-card">
             <div className="ai-card__title">
-              <StatusDot tone={connectedMcp.length ? 'live' : 'off'} />
-              <h3>Local MCP</h3>
+              <StatusDot tone={availableBackends.length ? 'live' : 'off'} />
+              <h3>CLI agents</h3>
             </div>
             <p>
-              {connectedMcp.length
-                ? connectedMcp.map((item) => item.label).join(', ')
-                : 'Claude or Codex running on this machine, with document tools.'}
+              {availableBackends.length
+                ? availableBackends.map((item) => item.label).join(', ')
+                : 'Your own Claude Code, grok, Antigravity or Codex, signed in on this machine.'}
             </p>
-            <Button size="sm" onClick={() => dispatch({ type: 'open-settings', tab: 'mcp' })}>
-              {connectedMcp.length ? 'Manage MCP' : 'Connect Claude / Codex'}
+            <Button size="sm" onClick={() => dispatch({ type: 'open-settings', tab: 'backends' })}>
+              {availableBackends.length ? 'Manage backends' : 'Detect Claude / grok / Codex'}
             </Button>
           </div>
         </div>
         <p className="muted start__note">
-          You can skip this and write locally. Agents need a provider or MCP before they can edit or
-          review the open document.
+          You can skip this and write locally. Agents need a provider or an installed CLI agent
+          before they can edit or review the open document.
         </p>
       </section>
     </div>

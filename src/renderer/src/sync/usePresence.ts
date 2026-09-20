@@ -100,13 +100,17 @@ export function usePresence(client: DocumentClient | null): {
     const registry = buildParticipantRegistry({
       local: asActorProfile(state.profile),
       authors: Object.values(readAuthors(client.doc)),
-      invited: invited.map((agent) => ({ id: agent.id, name: agent.name })),
+      // The persona's colour is stable (13): guests see the same one via `authors`.
+      invited: invited.map((agent) => ({ id: agent.id, name: agent.name, color: agent.color })),
       onlineIds
     })
     const rows = sessionRows(registry.people, {
       localId: state.profile.userId,
       presence,
-      agentStatus: Object.fromEntries(state.agents.map((agent) => [agent.id, agent.status])),
+      // Queued shows as working in the participant list: the agent has accepted the request.
+      agentStatus: Object.fromEntries(
+        state.agents.map((agent) => [agent.id, agent.status === 'idle' ? 'idle' : 'working'])
+      ),
       blockLabel: (blockId) => paragraphLabel(client, blockId)
     })
     return {

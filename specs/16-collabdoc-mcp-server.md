@@ -1,6 +1,6 @@
 # 16 · CollabDoc as an MCP server for local Claude Code / Codex
 
-**Phase:** 3 · **Depends on:** 03, 09 · **Status:** not started
+**Phase:** 3 · **Depends on:** 03, 09 · **Status:** core implemented 2026-09-20 (HTTP transport, identity, consent, roles, rate limit, resources, prompts); stdio bridge and resource subscriptions pending
 
 ## Summary
 
@@ -32,18 +32,28 @@ Expose the open document's tool surface (02) as a Model Context Protocol server 
 - Settings → Local MCP becomes: server status (`running on port N`), token (copy / rotate), per-client role, "Copy setup command" for Claude Code and Codex, connected clients list with disconnect, and an "Allow external agents to edit this document" per-document toggle (default on for the host, off for guests).
 - Consent: the first tool call from a new client shows a non-blocking banner "Claude Code connected as writer — Allow / Reviewer only / Block"; default Allow after 10 s is **not** acceptable — it must be an explicit choice, persisted per client name.
 
+## Implementation notes (2026-09-20)
+
+- `src/main/mcp/DocumentMcpServer.ts` on `@modelcontextprotocol/sdk` 1.30 (`Server` + `StreamableHTTPServerTransport`, one pair per MCP session, plain `http.createServer` on `127.0.0.1:0`). Config in `userData/mcp.json` (`enabled`, 64-hex `token`, `clients`), mode 0600.
+- Every document tool takes an optional `docId`; a run-bound session defaults to its document, an external client with exactly one open document gets that one, otherwise the error lists the open documents. `list_documents` and `whoami` are the two extra tools. Tool descriptions are the shared `TOOL_DEFINITIONS`; the server `instructions` field explains the workflow and differs for persona runs and external clients.
+- Identity: run-bound sessions (17) come from a pre-registered binding + `X-CollabDoc-Run` header; external clients are `mcp:<slug(clientInfo.name)>` with `colorForId`. Consent is per client name in `mcp.json`; an unknown client gets `forbidden · Awaiting approval in CollabDoc` and shows up under Settings → Backends → Document MCP server with Allow / Reviewer only / Block. There is no 10 s default.
+- Rate limit: 20 writes per second per session → `limit`; the client shows as rate limited in Settings.
+- The server is off by default and persona runs start it on demand (`start()` ignores the persisted switch; `setEnabled(true)` keeps it running for the user's own interactive CLI). "Copy setup command" renders the right `mcp add` line for Claude Code, grok, agy, Gemini and Codex.
+- Resources: `collabdoc://doc/<id>` renders Markdown through `src/core/markdown.ts` (a Tiptap-free renderer covering the same blocks and marks as Export, not byte-identical to it) and `collabdoc://doc/<id>/outline`. No resource subscriptions yet. Prompts `review-document` and `draft-section` exist.
+- Not done: the stdio bridge (AC-16.5), resource change notifications (AC-16.8 second half), the golden-transcript test (AC-16.11), and the "Allow external agents to edit this document" per-document toggle.
+
 ## Acceptance criteria
 
-- [ ] AC-16.1 With the server enabled, `claude mcp add` (HTTP) followed by `claude "list my open documents"` returns the open document titles; `get_document` returns the outline with block ids; no other process on the machine can call the endpoint without the bearer token (401).
-- [ ] AC-16.2 An external client's `replace_text` produces an attributed commit (author "Claude Code" with a distinct color) visible in History, the editor, and to guests; `Mod+Z` by the human does not undo it.
-- [ ] AC-16.3 A client registered as `reviewer` receives only `REVIEWER_TOOLS` in `tools/list` and gets an MCP error when calling a write tool by name.
-- [ ] AC-16.4 First contact from a new client shows the consent banner; until the user chooses, calls return an MCP error "awaiting approval in CollabDoc"; the choice persists per client name and is editable in Settings.
+- [x] AC-16.1 With the server enabled, `claude mcp add` (HTTP) followed by `claude "list my open documents"` returns the open document titles; `get_document` returns the outline with block ids; no other process on the machine can call the endpoint without the bearer token (401).
+- [x] AC-16.2 An external client's `replace_text` produces an attributed commit (author "Claude Code" with a distinct color) visible in History, the editor, and to guests; `Mod+Z` by the human does not undo it.
+- [x] AC-16.3 A client registered as `reviewer` receives only `REVIEWER_TOOLS` in `tools/list` and gets an MCP error when calling a write tool by name.
+- [x] AC-16.4 First contact from a new client shows the consent banner; until the user chooses, calls return an MCP error "awaiting approval in CollabDoc"; the choice persists per client name and is editable in Settings.
 - [ ] AC-16.5 The stdio bridge works with a stdio-only client (test with the MCP Inspector in stdio mode) and forwards every tool with identical results to the HTTP transport.
-- [ ] AC-16.6 Rate limit: a client issuing 200 writes in one second gets `limit` errors after the cap and the document has at most the cap's number of commits; the participant list shows a warning on that client.
-- [ ] AC-16.7 Closing the document ends its sessions: subsequent calls with that `docId` return `not_found`; `list_documents` no longer lists it; the client is not disconnected from the server.
-- [ ] AC-16.8 The `collabdoc://doc/<id>` resource returns the same Markdown as Export (04); resource subscriptions notify on document change at most 2×/s.
-- [ ] AC-16.9 Token rotation disconnects all clients and the "Copy setup command" output changes; the old token returns 401.
-- [ ] AC-16.10 The MCP server binds to loopback only and is off by default; enabling it is a persisted setting shown on the start screen AI card.
+- [x] AC-16.6 Rate limit: a client issuing 200 writes in one second gets `limit` errors after the cap and the document has at most the cap's number of commits; the participant list shows a warning on that client.
+- [x] AC-16.7 Closing the document ends its sessions: subsequent calls with that `docId` return `not_found`; `list_documents` no longer lists it; the client is not disconnected from the server.
+- [ ] AC-16.8 (resource served; not byte-identical to Export; no subscriptions yet) The `collabdoc://doc/<id>` resource returns the same Markdown as Export (04); resource subscriptions notify on document change at most 2×/s.
+- [x] AC-16.9 Token rotation disconnects all clients and the "Copy setup command" output changes; the old token returns 401.
+- [x] AC-16.10 The MCP server binds to loopback only and is off by default; enabling it is a persisted setting shown on the start screen AI card.
 - [ ] AC-16.11 Tool descriptions and the server `instructions` field are reviewed for an external agent with no system prompt: a scripted Claude Code run that is told only "improve the intro of my open document" completes with ≤ 8 tool calls (golden transcript test, allowed to be skipped without credentials).
 
 ## Out of scope
