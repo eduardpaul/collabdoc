@@ -5,6 +5,7 @@ import { CommentsPanel, type CommentDraft } from '../components/CommentsPanel'
 import { DocumentEditor } from '../components/DocumentEditor'
 import { HistoryPanel } from '../components/HistoryPanel'
 import { InboxBell } from '../components/InboxBell'
+import { FileMenu } from '../components/FileMenu'
 import { Button, Icon, StatusDot, TextArea, TextInput } from '../components/ui'
 import { hostLabel } from '../lib/host'
 import { useAppState } from '../state/AppState'
@@ -214,6 +215,7 @@ export function Workspace(): React.JSX.Element | null {
           <Button size="sm" onClick={() => void actions.saveDocument()}>
             Save
           </Button>
+          <FileMenu />
           <Button
             size="sm"
             variant="ghost"

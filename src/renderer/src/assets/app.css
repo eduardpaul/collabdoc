@@ -613,6 +613,28 @@ kbd {
   background: rgba(255, 255, 255, 0.05);
 }
 
+.menu-item kbd {
+  margin-left: auto;
+}
+
+.menu-sep {
+  display: block;
+  height: 1px;
+  background: var(--line);
+  margin: 6px 4px;
+}
+
+.topbar-menu > .btn .icon {
+  transform: rotate(90deg);
+}
+
+.topbar-menu__popover {
+  left: auto;
+  right: 0;
+  z-index: 50;
+  min-width: 260px;
+}
+
 .doc-figure {
   margin: 1em auto;
   width: 100%;

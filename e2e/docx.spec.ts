@@ -16,13 +16,17 @@ async function openEditor(page: Page): Promise<void> {
   await page.getByTestId('editor-body').waitFor()
 }
 
+async function openFileMenu(page: Page): Promise<void> {
+  await page.getByTestId('file-menu').click()
+  await expect(page.getByTestId('file-menu-list')).toBeVisible()
+}
+
 test('Export to Word dialog opens, saves settings, and cancel changes nothing (AC-22.2)', async ({
   page
 }) => {
   await openEditor(page)
-  await page.evaluate(() =>
-    window.dispatchEvent(new CustomEvent('collabdoc:command', { detail: 'export-docx' }))
-  )
+  await openFileMenu(page)
+  await page.getByTestId('file-menu-export-docx').click()
   await expect(page.getByTestId('docx-export-dialog')).toBeVisible()
   await expect(page.getByTestId('docx-export-summary')).toContainText('A4 portrait')
   await page.getByLabel('Size').selectOption('Letter')
@@ -34,9 +38,8 @@ test('Export to Word dialog opens, saves settings, and cancel changes nothing (A
 
 test('Save As in browser offers Markdown and Word (AC-22.1)', async ({ page }) => {
   await openEditor(page)
-  await page.evaluate(() =>
-    window.dispatchEvent(new CustomEvent('collabdoc:command', { detail: 'save-as' }))
-  )
+  await openFileMenu(page)
+  await page.getByTestId('file-menu-save-as').click()
   await expect(page.getByTestId('save-as-dialog')).toBeVisible()
   await expect(
     page.getByTestId('save-as-dialog').getByRole('button', { name: 'Markdown' })
@@ -48,13 +51,11 @@ test('exporting without figures does not load mermaid (AC-22.13)', async ({ page
   await openEditor(page)
   const [download] = await Promise.all([
     page.waitForEvent('download'),
-    page
-      .evaluate(() =>
-        window.dispatchEvent(new CustomEvent('collabdoc:command', { detail: 'export-docx' }))
-      )
-      .then(async () => {
-        await page.getByTestId('docx-export-submit').click()
-      })
+    (async () => {
+      await openFileMenu(page)
+      await page.getByTestId('file-menu-export-docx').click()
+      await page.getByTestId('docx-export-submit').click()
+    })()
   ])
   expect(download.suggestedFilename()).toMatch(/\.docx$/)
   const loaded = await page.evaluate(() => (window as CollabWindow).__collabLoadedLibraries ?? [])
@@ -79,9 +80,8 @@ test('Mermaid and Infographic rasterise once then reuse (AC-22.9, AC-22.13)', as
     })
   })
   await page.waitForTimeout(1500)
-  await page.evaluate(() =>
-    window.dispatchEvent(new CustomEvent('collabdoc:command', { detail: 'export-docx' }))
-  )
+  await openFileMenu(page)
+  await page.getByTestId('file-menu-export-docx').click()
   await expect(page.getByTestId('docx-export-dialog')).toBeVisible()
   const [download] = await Promise.all([
     page.waitForEvent('download'),
@@ -95,9 +95,8 @@ test('Mermaid and Infographic rasterise once then reuse (AC-22.9, AC-22.13)', as
   expect(first?.figures.every((figure) => figure.widthPx >= 2400)).toBe(true)
   expect(first?.warnings).toEqual([])
 
-  await page.evaluate(() =>
-    window.dispatchEvent(new CustomEvent('collabdoc:command', { detail: 'export-docx' }))
-  )
+  await openFileMenu(page)
+  await page.getByTestId('file-menu-export-docx').click()
   await expect(page.getByTestId('docx-export-dialog')).toBeVisible()
   await page.getByTestId('docx-export-submit').click({ force: true })
   await page.waitForFunction(() => {
