@@ -6,6 +6,7 @@ import {
   type RunEvent,
   type RunRequest
 } from '../../shared/agents'
+import { fail } from '../ipc-fail'
 import type { AgentRuntime } from './AgentRuntime'
 import type { SecretStore } from './secrets'
 import type { McpSourceStore } from './sources'
@@ -14,10 +15,6 @@ export const AGENT_EVENTS_CHANNEL = 'agents:event'
 export const BACKEND_CHANNEL = 'agents:backend'
 /** Renderer batches: at most one message per 100 ms during a busy run (AC-12.9). */
 const BATCH_MS = 100
-
-function fail(error: unknown): { ok: false; error: string } {
-  return { ok: false, error: error instanceof Error ? error.message : 'Something went wrong' }
-}
 
 /** Collects run events and flushes them to every window in batches. */
 export function createEventBroadcaster(): { push: (event: RunEvent) => void; flush: () => void } {
@@ -179,8 +176,12 @@ export function registerAgentIpc(
 
   ipcMain.handle('sources:remove', async (_event, id: unknown) => {
     if (typeof id !== 'string') return fail(new Error('Source id is required'))
-    await sources.remove(id)
-    return { ok: true }
+    try {
+      await sources.remove(id)
+      return { ok: true }
+    } catch (error) {
+      return fail(error)
+    }
   })
 
   ipcMain.handle('sources:refresh', async (_event, id: unknown) => {

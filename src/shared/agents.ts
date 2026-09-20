@@ -151,7 +151,8 @@ export type RunRecord = {
 
 export type RunEvent =
   | { type: 'run'; record: RunRecord }
-  | { type: 'text'; runId: string; text: string }
+  /** Assistant text; `delta` means "append to the last transcript entry", as main does. */
+  | { type: 'text'; runId: string; text: string; delta: boolean }
   | { type: 'step'; runId: string; step: RunStep }
   | { type: 'warning'; runId: string; message: string }
 
@@ -267,7 +268,9 @@ export const RUN_LIMITS = {
   /** Global in-flight runs (AC-12.3). */
   maxParallel: 2,
   /** How fast a run may write before calls return `limit` (16). */
-  maxWritesPerSecond: 20
+  maxWritesPerSecond: 20,
+  /** Finished runs kept per document, in main and in the renderer. */
+  historyPerDocument: 50
 } as const
 
 export function slugify(label: string): string {

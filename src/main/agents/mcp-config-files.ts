@@ -12,6 +12,8 @@ export type McpServerEntry = {
   command?: string
   args?: string[]
   env?: Record<string, string>
+  /** Only these tools of the server may be used; null/undefined = all (AC-18.2). */
+  toolAllowlist?: string[] | null
 }
 
 /** Claude Code `--mcp-config` (also what most JSON-configured clients accept). */
@@ -26,14 +28,19 @@ export function claudeMcpJson(entries: McpServerEntry[]): string {
   return JSON.stringify({ mcpServers }, null, 2)
 }
 
-/** Gemini CLI project `.gemini/settings.json`; `tools.core: []` removes its built-ins. */
+/**
+ * Gemini CLI project `.gemini/settings.json`; `tools.core: []` removes its
+ * built-ins and a server's `includeTools` limits it to an allowlist.
+ */
 export function geminiSettingsJson(entries: McpServerEntry[]): string {
   const mcpServers: Record<string, unknown> = {}
   for (const entry of entries) {
-    mcpServers[entry.name] =
-      entry.transport === 'http'
+    mcpServers[entry.name] = {
+      ...(entry.transport === 'http'
         ? { httpUrl: entry.url, headers: entry.headers ?? {} }
-        : { command: entry.command, args: entry.args ?? [], env: entry.env ?? {} }
+        : { command: entry.command, args: entry.args ?? [], env: entry.env ?? {} }),
+      ...(entry.toolAllowlist ? { includeTools: entry.toolAllowlist } : {})
+    }
   }
   return JSON.stringify({ mcpServers, tools: { core: [] } }, null, 2)
 }
@@ -77,6 +84,8 @@ export function codexOverrides(entries: McpServerEntry[]): string[] {
       if (entry.env && Object.keys(entry.env).length > 0)
         out.push(`${base}.env=${inlineTable(entry.env)}`)
     }
+    if (entry.toolAllowlist)
+      out.push(`${base}.enabled_tools=[${entry.toolAllowlist.map(tomlString).join(', ')}]`)
   }
   return out
 }

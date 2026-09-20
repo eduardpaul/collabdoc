@@ -11,6 +11,7 @@
  *   sleep         init, then hang (spawns a child too) until killed
  *   fail          two stderr lines + 30 numbered ones, exit 2
  *   auth          stderr "Not logged in", exit 1
+ *   max-turns     init → text → result error_max_turns, exit 1 (Claude Code's shape)
  *   write-outside write ./notes.md relative to cwd (the scratch dir), result
  *   plain         print two plain lines
  */
@@ -103,6 +104,12 @@ async function main() {
     }
     case 'auth': {
       process.stderr.write('Not logged in. Run `fake login` first.\n')
+      return 1
+    }
+    case 'max-turns': {
+      init()
+      text('Still working…')
+      result(null, true, 'error_max_turns')
       return 1
     }
     case 'sleep': {

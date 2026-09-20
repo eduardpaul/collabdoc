@@ -13,12 +13,13 @@ import { emptyShare } from '../lib/share-state'
 import { loadPersisted, savePersisted } from '../lib/persist'
 import { getClient } from '../sync/clients'
 import { asActorProfile, loadProfileSync } from '../sync/identity'
-import type {
-  BackendAvailability,
-  McpServerState,
-  McpSource,
-  RunEvent,
-  RunRecord
+import {
+  RUN_LIMITS,
+  type BackendAvailability,
+  type McpServerState,
+  type McpSource,
+  type RunEvent,
+  type RunRecord
 } from '@shared/agents'
 import type { DocxExportConfig } from '@shared/docx-config'
 import type { DocxExportWarning } from '@core/docx'
@@ -86,7 +87,8 @@ export type Action =
   | { type: 'set-backend'; backend: BackendAvailability }
   | { type: 'set-mcp-server'; state: McpServerState }
   | { type: 'set-sources'; sources: McpSource[] }
-  | { type: 'set-runs'; runs: RunRecord[] }
+  /** Main's run history for a document, fetched when it becomes the open session. */
+  | { type: 'set-runs'; docId: string; runs: RunRecord[] }
   /** A batch of run events from main; updates runs, agent status and Activity. */
   | { type: 'run-events'; events: RunEvent[] }
   | { type: 'add-agent'; agent: Agent }
@@ -197,7 +199,7 @@ function withSession(
   }
 }
 
-const MAX_RUNS = 50
+const MAX_RUNS = RUN_LIMITS.historyPerDocument
 
 function statusOf(runs: RunRecord[], agentId: string): Agent['status'] {
   if (runs.some((r) => r.agentId === agentId && r.status === 'working')) return 'working'
@@ -275,9 +277,17 @@ function applyRunEvents(state: AppState, events: RunEvent[]): AppState {
     if (event.type === 'step') {
       runs = runs.map((r, i) => (i === index ? { ...r, steps: [...r.steps, event.step] } : r))
     } else if (event.type === 'text') {
-      runs = runs.map((r, i) =>
-        i === index ? { ...r, transcript: [...r.transcript.slice(-20), event.text] } : r
-      )
+      // Same rule as main: a delta extends the last entry, anything else starts one.
+      runs = runs.map((r, i) => {
+        if (i !== index) return r
+        const transcript = r.transcript.slice(-20)
+        if (event.delta && transcript.length > 0) {
+          transcript[transcript.length - 1] += event.text
+        } else {
+          transcript.push(event.text)
+        }
+        return { ...r, transcript }
+      })
     } else if (event.type === 'warning') {
       rows.push(activity({ actor: record.personaName, kind: 'agent', summary: event.message }))
     }
@@ -309,8 +319,16 @@ function runtimeReducer(state: AppState, action: Action): AppState | null {
       return { ...state, mcpServer: action.state }
     case 'set-sources':
       return { ...state, sources: action.sources }
-    case 'set-runs':
-      return { ...state, runs: action.runs }
+    case 'set-runs': {
+      // A late answer for a document that is no longer open is dropped.
+      if (!state.session || state.session.id !== action.docId) return state
+      const runs = action.runs.slice(0, MAX_RUNS)
+      const agents = state.agents.map((agent) => {
+        const status = statusOf(runs, agent.id)
+        return status === agent.status ? agent : { ...agent, status }
+      })
+      return { ...state, runs, agents }
+    }
     case 'run-events':
       return applyRunEvents(state, action.events)
     default:
@@ -563,6 +581,21 @@ export function AppStateProvider({ children }: { children: ReactNode }): React.J
       stopBackend()
     }
   }, [])
+
+  // Runs live in main; a document that is opened again picks up its running and recent runs.
+  const sessionId = state.session?.id ?? null
+  useEffect(() => {
+    const api = window.api
+    if (!sessionId || !api?.agents) return
+    let cancelled = false
+    void api.agents.listRuns(sessionId).then((result) => {
+      if (!cancelled && result.ok)
+        dispatch({ type: 'set-runs', docId: sessionId, runs: result.runs })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId])
 
   useEffect(() => {
     const api = window.api?.documents

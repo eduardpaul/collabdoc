@@ -204,6 +204,28 @@ describe('DocumentMcpServer · consent (AC-16.4)', () => {
     const third = await client.callTool({ name: 'get_document', arguments: { docId: h.docId } })
     expect(parse<{ message: string }>(third).message).toMatch(/blocked/i)
   })
+
+  it('resources need the same consent as tools: nothing is listed or readable before approval', async () => {
+    const h = await harness()
+    const client = await connect(h.server, { name: 'Codex' })
+    const uri = `collabdoc://doc/${h.docId}`
+    expect((await client.listResources()).resources).toEqual([])
+    await expect(client.readResource({ uri })).rejects.toThrow(/awaiting approval/i)
+    expect(h.server.state().pending).toEqual(['Codex'])
+
+    await h.server.setClientRole('Codex', 'reviewer')
+    expect((await client.listResources()).resources.map((r) => r.uri)).toEqual([
+      uri,
+      `${uri}/outline`
+    ])
+    expect((await client.readResource({ uri })).contents[0]).toMatchObject({
+      mimeType: 'text/markdown'
+    })
+
+    await h.server.setClientRole('Codex', 'blocked')
+    expect((await client.listResources()).resources).toEqual([])
+    await expect(client.readResource({ uri })).rejects.toThrow(/blocked/i)
+  })
 })
 
 describe('DocumentMcpServer · runs (17)', () => {
@@ -277,6 +299,48 @@ describe('DocumentMcpServer · runs (17)', () => {
     expect(steps.at(-1)).toMatchObject({ tool: 'replace_text', ok: false, error: 'forbidden' })
   })
 
+  it('a run stays inside its own document: another open docId is refused for tools and resources', async () => {
+    const h = await harness()
+    const other = h.registry.create({ title: 'Other plan' })
+    addParagraph(human(other.hub, 'bo'), 'Private notes.')
+    const steps: RunStep[] = []
+    const headers = h.server.registerRun({
+      runId: 'run_3',
+      docId: h.docId,
+      actor: { actorId: 'agent_writer', name: 'Nova', color: '#2563eb', role: 'agent' },
+      role: 'writer',
+      onStep: (step) => steps.push(step)
+    })
+    const client = await connect(h.server, { headers })
+    const before = listHistory(other.hub.doc).length
+    const foreign = await client.callTool({
+      name: 'insert_blocks',
+      arguments: {
+        docId: other.docId,
+        at: { relation: 'inside_end' },
+        blocks: [{ type: 'paragraph', text: 'Sneaked in.' }]
+      }
+    })
+    expect(foreign.isError).toBe(true)
+    expect(parse<{ error: string; message: string }>(foreign)).toMatchObject({
+      error: 'not_found',
+      message: expect.stringMatching(/bound to document/)
+    })
+    expect(listHistory(other.hub.doc)).toHaveLength(before)
+    expect(steps).toHaveLength(0)
+    // Naming its own document explicitly is fine.
+    const own = await client.callTool({ name: 'get_document', arguments: { docId: h.docId } })
+    expect(own.isError).toBeFalsy()
+    // Resources: only the bound document is listed or readable.
+    expect((await client.listResources()).resources.map((r) => r.uri)).toEqual([
+      `collabdoc://doc/${h.docId}`,
+      `collabdoc://doc/${h.docId}/outline`
+    ])
+    await expect(client.readResource({ uri: `collabdoc://doc/${other.docId}` })).rejects.toThrow(
+      /bound to document/
+    )
+  })
+
   it('an unknown run header is refused and a mismatched one cannot reuse a session', async () => {
     const h = await harness()
     await expect(
@@ -310,6 +374,34 @@ describe('DocumentMcpServer · limits and lifecycle (AC-16.6, AC-16.7, AC-16.9)'
     expect(limited.length).toBeGreaterThanOrEqual(10)
     expect(listHistory(hub.doc).length - before).toBeLessThanOrEqual(20)
     expect(h.server.state().connected[0].rateLimited).toBe(true)
+  })
+
+  it('the "rate limited" mark clears once the burst is over', async () => {
+    const h = await harness()
+    const states: boolean[] = []
+    const server = new DocumentMcpServer({
+      registry: h.registry,
+      userData: h.dir,
+      rateLimitFlagMs: 150,
+      onState: (state) => states.push(state.connected[0]?.rateLimited ?? false)
+    })
+    await server.init()
+    await server.start()
+    cleanups.push(() => server.stop())
+    await server.setClientRole('Claude Code', 'writer')
+    const client = await connect(server)
+    for (let i = 0; i < 25; i += 1) {
+      await client.callTool({
+        name: 'insert_blocks',
+        arguments: { at: { relation: 'inside_end' }, blocks: [{ type: 'paragraph', text: 'p' }] }
+      })
+    }
+    expect(server.state().connected[0].rateLimited).toBe(true)
+    await new Promise((r) => setTimeout(r, 300))
+    expect(server.state().connected[0].rateLimited).toBe(false)
+    // Settings was told both when it started and when it lapsed.
+    expect(states.at(-1)).toBe(false)
+    expect(states).toContain(true)
   })
 
   it('closing the document makes calls return not_found without disconnecting the client', async () => {

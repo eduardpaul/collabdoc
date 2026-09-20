@@ -7,7 +7,7 @@ import {
   type McpServerEntry
 } from './mcp-config-files'
 
-/** The MCP server name every CLI run sees for the document. */
+/** The MCP server name a CLI run sees for the document (plus a per-run suffix on some CLIs). */
 export const DOC_SERVER_NAME = 'collabdoc'
 
 export type StreamParserId = 'messages' | 'antigravity' | 'codex' | 'plain'
@@ -22,7 +22,8 @@ export type LaunchContext = {
   timeoutMs: number
   /** The run's private scratch dir; also the process cwd. */
   cwd: string
-  doc: { url: string; headers: Record<string, string> }
+  /** The document server as this run should register it: `name` is what its tools are prefixed with. */
+  doc: { name: string; url: string; headers: Record<string, string> }
   sources: SourceEntry[]
 }
 
@@ -59,27 +60,42 @@ export type CliProfile = {
   parser: StreamParserId
   /** Which flags keep the process away from the user's filesystem. */
   sandboxNote: string
+  /**
+   * Whether `launch` holds a source to its `toolAllowlist` (AC-18.2). When it
+   * cannot, the runtime leaves such sources out of the run instead of exposing
+   * every tool of the server.
+   */
+  restrictsSourceTools: boolean
+  /**
+   * Suffix for every MCP server name of a run, on CLIs whose MCP config is
+   * shared with the user's own sessions; keeps a run from replacing or
+   * removing the user's `collabdoc` entry.
+   */
+  runSuffix?: (runId: string) => string
   launch: (ctx: LaunchContext) => LaunchPlan
 }
 
 function entries(ctx: LaunchContext): McpServerEntry[] {
   return [
-    { name: DOC_SERVER_NAME, transport: 'http', url: ctx.doc.url, headers: ctx.doc.headers },
-    ...ctx.sources.map(asEntry)
+    { name: ctx.doc.name, transport: 'http', url: ctx.doc.url, headers: ctx.doc.headers },
+    ...ctx.sources
   ]
 }
 
-/** The MCP server entry for a source; the allowlist is a CLI flag, not config. */
-function asEntry(source: SourceEntry): McpServerEntry {
-  return {
-    name: source.name,
-    transport: source.transport,
-    url: source.url,
-    headers: source.headers,
-    command: source.command,
-    args: source.args,
-    env: source.env
+/**
+ * Claude Code style permission rules: the whole document server, and each
+ * source either whole or tool by tool (`mcp__<server>__<tool>`).
+ */
+function allowRules(ctx: LaunchContext): string[] {
+  const allowed = [`mcp__${ctx.doc.name}`]
+  for (const source of ctx.sources) {
+    if (source.toolAllowlist) {
+      for (const tool of source.toolAllowlist) allowed.push(`mcp__${source.name}__${tool}`)
+    } else {
+      allowed.push(`mcp__${source.name}`)
+    }
   }
+  return allowed
 }
 
 /** System prompt folded into the user prompt for CLIs without a system-prompt flag. */
@@ -112,15 +128,8 @@ const claudeCode: CliProfile = {
     '--tools "" removes every built-in tool (no shell, no file access); --allowedTools limits ' +
     'the run to the document server and attached sources; --strict-mcp-config ignores the ' +
     "user's own MCP servers.",
+  restrictsSourceTools: true,
   launch: (ctx) => {
-    const allowed = [`mcp__${DOC_SERVER_NAME}`]
-    for (const source of ctx.sources) {
-      if (source.toolAllowlist) {
-        for (const tool of source.toolAllowlist) allowed.push(`mcp__${source.name}__${tool}`)
-      } else {
-        allowed.push(`mcp__${source.name}`)
-      }
-    }
     return {
       args: [
         '-p',
@@ -137,7 +146,7 @@ const claudeCode: CliProfile = {
         '--tools',
         '',
         '--allowedTools',
-        ...allowed,
+        ...allowRules(ctx),
         '--permission-mode',
         'default',
         '--append-system-prompt',
@@ -157,7 +166,9 @@ const claudeCode: CliProfile = {
  * grok keeps a few built-ins even with an empty `--tools`, so the allowlist
  * names one harmless tool; MCP tools are not built-ins and stay available.
  * Repo-local MCP servers only start in a trusted folder: `--trust` records
- * the scratch dir in ~/.grok/trusted_folders.toml.
+ * the scratch dir in ~/.grok/trusted_folders.toml. `--permission-mode dontAsk`
+ * with `--allow` rules (Claude Code syntax, verified 2026-09) holds a source to
+ * its allowlist; a call outside the rules is refused and ends the run.
  */
 const GROK_HARMLESS_TOOL = 'todo_write'
 
@@ -183,7 +194,10 @@ const grok: CliProfile = {
   sandboxNote:
     `--tools ${GROK_HARMLESS_TOOL} leaves no shell or file tools (MCP tools are separate); ` +
     '--no-subagents, --disable-web-search; the project-scoped .grok/config.toml in the scratch ' +
-    'dir supplies the MCP servers (--trust lets grok start them), on top of the user-level ones.',
+    'dir supplies the MCP servers (--trust lets grok start them), on top of the user-level ones; ' +
+    '--permission-mode dontAsk with --allow rules limits MCP calls to the document server and ' +
+    "each source's allowed tools.",
+  restrictsSourceTools: true,
   launch: (ctx) => ({
     args: [
       '--trust',
@@ -196,7 +210,8 @@ const grok: CliProfile = {
       '--max-turns',
       String(ctx.maxTurns),
       '--permission-mode',
-      'bypassPermissions',
+      'dontAsk',
+      ...allowRules(ctx).flatMap((rule) => ['--allow', rule]),
       '--no-subagents',
       '--disable-web-search',
       '--no-plan',
@@ -233,9 +248,17 @@ const antigravity: CliProfile = {
   },
   parser: 'antigravity',
   sandboxNote:
-    'agy has no per-run MCP config: the run registers its server in the user-level ' +
-    'mcp_config.json before launching and removes it after. --sandbox restricts the terminal; ' +
-    '--dangerously-skip-permissions is required for headless tool calls.',
+    'agy has no per-run MCP config: the run registers its servers under per-run names in the ' +
+    "user-level mcp_config.json before launching and removes those names after, leaving the user's " +
+    'own entries alone. --sandbox restricts the terminal; --dangerously-skip-permissions is ' +
+    'required for headless tool calls. agy has no per-tool MCP allowlist, so sources pinned to ' +
+    'some of their tools are not attached.',
+  restrictsSourceTools: false,
+  runSuffix: (runId) =>
+    `_${runId
+      .replace(/^run_/, '')
+      .replace(/[^A-Za-z0-9]/g, '')
+      .slice(0, 8)}`,
   launch: (ctx) => {
     const list = entries(ctx)
     const add = (entry: McpServerEntry): string[] => {
@@ -279,9 +302,11 @@ const gemini: CliProfile = {
   authCheck: null,
   parser: 'messages',
   sandboxNote:
-    'The scratch dir carries .gemini/settings.json with the MCP servers and an empty core tool ' +
-    'list; --allowed-mcp-server-names limits MCP to the run servers. Output format not verified ' +
+    'The scratch dir carries .gemini/settings.json with the MCP servers (each with includeTools ' +
+    'when a source is pinned to some tools) and an empty core tool list; ' +
+    '--allowed-mcp-server-names limits MCP to the run servers. Output format not verified ' +
     'against a signed-in binary.',
+  restrictsSourceTools: true,
   launch: (ctx) => ({
     args: [
       '-p',
@@ -321,8 +346,10 @@ const codex: CliProfile = {
   },
   parser: 'codex',
   sandboxNote:
-    '--sandbox read-only plus MCP servers passed as -c overrides; flag names taken from the ' +
-    'Codex docs, not verified against an installed binary.',
+    '--sandbox read-only plus MCP servers passed as -c overrides (enabled_tools when a source is ' +
+    'pinned to some tools); flag names taken from the Codex docs, not verified against an ' +
+    'installed binary.',
+  restrictsSourceTools: true,
   launch: (ctx) => ({
     args: [
       'exec',
@@ -361,6 +388,17 @@ const PLACEHOLDERS = [
   '{maxTurns}'
 ] as const
 
+/**
+ * Replace every placeholder with its value verbatim, in one pass: a function
+ * replacer keeps `$&`, `$$` or `$'` in a prompt from being read as patterns,
+ * and one pass keeps a `{cwd}` typed inside the prompt from being expanded.
+ */
+export function substitutePlaceholders(arg: string, values: Record<string, string>): string {
+  const names = Object.keys(values).map((k) => k.replace(/[{}]/g, ''))
+  const re = new RegExp(`\\{(${names.join('|')})\\}`, 'g')
+  return arg.replace(re, (match) => values[match] ?? match)
+}
+
 /** Split a command template on whitespace, honouring double quotes. */
 export function splitCommandTemplate(template: string): string[] {
   const out: string[] = []
@@ -384,6 +422,8 @@ export function customProfile(config: CustomCliConfig): CliProfile {
     authCheck: null,
     parser: config.parser,
     sandboxNote: 'Whatever the template says; CollabDoc only sets the cwd to the scratch dir.',
+    // The template has no allowlist flag CollabDoc knows about.
+    restrictsSourceTools: false,
     launch: (ctx) => {
       const token = ctx.doc.headers.Authorization?.replace(/^Bearer\s+/i, '') ?? ''
       const configFile =
@@ -392,15 +432,16 @@ export function customProfile(config: CustomCliConfig): CliProfile {
           : config.mcpConfigFormat === 'grok-toml'
             ? '.grok/config.toml'
             : 'mcp.json'
-      const replace = (arg: string): string =>
-        arg
-          .replaceAll('{prompt}', ctx.prompt)
-          .replaceAll('{systemPrompt}', ctx.systemPrompt)
-          .replaceAll('{mcpUrl}', ctx.doc.url)
-          .replaceAll('{mcpToken}', token)
-          .replaceAll('{mcpConfigFile}', configFile)
-          .replaceAll('{cwd}', ctx.cwd)
-          .replaceAll('{maxTurns}', String(ctx.maxTurns))
+      const values: Record<(typeof PLACEHOLDERS)[number], string> = {
+        '{prompt}': ctx.prompt,
+        '{systemPrompt}': ctx.systemPrompt,
+        '{mcpUrl}': ctx.doc.url,
+        '{mcpToken}': token,
+        '{mcpConfigFile}': configFile,
+        '{cwd}': ctx.cwd,
+        '{maxTurns}': String(ctx.maxTurns)
+      }
+      const replace = (arg: string): string => substitutePlaceholders(arg, values)
       const files: LaunchPlan['files'] = []
       const list = entries(ctx)
       if (config.mcpConfigFormat === 'claude-json')

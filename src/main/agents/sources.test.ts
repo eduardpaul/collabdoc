@@ -32,7 +32,11 @@ function launchCtx(sources: LaunchContext['sources']): LaunchContext {
     maxTurns: 6,
     timeoutMs: 1000,
     cwd: '/scratch',
-    doc: { url: 'http://127.0.0.1:1/mcp', headers: { Authorization: 'Bearer t' } },
+    doc: {
+      name: 'collabdoc',
+      url: 'http://127.0.0.1:1/mcp',
+      headers: { Authorization: 'Bearer t' }
+    },
     sources
   }
 }

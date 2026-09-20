@@ -1,15 +1,12 @@
 import { BrowserWindow, ipcMain } from 'electron'
 import { isBackendId, type McpServerState } from '../../shared/agents'
+import { fail } from '../ipc-fail'
 import type { DocumentMcpServer } from './DocumentMcpServer'
 
 export const MCP_STATE_CHANNEL = 'mcp:state'
 
 export function broadcastMcpState(state: McpServerState): void {
   for (const win of BrowserWindow.getAllWindows()) win.webContents.send(MCP_STATE_CHANNEL, state)
-}
-
-function fail(error: unknown): { ok: false; error: string } {
-  return { ok: false, error: error instanceof Error ? error.message : 'Something went wrong' }
 }
 
 export function registerMcpIpc(server: DocumentMcpServer): void {

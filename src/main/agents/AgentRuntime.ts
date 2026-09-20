@@ -42,6 +42,9 @@ type LiveRun = {
   limitReason: string | null
 }
 
+/** Upper bound on how long quit waits for cancelled runs to exit and clean up. */
+const DISPOSE_WAIT_MS = 3_000
+
 /**
  * Runs personas on CLI backends (17) with 12's scheduling shell: a FIFO per
  * agent, a global in-flight cap, cancellation, limits and a run record
@@ -61,6 +64,8 @@ export class AgentRuntime {
   private custom: CustomCliConfig = { ...DEFAULT_CUSTOM_CLI }
   private readonly runs = new Map<string, LiveRun>()
   private readonly queues = new Map<string, LiveRun[]>()
+  /** Runs whose process may still be alive, so dispose can wait for them. */
+  private readonly inFlightRuns = new Set<Promise<void>>()
   private inFlight = 0
   private disposed = false
 
@@ -200,6 +205,7 @@ export class AgentRuntime {
         exitCode: null
       }
       this.emit({ type: 'run', record })
+      this.prune(record.docId)
       return snapshot(record)
     }
     queue.push(live)
@@ -238,9 +244,19 @@ export class AgentRuntime {
     }
   }
 
+  /**
+   * Cancel everything and wait for the processes to be gone (AC-17.5). The
+   * wait is bounded: SIGTERM, the kill grace, then SIGKILL, plus post-run steps.
+   */
   async dispose(): Promise<void> {
     this.disposed = true
     for (const live of this.runs.values()) this.cancel(live.record.runId)
+    const pending = [...this.inFlightRuns]
+    if (pending.length === 0) return
+    await Promise.race([
+      Promise.allSettled(pending),
+      new Promise<void>((resolve) => setTimeout(resolve, DISPOSE_WAIT_MS).unref?.())
+    ])
   }
 
   // ---- scheduling ----------------------------------------------------------------
@@ -252,10 +268,12 @@ export class AgentRuntime {
       if (!next) return
       this.dequeue(next)
       this.inFlight += 1
-      void this.execute(next).finally(() => {
+      const running = this.execute(next).finally(() => {
         this.inFlight -= 1
+        this.inFlightRuns.delete(running)
         this.pump()
       })
+      this.inFlightRuns.add(running)
     }
   }
 
@@ -342,13 +360,33 @@ export class AgentRuntime {
         message: `source ${missing.label} unavailable: ${missing.reason}`
       })
     }
+    // A source pinned to some of its tools (AC-18.2) only goes to a CLI that can hold it to
+    // them; otherwise it is left out rather than handed over with every tool.
+    const usable = resolved.entries.filter((entry) => {
+      if (!entry.toolAllowlist || backend.profile.restrictsSourceTools) return true
+      this.emit({
+        type: 'warning',
+        runId: record.runId,
+        message: `source ${labelOf(entry, this.sources)} skipped: ${backend.profile.label} cannot limit it to its allowed tools`
+      })
+      return false
+    })
+    // CLIs with one shared MCP config get per-run server names so the user's own entries survive.
+    const suffix = backend.profile.runSuffix?.(record.runId) ?? ''
+    const docServerName = `${DOC_SERVER_NAME}${suffix}`
+    const sourceEntries: SourceEntry[] = usable.map((e) => ({ ...e, name: `${e.name}${suffix}` }))
+    const sourceLabels = usable.map((e) => labelOf(e, this.sources))
     const maxTurns = this.limits.maxTurns[persona.role]
     const systemPrompt = buildSystemPrompt({
       persona,
       docTitle: request.docTitle || readMeta(entry.hub.doc).title || 'Untitled',
       docId: request.docId,
-      serverName: DOC_SERVER_NAME,
-      sources: resolved.entries.map((e) => ({ name: e.name, label: labelOf(e, this.sources) })),
+      serverName: docServerName,
+      sources: sourceEntries.map((e, i) => ({
+        name: e.name,
+        label: sourceLabels[i],
+        tools: e.toolAllowlist
+      })),
       maxTurns
     })
     try {
@@ -360,8 +398,8 @@ export class AgentRuntime {
           systemPrompt,
           maxTurns,
           timeoutMs: this.limits.timeoutMs,
-          doc: { url: this.mcp.url!, headers },
-          sources: resolved.entries,
+          doc: { name: docServerName, url: this.mcp.url!, headers },
+          sources: sourceEntries,
           signal: live.controller.signal
         },
         {
@@ -374,7 +412,7 @@ export class AgentRuntime {
               this.appendText(live, event.text, event.delta)
             } else if (event.type === 'result') {
               if (event.text) record.summary = event.text.trim().slice(0, 4000)
-            } else if (event.type === 'tool_use' && !isDocumentTool(event.name)) {
+            } else if (event.type === 'tool_use' && !isDocumentTool(event.name, docServerName)) {
               // External tools (sources, or a CLI built-in that slipped through) are worth seeing.
               const step: RunStep = {
                 at: Date.now(),
@@ -437,7 +475,7 @@ export class AgentRuntime {
     while (total > this.limits.maxTranscriptChars && record.transcript.length > 1) {
       total -= record.transcript.shift()!.length
     }
-    this.emit({ type: 'text', runId: record.runId, text })
+    this.emit({ type: 'text', runId: record.runId, text, delta })
   }
 
   private finish(live: LiveRun, status: RunRecord['status'], error: RunRecord['error']): void {
@@ -450,6 +488,17 @@ export class AgentRuntime {
       record.summary = record.transcript.at(-1)?.trim() ?? ''
     }
     this.emit({ type: 'run', record })
+    this.prune(record.docId)
+  }
+
+  /** Keep the last `historyPerDocument` finished runs of a document; live ones always stay. */
+  private prune(docId: string): void {
+    const finished = [...this.runs.values()]
+      .filter((r) => r.record.docId === docId && r.record.endedAt !== null)
+      .sort((a, b) => b.record.endedAt! - a.record.endedAt!)
+    for (const stale of finished.slice(this.limits.historyPerDocument)) {
+      this.runs.delete(stale.record.runId)
+    }
   }
 
   /** Events carry snapshots: batched IPC must not see later mutations of the live record. */
@@ -478,8 +527,8 @@ function priority(live: LiveRun): number {
   }
 }
 
-function isDocumentTool(name: string): boolean {
-  return name.includes(`${DOC_SERVER_NAME}__`) || name.startsWith(`${DOC_SERVER_NAME}:`)
+function isDocumentTool(name: string, serverName: string): boolean {
+  return name.includes(`${serverName}__`) || name.startsWith(`${serverName}:`)
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

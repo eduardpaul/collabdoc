@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto'
+import { randomUUID, timingSafeEqual } from 'crypto'
 import {
   createServer,
   type IncomingMessage,
@@ -10,11 +10,13 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import {
   CallToolRequestSchema,
+  ErrorCode,
   GetPromptRequestSchema,
   isInitializeRequest,
   ListPromptsRequestSchema,
   ListResourcesRequestSchema,
   ListToolsRequestSchema,
+  McpError,
   ReadResourceRequestSchema,
   type CallToolResult,
   type Tool
@@ -34,6 +36,7 @@ import type {
 } from '../../shared/agents'
 import { RUN_LIMITS, slugify } from '../../shared/agents'
 import { colorForId } from '../../shared/actors'
+import { handleFromName } from '../../shared/handles'
 import { DOCUMENT_WRITE_TOOLS, TOOL_DEFINITIONS, toolsForRole } from '../../shared/tools'
 import type { ActorProfile, MutationErrorKind, ToolName } from '../../shared/types'
 import { isMutationResult } from '../../core/tools/context'
@@ -64,7 +67,8 @@ type McpSessionEntry = {
   connectedAt: number
   calls: number
   writeStamps: number[]
-  rateLimited: boolean
+  /** Set while a write burst is being refused; the flag clears itself (AC-16.6). */
+  rateLimitedUntil: number
 }
 
 type SessionIdentity =
@@ -77,9 +81,13 @@ export type DocumentMcpServerOptions = {
   /** Called when a client not yet approved calls in (AC-16.4). */
   onPending?: (clientName: string) => void
   log?: (message: string, detail?: unknown) => void
+  /** How long a refused burst keeps a client marked "rate limited" (tests shorten it). */
+  rateLimitFlagMs?: number
 }
 
 const TOOL_LIMITS = { maxWritesPerSecond: RUN_LIMITS.maxWritesPerSecond }
+/** How long a refused burst keeps a client marked "rate limited" in Settings. */
+const RATE_LIMIT_FLAG_MS = 2_000
 
 /**
  * The open documents' tool surface as an MCP server (16).
@@ -97,6 +105,7 @@ export class DocumentMcpServer {
   private readonly onState?: (state: McpServerState) => void
   private readonly onPending?: (clientName: string) => void
   private readonly log: (message: string, detail?: unknown) => void
+  private readonly rateLimitFlagMs: number
   private config: McpConfig | null = null
   private http: HttpServer | null = null
   private port: number | null = null
@@ -113,6 +122,7 @@ export class DocumentMcpServer {
     this.onState = options.onState
     this.onPending = options.onPending
     this.log = options.log ?? (() => {})
+    this.rateLimitFlagMs = options.rateLimitFlagMs ?? RATE_LIMIT_FLAG_MS
   }
 
   /** Load the persisted switch and start when it is on. */
@@ -266,7 +276,7 @@ export class DocumentMcpServer {
       runId: entry.identity.kind === 'run' ? entry.identity.binding.runId : null,
       connectedAt: entry.connectedAt,
       calls: entry.calls,
-      rateLimited: entry.rateLimited
+      rateLimited: entry.rateLimitedUntil > Date.now()
     }))
     return {
       enabled: this.config?.enabled ?? false,
@@ -369,7 +379,7 @@ export class DocumentMcpServer {
     if (!token) return false
     const value = (header(req, 'authorization') ?? '').trim()
     if (!/^bearer /i.test(value)) return false
-    return timingSafeEqual(value.slice('bearer '.length).trim(), token)
+    return tokensMatch(value.slice('bearer '.length).trim(), token)
   }
 
   private createSession(identity: SessionIdentity): McpSessionEntry {
@@ -382,7 +392,7 @@ export class DocumentMcpServer {
       connectedAt: Date.now(),
       calls: 0,
       writeStamps: [],
-      rateLimited: false
+      rateLimitedUntil: 0
     }
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
@@ -448,8 +458,10 @@ export class DocumentMcpServer {
       return this.callTool(entry, name, args)
     })
 
+    // Resources read the document, so they need the same consent as tools/call
+    // (AC-16.4) and, for a run, stay within the run's own document.
     server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-      resources: this.openDocs().flatMap((doc) => [
+      resources: this.readableDocs(entry).flatMap((doc) => [
         {
           uri: `collabdoc://doc/${doc.docId}`,
           name: doc.title || 'Untitled',
@@ -466,9 +478,17 @@ export class DocumentMcpServer {
     }))
 
     server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      const refusal = this.refusalOf(entry)
+      if (refusal) throw new McpError(ErrorCode.InvalidRequest, refusal.message)
       const match = /^collabdoc:\/\/doc\/([^/]+)(\/outline)?$/.exec(request.params.uri)
-      const doc = match ? this.registry.get(match[1]) : undefined
-      if (!match || !doc) throw new Error(`Unknown resource: ${request.params.uri}`)
+      const resolved = match ? this.resolveDocId(entry, match[1]) : null
+      const doc = resolved?.ok ? this.registry.get(resolved.docId) : undefined
+      if (!match || !resolved || !doc) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          resolved && !resolved.ok ? resolved.message : `Unknown resource: ${request.params.uri}`
+        )
+      }
       if (match[2]) {
         return {
           contents: [
@@ -581,24 +601,8 @@ export class DocumentMcpServer {
     if (name === 'list_documents') {
       return json({ documents: this.openDocs() })
     }
-    const consent = this.consentOf(entry)
-    if (consent === 'pending') {
-      return json(
-        {
-          ok: false,
-          error: 'forbidden',
-          message:
-            'Awaiting approval in CollabDoc. Ask the person to allow this client, then retry.'
-        },
-        true
-      )
-    }
-    if (consent === 'blocked') {
-      return json(
-        { ok: false, error: 'forbidden', message: 'This client is blocked in CollabDoc.' },
-        true
-      )
-    }
+    const refusal = this.refusalOf(entry)
+    if (refusal) return json(refusal, true)
     if (name === 'whoami') {
       const actor = this.actorOf(entry)
       return json({ ...actor, role: this.roleOf(entry) })
@@ -650,9 +654,16 @@ export class DocumentMcpServer {
     const now = Date.now()
     entry.writeStamps = entry.writeStamps.filter((t) => now - t < 1000)
     if (entry.writeStamps.length >= TOOL_LIMITS.maxWritesPerSecond) {
-      if (!entry.rateLimited) {
-        entry.rateLimited = true
+      const wasLimited = entry.rateLimitedUntil > now
+      entry.rateLimitedUntil = now + this.rateLimitFlagMs
+      if (!wasLimited) {
         this.emit()
+        // Re-emit once the flag has lapsed so "Connected now" stops showing it.
+        const timer = setTimeout(() => {
+          if (this.sessions.get(entry.sessionId) === entry && entry.rateLimitedUntil <= Date.now())
+            this.emit()
+        }, this.rateLimitFlagMs + 50)
+        timer.unref?.()
       }
       return true
     }
@@ -660,12 +671,22 @@ export class DocumentMcpServer {
     return false
   }
 
+  /** Which document a call means. A run is bound to one document and cannot name another. */
   private resolveDocId(
     entry: McpSessionEntry,
     docId: string | undefined
   ): { ok: true; docId: string } | { ok: false; message: string } {
+    if (entry.identity.kind === 'run') {
+      const bound = entry.identity.binding.docId
+      if (docId && docId !== bound) {
+        return {
+          ok: false,
+          message: `This run is bound to document ${bound}; it cannot act on ${docId}.`
+        }
+      }
+      return { ok: true, docId: bound }
+    }
     if (docId) return { ok: true, docId }
-    if (entry.identity.kind === 'run') return { ok: true, docId: entry.identity.binding.docId }
     const open = this.registry.list()
     if (open.length === 1) return { ok: true, docId: open[0] }
     if (open.length === 0) return { ok: false, message: 'No document is open in CollabDoc.' }
@@ -705,7 +726,7 @@ export class DocumentMcpServer {
       name: entry.identity.name,
       color: colorForId(entry.identity.actorId),
       role: 'agent',
-      handle: slugify(entry.identity.name).replace(/_/g, '-').slice(0, 20)
+      handle: handleFromName(entry.identity.name)
     }
   }
 
@@ -713,6 +734,24 @@ export class DocumentMcpServer {
     if (entry.identity.kind === 'run') return entry.identity.binding.role
     const stored = this.config?.clients[entry.identity.name]
     if (stored === 'writer' || stored === 'reviewer') return stored
+    return null
+  }
+
+  /** The error payload a not-yet-approved or blocked client gets, or null when it may proceed. */
+  private refusalOf(
+    entry: McpSessionEntry
+  ): { ok: false; error: 'forbidden'; message: string } | null {
+    const consent = this.consentOf(entry)
+    if (consent === 'pending') {
+      return {
+        ok: false,
+        error: 'forbidden',
+        message: 'Awaiting approval in CollabDoc. Ask the person to allow this client, then retry.'
+      }
+    }
+    if (consent === 'blocked') {
+      return { ok: false, error: 'forbidden', message: 'This client is blocked in CollabDoc.' }
+    }
     return null
   }
 
@@ -727,6 +766,15 @@ export class DocumentMcpServer {
       this.emit()
     }
     return 'pending'
+  }
+
+  /** The documents a session may read as resources: none before consent, the run's own for a run. */
+  private readableDocs(entry: McpSessionEntry): Array<{ docId: string; title: string }> {
+    if (this.refusalOf(entry)) return []
+    const docs = this.openDocs()
+    if (entry.identity.kind !== 'run') return docs
+    const bound = entry.identity.binding.docId
+    return docs.filter((d) => d.docId === bound)
   }
 
   private openDocs(): Array<{ docId: string; title: string }> {
@@ -769,11 +817,10 @@ function header(req: IncomingMessage, name: string): string | undefined {
   return Array.isArray(value) ? value[0] : value
 }
 
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false
-  let diff = 0
-  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
-  return diff === 0
+function tokensMatch(presented: string, expected: string): boolean {
+  const a = Buffer.from(presented, 'utf8')
+  const b = Buffer.from(expected, 'utf8')
+  return a.length === b.length && timingSafeEqual(a, b)
 }
 
 async function readJson(req: IncomingMessage): Promise<unknown> {

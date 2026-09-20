@@ -182,7 +182,9 @@ if (!gotTheLock) {
       onState: broadcastMcpState,
       log: (message, detail) => console.log(`[collabdoc] ${message}`, detail ?? '')
     })
-    const secrets = new SecretStore(userData, safeStorage)
+    const secrets = new SecretStore(userData, safeStorage, (message, detail) =>
+      console.warn(`[collabdoc] ${message}`, detail ?? '')
+    )
     const sources = new McpSourceStore({
       userData,
       secrets,
@@ -273,9 +275,9 @@ if (!gotTheLock) {
     quitting = true
     void Promise.all([
       persist?.flushAll() ?? Promise.resolve(),
-      // Kill every CLI run and its MCP sessions before the documents go away (AC-17.5).
-      agents?.dispose() ?? Promise.resolve(),
-      mcpServer?.stop() ?? Promise.resolve()
+      // Kill every CLI run (waiting for SIGTERM → SIGKILL to land) and its MCP sessions
+      // before the documents go away (AC-17.5).
+      (agents?.dispose() ?? Promise.resolve()).then(() => mcpServer?.stop())
     ])
       .catch((error) => console.warn('[collabdoc] flush before quit failed', error))
       .finally(() => {

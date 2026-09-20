@@ -49,6 +49,7 @@ function job(overrides: Partial<CliRunJob> = {}): CliRunJob {
     maxTurns: 6,
     timeoutMs: 20_000,
     doc: {
+      name: 'collabdoc',
       url: 'http://127.0.0.1:1/mcp',
       headers: { Authorization: 'Bearer secret-token-0123456789' }
     },
@@ -182,6 +183,15 @@ describe('CliBackend · run', () => {
     expect(outcome.status).toBe('error')
     expect(outcome.error?.kind).toBe('auth')
     expect(outcome.error?.stderrTail[0]).toMatch(/Not logged in/)
+  })
+
+  it('running out of turns is `limit` even when the CLI exits non-zero', async () => {
+    const { backend: cli } = await backend()
+    process.env.FAKE_CLI_MODE = 'max-turns'
+    const outcome = await cli.run(job(), { onEvent: () => undefined })
+    expect(outcome.status).toBe('limit')
+    expect(outcome.exitCode).toBe(1)
+    expect(outcome.error).toMatchObject({ kind: 'exit', message: 'error_max_turns' })
   })
 
   it('the wall clock stops a hung run with `limit` / timeout', async () => {

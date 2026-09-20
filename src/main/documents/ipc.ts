@@ -11,13 +11,13 @@ import { mkdir, readFile, writeFile } from 'fs/promises'
 import { basename, dirname, extname, join } from 'path'
 import { homedir } from 'os'
 import type { FrameLink } from '@core/link'
-import { CollabdocError, isCollabdocPath } from '@core/collabdoc-file'
+import { isCollabdocPath } from '@core/collabdoc-file'
 import { buildDocx } from '@core/docx'
 import { normalizeDocxConfig } from '../../shared/docx-config'
+import { fail } from '../ipc-fail'
 import { atomicWriteFile } from '../persist/atomic'
 import { DocumentRegistry, type RegistryDebugEntry } from '@core/registry'
 import { base64ToBytes, bytesToBase64 } from '../../shared/base64'
-import { PersistAssetError } from '../persist/assets'
 import { defaultCollabdocPath } from '../persist/paths'
 import type { DocumentStore, PersistListing, PersistState } from '../persist/store'
 
@@ -89,13 +89,6 @@ function subscriberId(event: IpcMainInvokeEvent, docId: string): string {
 
 function windowOf(event: IpcMainInvokeEvent): BrowserWindow | null {
   return BrowserWindow.fromWebContents(event.sender)
-}
-
-function fail(error: unknown): { ok: false; error: string } {
-  if (error instanceof CollabdocError || error instanceof PersistAssetError) {
-    return { ok: false, error: error.message }
-  }
-  return { ok: false, error: error instanceof Error ? error.message : 'Something went wrong' }
 }
 
 function titleFromFileName(filePath: string): string {

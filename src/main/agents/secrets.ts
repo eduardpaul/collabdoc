@@ -28,11 +28,24 @@ export class SecretStore {
   private loaded = false
   /** True when the file is stored without OS encryption. */
   unencrypted = false
+  /**
+   * Set when the file exists but could not be read (keyring unavailable,
+   * different machine key, corrupt). Writes are refused while it is set so a
+   * save cannot replace every stored secret with an empty map; load is retried
+   * on the next call in case the keyring comes back.
+   */
+  private unreadable: string | null = null
 
   constructor(
     private readonly userData: string,
-    private readonly cipher: SecretCipher
+    private readonly cipher: SecretCipher,
+    private readonly log: (message: string, detail?: unknown) => void = () => {}
   ) {}
+
+  /** Why the store is read-only right now, or null when it is usable. */
+  get problem(): string | null {
+    return this.unreadable
+  }
 
   get file(): string {
     return join(this.userData, 'secrets.bin')
@@ -40,25 +53,40 @@ export class SecretStore {
 
   async load(): Promise<void> {
     if (this.loaded) return
-    this.loaded = true
     let raw: Buffer
     try {
       raw = await readFile(this.file)
     } catch {
+      // No file yet: an empty store that may be written.
+      this.loaded = true
+      return
+    }
+    if (raw.length === 0) {
+      this.loaded = true
       return
     }
     try {
       if (raw.subarray(0, ENC_TAG.length).equals(ENC_TAG)) {
         this.values = parse(this.cipher.decryptString(raw.subarray(ENC_TAG.length)))
-        // Re-encrypt if we could not have produced this (e.g. keyring came back).
       } else if (raw.subarray(0, PLAIN_TAG.length).equals(PLAIN_TAG)) {
         this.values = parse(raw.subarray(PLAIN_TAG.length).toString('utf8'))
         this.unencrypted = true
-        if (this.cipher.isEncryptionAvailable()) await this.save()
+      } else {
+        throw new Error('unknown secrets.bin format')
       }
-    } catch {
-      // Unreadable (different machine key, corrupt file): start empty rather than crash.
+      this.loaded = true
+      this.unreadable = null
+      // Re-encrypt if we could not have produced this (e.g. keyring came back).
+      if (this.unencrypted && this.cipher.isEncryptionAvailable()) await this.save()
+    } catch (error) {
       this.values = new Map()
+      const detail = error instanceof Error ? error.message : String(error)
+      const message =
+        `The stored secrets could not be read (${detail}). Existing secrets are kept untouched; ` +
+        'source headers and env values cannot be changed until the OS keyring is available again ' +
+        `or ${this.file} is removed.`
+      if (this.unreadable !== message) this.log('secret store unreadable', detail)
+      this.unreadable = message
     }
   }
 
@@ -75,18 +103,18 @@ export class SecretStore {
   }
 
   async set(key: string, value: string): Promise<void> {
-    await this.load()
+    await this.writable()
     this.values.set(key, value)
     await this.save()
   }
 
   async delete(key: string): Promise<void> {
-    await this.load()
+    await this.writable()
     if (this.values.delete(key)) await this.save()
   }
 
   async deletePrefix(prefix: string): Promise<void> {
-    await this.load()
+    await this.writable()
     let changed = false
     for (const key of [...this.values.keys()]) {
       if (key.startsWith(prefix)) {
@@ -95,6 +123,12 @@ export class SecretStore {
       }
     }
     if (changed) await this.save()
+  }
+
+  /** Load, then refuse to go on when the file on disk holds secrets we cannot see. */
+  private async writable(): Promise<void> {
+    await this.load()
+    if (this.unreadable) throw new Error(this.unreadable)
   }
 
   private async save(): Promise<void> {

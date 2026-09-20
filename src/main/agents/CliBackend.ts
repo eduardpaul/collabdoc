@@ -1,4 +1,5 @@
-import { execFile, spawn, type ChildProcess } from 'child_process'
+import { execFile, type ChildProcess } from 'child_process'
+import crossSpawn from 'cross-spawn'
 import { access, mkdir, readdir, rm, writeFile } from 'fs/promises'
 import { constants as fsConstants } from 'fs'
 import { homedir } from 'os'
@@ -15,7 +16,8 @@ export type CliRunJob = {
   systemPrompt: string
   maxTurns: number
   timeoutMs: number
-  doc: { url: string; headers: Record<string, string> }
+  /** The document server as the CLI should register it; `name` prefixes its tools. */
+  doc: { name: string; url: string; headers: Record<string, string> }
   sources: SourceEntry[]
   signal: AbortSignal
 }
@@ -49,7 +51,10 @@ export type CliBackendOptions = {
 }
 
 const PROBE_TIMEOUT_MS = 15_000
+const PROBE_OUTPUT_CAP = 4 * 1024 * 1024
 const KILL_GRACE_MS = 1_000
+/** A CLI whose result says it ran out of turns stopped for a limit, whatever its exit code. */
+const MAX_TURNS_RE = /max_turns|max turns|turn limit/i
 /** Files a run writes that carry the document token or source secrets. */
 const SECRET_FILES = ['mcp.json', '.grok/config.toml', '.gemini/settings.json']
 
@@ -218,7 +223,9 @@ export class CliBackend {
       let cancelledByUser = false
       let child: ChildProcess
       try {
-        child = spawn(binary, plan.args, {
+        // cross-spawn runs npm's `.cmd` shims through cmd.exe with escaped arguments;
+        // Node itself refuses to spawn them without a shell (EINVAL).
+        child = crossSpawn(binary, plan.args, {
           cwd,
           env,
           stdio: [plan.stdin === null ? 'ignore' : 'pipe', 'pipe', 'pipe'],
@@ -311,6 +318,23 @@ export class CliBackend {
           })
           return
         }
+        const detail = resultEvent?.detail ?? ''
+        if (MAX_TURNS_RE.test(detail) || MAX_TURNS_RE.test(errorEvent?.message ?? '')) {
+          resolve({
+            status: 'limit',
+            exitCode: code,
+            stderrTail,
+            error: {
+              kind: 'exit',
+              message: resultEvent?.detail ?? errorEvent?.message ?? 'The CLI ran out of turns.',
+              stderrTail,
+              exitCode: code
+            },
+            command,
+            cwd
+          })
+          return
+        }
         if (code !== 0) {
           const authLike = /auth|login|sign in|unauthori[sz]ed|credential|401|expired/i.test(
             `${stderrTail.join('\n')}\n${resultEvent?.detail ?? ''}\n${errorEvent?.message ?? ''}`
@@ -334,12 +358,16 @@ export class CliBackend {
           return
         }
         if (resultEvent?.isError) {
-          const detail = resultEvent.detail ?? 'The CLI reported an error.'
           resolve({
-            status: /max_turns|max turns|turn limit/i.test(detail) ? 'limit' : 'error',
+            status: 'error',
             exitCode: code,
             stderrTail,
-            error: { kind: 'exit', message: detail, stderrTail, exitCode: code },
+            error: {
+              kind: 'exit',
+              message: resultEvent.detail ?? 'The CLI reported an error.',
+              stderrTail,
+              exitCode: code
+            },
             command,
             cwd
           })
@@ -373,33 +401,47 @@ export class CliBackend {
     return findBinary(binary, this.options.extraPathDirs ?? [])
   }
 
+  /** Run a short command to completion (version/auth probes, pre/post-run steps). */
   private exec(
     file: string,
     args: string[],
     cwd?: string,
     env?: NodeJS.ProcessEnv
   ): Promise<{ code: number | null; stdout: string; stderr: string }> {
+    const timeoutMs = this.options.probeTimeoutMs ?? PROBE_TIMEOUT_MS
     return new Promise((resolve) => {
-      execFile(
-        file,
-        args,
-        {
+      let child: ChildProcess
+      try {
+        child = crossSpawn(file, args, {
           cwd,
           env: env ?? mergeEnv({}),
-          timeout: this.options.probeTimeoutMs ?? PROBE_TIMEOUT_MS,
-          maxBuffer: 4 * 1024 * 1024,
+          stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true
-        },
-        (error, stdout, stderr) => {
-          const code =
-            error && typeof (error as { code?: unknown }).code === 'number'
-              ? ((error as { code: number }).code as number)
-              : error
-                ? 1
-                : 0
-          resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') })
-        }
-      )
+        })
+      } catch (error) {
+        resolve({ code: 1, stdout: '', stderr: error instanceof Error ? error.message : '' })
+        return
+      }
+      let stdout = ''
+      let stderr = ''
+      let settled = false
+      const cap = (text: string, chunk: string): string =>
+        text.length > PROBE_OUTPUT_CAP ? text : text + chunk
+      child.stdout?.setEncoding('utf8').on('data', (chunk: string) => (stdout = cap(stdout, chunk)))
+      child.stderr?.setEncoding('utf8').on('data', (chunk: string) => (stderr = cap(stderr, chunk)))
+      const timer = setTimeout(() => {
+        stderr += `\n(timed out after ${Math.round(timeoutMs / 1000)} s)`
+        killProcessTree(child, KILL_GRACE_MS)
+      }, timeoutMs)
+      const done = (code: number | null, error?: Error): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        if (error) stderr += `\n${error.message}`
+        resolve({ code: error ? 1 : (code ?? 1), stdout, stderr })
+      }
+      child.once('error', (error) => done(null, error))
+      child.once('close', (code) => done(code))
     })
   }
 }

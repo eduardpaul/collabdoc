@@ -62,12 +62,8 @@ export function BackendsTab(): React.JSX.Element {
   const detectOne = async (id: BackendId): Promise<void> => {
     setBusy(id)
     const result = await window.api?.agents.detect(id)
-    if (result?.ok) {
-      dispatch({
-        type: 'set-backends',
-        backends: [...state.backends.filter((b) => b.id !== id), result.backend]
-      })
-    }
+    // Merge one result; other backends may have reported in while this probe ran.
+    if (result?.ok) dispatch({ type: 'set-backend', backend: result.backend })
     setBusy(null)
   }
 
@@ -82,10 +78,7 @@ export function BackendsTab(): React.JSX.Element {
     const result = await window.api?.agents.setCustomCli(custom)
     if (result?.ok) {
       setCustom(result.config)
-      dispatch({
-        type: 'set-backends',
-        backends: [...state.backends.filter((b) => b.id !== 'custom-cli'), result.backend]
-      })
+      dispatch({ type: 'set-backend', backend: result.backend })
       dispatch({ type: 'notice', message: 'Custom CLI saved' })
     } else if (result) {
       dispatch({ type: 'notice', message: result.error })

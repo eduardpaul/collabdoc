@@ -8,8 +8,8 @@ export type PromptContext = {
   docId: string
   /** MCP server name the CLI sees; tools are `<name>__<tool>` or `mcp__<name>__<tool>`. */
   serverName: string
-  /** Attached external sources by MCP server name, with a one-line purpose each. */
-  sources: Array<{ name: string; label: string }>
+  /** Attached external sources by MCP server name, a one-line purpose, and the tools allowed (null = all). */
+  sources: Array<{ name: string; label: string; tools: string[] | null }>
   maxTurns: number
 }
 
@@ -59,11 +59,15 @@ export function buildSystemPrompt(ctx: PromptContext): string {
     lines.push('', `Skills to lean on: ${persona.skills.join(', ')}.`)
   }
   if (ctx.sources.length) {
+    const described = ctx.sources.map((s) => {
+      const only = s.tools ? `; only ${s.tools.join(', ')}` : ''
+      return `"${s.name}" (${s.label}${only})`
+    })
     lines.push(
       '',
-      `Knowledge sources you may consult (read-only MCP servers): ${ctx.sources
-        .map((s) => `"${s.name}" (${s.label})`)
-        .join(', ')}. When you use one, cite the source URL in the text you insert as a link.`
+      `Knowledge sources you may consult (read-only MCP servers): ${described.join(', ')}. ` +
+        'Other tools of a source are refused. When you use one, cite the source URL in the text ' +
+        'you insert as a link.'
     )
   }
   lines.push(

@@ -19,6 +19,7 @@ function ctx(overrides: Partial<LaunchContext> = {}): LaunchContext {
     timeoutMs: 180_000,
     cwd: '/userData/agents/agent_writer/work',
     doc: {
+      name: 'collabdoc',
       url: 'http://127.0.0.1:4242/mcp',
       headers: { Authorization: `Bearer ${TOKEN}`, 'X-CollabDoc-Run': 'run_1' }
     },
@@ -65,6 +66,9 @@ describe('CLI profiles · launch plans', () => {
   it('grok: trusts the scratch folder, keeps one harmless built-in, writes the project TOML', () => {
     const plan = CLI_PROFILES.grok.launch(ctx())
     expect(plan.args[0]).toBe('--trust')
+    // dontAsk + allow rules: only the document server (and sources' allowed tools) may be called.
+    expect(plan.args[plan.args.indexOf('--permission-mode') + 1]).toBe('dontAsk')
+    expect(plan.args.filter((_, i) => plan.args[i - 1] === '--allow')).toEqual(['mcp__collabdoc'])
     expect(plan.args[plan.args.indexOf('--output-format') + 1]).toBe('streaming-messages-json')
     expect(plan.args[plan.args.indexOf('--cwd') + 1]).toBe('/userData/agents/agent_writer/work')
     expect(plan.args[plan.args.indexOf('--tools') + 1]).toBe('todo_write')
@@ -95,6 +99,13 @@ describe('CLI profiles · launch plans', () => {
       ]
     ])
     expect(plan.postRun).toEqual([['mcp', 'remove', 'collabdoc']])
+    // The runtime names the servers per run so the user's own `collabdoc` entry is untouched.
+    expect(CLI_PROFILES.antigravity.runSuffix!('run_abc123def456')).toBe('_abc123de')
+    const named = CLI_PROFILES.antigravity.launch(
+      ctx({ doc: { ...ctx().doc, name: 'collabdoc_abc123de' } })
+    )
+    expect(named.preRun[0].slice(-2)).toEqual(['collabdoc_abc123de', 'http://127.0.0.1:4242/mcp'])
+    expect(named.postRun).toEqual([['mcp', 'remove', 'collabdoc_abc123de']])
     expect(plan.args[plan.args.indexOf('--output-format') + 1]).toBe('stream-json')
     expect(plan.args[plan.args.indexOf('--print-timeout') + 1]).toBe('180s')
     expect(plan.args).toContain('--sandbox')
@@ -159,11 +170,27 @@ describe('CLI profiles · launch plans', () => {
       args: ['-y', 'fs-server', '/notes'],
       env: { KEY: 'v' }
     })
-    const grok = CLI_PROFILES.grok.launch(ctx({ sources })).files[0].content
+    const grokPlan = CLI_PROFILES.grok.launch(ctx({ sources }))
+    const grok = grokPlan.files[0].content
     expect(grok).toContain(
       '[mcp_servers.src_notes]\ncommand = "npx"\nargs = ["-y", "fs-server", "/notes"]'
     )
     expect(grok).toContain('[mcp_servers.src_notes.env]\nKEY = "v"')
+    expect(grokPlan.args.filter((_, i) => grokPlan.args[i - 1] === '--allow')).toEqual([
+      'mcp__collabdoc',
+      'mcp__src_learn',
+      'mcp__src_notes__read_file'
+    ])
+    const gemini = JSON.parse(CLI_PROFILES.gemini.launch(ctx({ sources })).files[0].content) as {
+      mcpServers: Record<string, { includeTools?: string[] }>
+    }
+    expect(gemini.mcpServers.src_notes.includeTools).toEqual(['read_file'])
+    expect(gemini.mcpServers.src_learn.includeTools).toBeUndefined()
+    const codexPlan = CLI_PROFILES.codex.launch(ctx({ sources }))
+    expect(codexPlan.args).toContain('mcp_servers.src_notes.enabled_tools=["read_file"]')
+    expect(codexPlan.args.some((a) => a.startsWith('mcp_servers.src_learn.enabled_tools'))).toBe(
+      false
+    )
     const agy = CLI_PROFILES.antigravity.launch(ctx({ sources }))
     expect(agy.preRun).toHaveLength(3)
     expect(agy.preRun[2]).toEqual([
@@ -181,6 +208,22 @@ describe('CLI profiles · launch plans', () => {
       '/notes'
     ])
     expect(agy.postRun.map((a) => a[2])).toEqual(['collabdoc', 'src_learn', 'src_notes'])
+  })
+
+  it('every profile says whether it can hold a source to its tool allowlist (AC-18.2)', () => {
+    expect(
+      Object.fromEntries(Object.values(CLI_PROFILES).map((p) => [p.id, p.restrictsSourceTools]))
+    ).toEqual({
+      'claude-code': true,
+      grok: true,
+      gemini: true,
+      codex: true,
+      antigravity: false
+    })
+    expect(
+      customProfile({ command: 'x {prompt}', parser: 'plain', mcpConfigFormat: 'none' })
+        .restrictsSourceTools
+    ).toBe(false)
   })
 })
 
@@ -220,6 +263,17 @@ describe('custom CLI template', () => {
     }).launch(ctx())
     expect(none.files).toEqual([])
     expect(none.args).toEqual(['http://127.0.0.1:4242/mcp'])
+  })
+
+  it('substitutes verbatim: `$` patterns and placeholder names inside the prompt survive', () => {
+    const profile = customProfile({
+      command: 'mytool -p "{prompt}" --cwd {cwd}',
+      parser: 'plain',
+      mcpConfigFormat: 'none'
+    })
+    const prompt = "Change the price to $$5 per seat; $& and $' stay; keep {cwd} literal"
+    const plan = profile.launch(ctx({ prompt }))
+    expect(plan.args).toEqual(['-p', prompt, '--cwd', '/userData/agents/agent_writer/work'])
   })
 })
 

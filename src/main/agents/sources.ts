@@ -172,8 +172,9 @@ export class McpSourceStore {
 
   async remove(id: string): Promise<void> {
     await this.load()
-    this.sources = this.sources.filter((s) => s.id !== id)
+    // Secrets first: when the secret store refuses (unreadable), the source stays listed.
     await this.secrets.deletePrefix(`source:${id}:`)
+    this.sources = this.sources.filter((s) => s.id !== id)
     await this.save()
   }
 

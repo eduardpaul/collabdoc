@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdtemp, rm, symlink } from 'fs/promises'
+import { mkdtemp, readFile, rm, symlink } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -18,6 +18,7 @@ const FAKE = resolve(__dirname, '../../../resources/test/fake-cli.js')
 type Harness = {
   runtime: AgentRuntime
   mcp: DocumentMcpServer
+  sources: McpSourceStore
   registry: DocumentRegistry
   docId: string
   blockId: string
@@ -32,11 +33,18 @@ afterEach(async () => {
 })
 
 async function harness(
-  options: { maxParallel?: number; maxQueue?: number } = {}
+  options: {
+    maxParallel?: number
+    maxQueue?: number
+    historyPerDocument?: number
+    /** Which CLI binaries the stub stands in for (default: claude only). */
+    binaries?: string[]
+  } = {}
 ): Promise<Harness> {
   const userData = await mkdtemp(join(tmpdir(), 'collabdoc-runtime-'))
   const bin = await mkdtemp(join(tmpdir(), 'collabdoc-bin-'))
-  await symlink(FAKE, join(bin, 'claude'))
+  const binaries = options.binaries ?? ['claude']
+  for (const name of binaries) await symlink(FAKE, join(bin, name))
   const registry = new DocumentRegistry({ closeDelayMs: Number.POSITIVE_INFINITY })
   const entry = registry.create({ title: 'Tides' })
   const blockId = addParagraph(human(entry.hub, 'ana'), 'The quick brown fox jumps.')
@@ -54,10 +62,14 @@ async function harness(
     onEvent: (event) => events.push(event),
     // Only the stub is "installed": the machine's real CLIs must not be probed by tests.
     backendOptions: {
-      resolveBinary: async (binary) => (binary === 'claude' ? join(bin, 'claude') : null),
+      resolveBinary: async (binary) => (binaries.includes(binary) ? join(bin, binary) : null),
       killGraceMs: 300
     },
-    limits: { maxParallel: options.maxParallel ?? 2, maxQueue: options.maxQueue ?? 8 }
+    limits: {
+      maxParallel: options.maxParallel ?? 2,
+      maxQueue: options.maxQueue ?? 8,
+      ...(options.historyPerDocument ? { historyPerDocument: options.historyPerDocument } : {})
+    }
   })
   await runtime.init()
   cleanups.push(async () => {
@@ -67,7 +79,7 @@ async function harness(
     await rm(userData, { recursive: true, force: true })
     await rm(bin, { recursive: true, force: true })
   })
-  return { runtime, mcp, registry, docId: entry.docId, blockId, events, userData }
+  return { runtime, mcp, sources, registry, docId: entry.docId, blockId, events, userData }
 }
 
 const nova: RunPersona = {
@@ -166,6 +178,10 @@ describe('AgentRuntime · reviewer on a backend (AC-17.4)', () => {
     expect(record.writes).toBe(1)
     const hub = h.registry.get(h.docId)!.hub
     expect(textOf(human(hub, 'ana'), h.blockId)).toBe('The quick brown fox jumps.')
+    // Text events say whether they extend the previous entry, so the renderer merges like main.
+    const text = h.events.find((e): e is Extract<RunEvent, { type: 'text' }> => e.type === 'text')
+    expect(text).toMatchObject({ delta: false, text: expect.stringMatching(/leaving a comment/) })
+    expect(record.transcript).toEqual([text!.text])
   })
 })
 
@@ -215,6 +231,31 @@ describe('AgentRuntime · cancel, errors and scheduling', () => {
     expect(status(c.runId)).toBe('working')
   })
 
+  it('dispose waits for a CLI that ignores SIGTERM to be killed, so quit leaves no orphan (AC-17.5)', async () => {
+    const h = await harness()
+    process.env.FAKE_CLI_MODE = 'sleep'
+    const queued = h.runtime.run(request(h))
+    await new Promise((r) => setTimeout(r, 500))
+    const childPid = Number(
+      await readFile(join(h.userData, 'agents', 'agent_writer', 'work', 'child.pid'), 'utf8')
+    )
+    await h.runtime.dispose()
+    expect(h.runtime.getRun(queued.runId)!.status).toBe('cancelled')
+    expect(() => process.kill(childPid, 0)).toThrow()
+    expect(h.mcp.sessionsForRun(queued.runId)).toBe(0)
+  })
+
+  it('keeps only the last historyPerDocument finished runs; live ones always stay', async () => {
+    const h = await harness({ historyPerDocument: 2 })
+    process.env.FAKE_CLI_MODE = 'ok'
+    const ids: string[] = []
+    for (let i = 0; i < 4; i += 1)
+      ids.push((await untilDone(h, h.runtime.run(request(h)).runId)).runId)
+    const kept = h.runtime.listRuns(h.docId).map((r) => r.runId)
+    expect(kept).toEqual([ids[3], ids[2]])
+    expect(h.runtime.getRun(ids[0])).toBeNull()
+  })
+
   it('one agent runs one turn at a time and the 9th queued job is rejected (AC-12.4)', async () => {
     const h = await harness({ maxParallel: 2, maxQueue: 8 })
     process.env.FAKE_CLI_MODE = 'sleep'
@@ -231,5 +272,38 @@ describe('AgentRuntime · cancel, errors and scheduling', () => {
     h.runtime.cancelAgent(nova.id)
     await untilDone(h, first.runId)
     expect(h.runtime.listRuns(h.docId).filter((r) => r.status === 'cancelled')).toHaveLength(9)
+  })
+})
+
+describe('AgentRuntime · CLIs with one shared MCP config (antigravity)', () => {
+  it('registers per-run server names and removes only those; a tool-pinned source is left out with a warning', async () => {
+    const h = await harness({ binaries: ['agy'] })
+    process.env.FAKE_CLI_MODE = 'ok'
+    const source = await h.sources.upsert({
+      label: 'My notes',
+      preset: 'local-folder',
+      transport: 'stdio',
+      args: [h.userData],
+      enabled: true
+    })
+    const queued = h.runtime.run(request(h, { backendId: 'antigravity', sourceIds: [source.id] }))
+    const record = await untilDone(h, queued.runId)
+    expect(record.status).toBe('done')
+    const suffix = `_${queued.runId.replace(/^run_/, '').slice(0, 8)}`
+    const log = await readFile(
+      join(h.userData, 'agents', 'agent_writer', 'work', 'mcp-calls.log'),
+      'utf8'
+    )
+    const lines = log.trim().split('\n')
+    expect(lines[0]).toMatch(new RegExp(`^mcp add --type http .* collabdoc${suffix} http://`))
+    expect(lines.at(-1)).toBe(`mcp remove collabdoc${suffix}`)
+    // Never the bare name the user registers for their own interactive agy session.
+    expect(lines.some((l) => / collabdoc /.test(l) || l.endsWith(' collabdoc'))).toBe(false)
+    // agy cannot pin a source to its read tools, so the Local folder source is not attached (AC-18.2).
+    expect(log).not.toContain('src_my_notes')
+    const warning = h.events.find(
+      (e): e is Extract<RunEvent, { type: 'warning' }> => e.type === 'warning'
+    )
+    expect(warning?.message).toMatch(/My notes skipped: Antigravity CLI \(agy\) cannot limit/)
   })
 })
