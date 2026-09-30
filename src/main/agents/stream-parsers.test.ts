@@ -105,6 +105,31 @@ describe('stream parsers', () => {
     expect(events.at(-1)).toEqual({ type: 'result', text: 'Done.', isError: false, detail: null })
   })
 
+  it('announces a Codex tool once across started/completed events', () => {
+    const item = {
+      id: 'call_1',
+      type: 'mcp_tool_call',
+      server: 'src_notes',
+      tool: 'read_file',
+      arguments: { path: 'notes.md' }
+    }
+    const events = feed(createParser('codex'), [
+      JSON.stringify({ type: 'item.started', item }),
+      JSON.stringify({
+        type: 'item.completed',
+        item: { ...item, status: 'failed', error: { message: 'Denied' } }
+      }),
+      JSON.stringify({ type: 'turn.failed', error: { message: 'Upstream failed' } })
+    ])
+    expect(events.filter((e) => e.type === 'tool_use')).toHaveLength(1)
+    expect(events[1]).toMatchObject({ type: 'tool_result', id: 'call_1', isError: true })
+    expect(events.at(-1)).toMatchObject({
+      type: 'result',
+      isError: true,
+      detail: 'Upstream failed'
+    })
+  })
+
   it('plain output becomes the result text', () => {
     const events = feed(createParser('plain'), ['first line', 'second line'])
     expect(events.at(-1)).toEqual({

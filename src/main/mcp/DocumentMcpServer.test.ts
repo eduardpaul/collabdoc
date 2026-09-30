@@ -432,6 +432,11 @@ describe('DocumentMcpServer · limits and lifecycle (AC-16.6, AC-16.7, AC-16.9)'
     await expect(connect(h.server, { token: old })).rejects.toThrow()
     expect(h.server.setupCommand('claude-code')).toContain(h.server.token!)
     expect(h.server.setupCommand('claude-code')).not.toContain(old)
+    const codex = h.server.setupCommand('codex')
+    expect(codex).toContain('--bearer-token-env-var COLLABDOC_MCP_TOKEN')
+    expect(codex).toContain(h.server.token!)
+    expect(codex).not.toContain(old)
+    expect(codex).not.toContain('--bearer-token ')
   })
 
   it('serves the document as a Markdown resource and an outline', async () => {

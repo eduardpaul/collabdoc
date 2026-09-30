@@ -226,3 +226,22 @@ async function waitGone(pid: number): Promise<void> {
   }
   throw new Error(`process ${pid} still alive`)
 }
+
+describe('CliBackend · Codex detection', () => {
+  it('refuses versions below the verified minimum and explains sign-in failures', async () => {
+    const userData = await tmp('collabdoc-codex-')
+    const cli = new CliBackend(CLI_PROFILES.codex, { userData, resolveBinary: async () => FAKE })
+    process.env.FAKE_CLI_VERSION = '0.158.0'
+    expect(await cli.detect(true)).toMatchObject({
+      available: false,
+      reason: expect.stringContaining('0.159.2')
+    })
+    process.env.FAKE_CLI_VERSION = '0.159.2'
+    process.env.FAKE_CLI_LOGGED_OUT = '1'
+    expect(await cli.detect(true)).toMatchObject({
+      available: false,
+      auth: 'missing',
+      reason: expect.stringContaining('codex login')
+    })
+  })
+})

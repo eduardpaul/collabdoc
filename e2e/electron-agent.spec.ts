@@ -13,6 +13,10 @@ import { _electron as electron, expect, test } from '@playwright/test'
  */
 test.skip(!process.env.COLLABDOC_ELECTRON_E2E, 'opt-in: needs a built app and a signed-in CLI')
 
+test.setTimeout(360_000)
+
+const backendId = process.env.COLLABDOC_ELECTRON_BACKEND ?? 'claude-code'
+
 test('a Writer persona on a real CLI backend drafts a paragraph into the open document', async () => {
   const userData = await mkdtemp(join(tmpdir(), 'collabdoc-electron-'))
   await writeFile(
@@ -34,35 +38,42 @@ test('a Writer persona on a real CLI backend drafts a paragraph into the open do
   }
   delete env.ELECTRON_RUN_AS_NODE
   const app = await electron.launch({ args: ['.'], env, timeout: 60_000 })
-  const page = await app.firstWindow()
-  await page.getByTestId('new-document').click()
-  await page.getByTestId('editor-body').waitFor()
-  await page.getByTestId('editor-body').click()
-  await page.keyboard.type('Tides are the rise and fall of sea levels.')
+  app.process().stderr?.on('data', (data) => process.stderr.write(data))
+  app.process().stdout?.on('data', (data) => process.stdout.write(data))
+  try {
+    const page = await app.firstWindow()
+    await page.getByTestId('new-document').click()
+    await page.getByTestId('editor-body').waitFor()
+    await page.getByTestId('editor-body').click()
+    await page.keyboard.type('Tides are the rise and fall of sea levels.')
 
-  // Backends tab: the machine's CLIs are detected for real.
-  await page.getByRole('button', { name: 'Manage agents' }).click()
-  await page.getByRole('tab', { name: 'Backends' }).click()
-  await page.getByRole('button', { name: 'Detect all' }).click()
-  const dialog = page.getByRole('dialog')
-  await expect(dialog).toContainText(/signed in/, { timeout: 60_000 })
-  await expect(dialog).toContainText('Claude Code')
-  await page.getByRole('button', { name: 'Close' }).click()
+    // Backends tab: the machine's CLIs are detected for real.
+    await page.getByRole('button', { name: 'Manage agents' }).click()
+    await page.getByRole('tab', { name: 'Backends' }).click()
+    await page.getByRole('button', { name: 'Detect all' }).click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toContainText(/signed in/, { timeout: 60_000 })
+    await expect(dialog).toContainText(backendId === 'codex' ? 'Codex CLI' : 'Claude Code')
+    await page.getByRole('tab', { name: 'Agents', exact: true }).click()
+    await page.getByLabel('Runs on').first().selectOption(backendId)
+    await page.getByRole('button', { name: 'Close' }).click()
 
-  // Invite the Writer and ask.
-  const writer = page.locator('.agent-card').first()
-  await writer.getByRole('button', { name: 'Invite' }).click()
-  await page
-    .getByLabel('Ask an invited agent')
-    .fill(
-      'Insert exactly one short paragraph (two sentences) at the end explaining what causes tides. Do not change existing text.'
-    )
-  await page.getByRole('button', { name: /^Send to/ }).click()
-  await expect(writer).toContainText(/Queued|Working/, { timeout: 10_000 })
-  await expect(writer).toContainText(/Done · 1 edit/, { timeout: 240_000 })
-  await expect(page.getByTestId('editor-body')).toContainText(/Moon|gravit/i)
-  // Activity shows the run under the persona's name, not the CLI's.
-  await page.locator('.tabs--rail button', { hasText: 'Activity' }).click()
-  await expect(page.locator('.rail__body')).toContainText('Writer')
-  await app.close()
+    // Invite the Writer and ask.
+    const writer = page.locator('.agent-card').first()
+    await writer.getByRole('button', { name: 'Invite' }).click()
+    await page
+      .getByLabel('Ask an invited agent')
+      .fill(
+        'Insert exactly one short paragraph (two sentences) at the end explaining what causes tides. Do not change existing text.'
+      )
+    await page.getByRole('button', { name: /^Send to/ }).click()
+    await expect(writer).toContainText(/Queued|Working/, { timeout: 10_000 })
+    await expect(writer).toContainText(/Done · 1 edit/, { timeout: 240_000 })
+    await expect(page.getByTestId('editor-body')).toContainText(/Moon|gravit/i)
+    // Activity shows the run under the persona's name, not the CLI's.
+    await page.locator('.tabs--rail button', { hasText: 'Activity' }).click()
+    await expect(page.locator('.rail__body')).toContainText('Writer')
+  } finally {
+    await app.close()
+  }
 })

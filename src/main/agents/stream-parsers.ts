@@ -221,6 +221,7 @@ export class AntigravityParser implements StreamParser {
 export class CodexParser implements StreamParser {
   private sawResult = false
   private lastText = ''
+  private readonly announced = new Set<string>()
 
   push(line: string): ParsedEvent[] {
     const rec = parseLine(line)
@@ -248,12 +249,15 @@ export class CodexParser implements StreamParser {
             : itemType === 'command_execution'
               ? `command: ${str(item.command)}`
               : 'web_search'
-        if (type === 'item.started') {
-          return [{ type: 'tool_use', name, input: item.arguments ?? {}, id }]
-        }
+        const announce = id === null || !this.announced.has(id)
+        if (id !== null) this.announced.add(id)
+        const toolUse: ParsedEvent[] = announce
+          ? [{ type: 'tool_use', name, input: item.arguments ?? {}, id }]
+          : []
+        if (type === 'item.started') return toolUse
         const isError = item.status === 'failed' || Boolean(item.error)
         return [
-          { type: 'tool_use', name, input: item.arguments ?? {}, id },
+          ...toolUse,
           {
             type: 'tool_result',
             id,

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /* eslint-disable */
 /**
- * A stand-in for a CLI agent (Claude Code / grok shape) used by the backend
+ * A stand-in for a CLI agent (Claude Code / grok and Codex JSONL shapes) used by the backend
  * tests (AC-17.9). Behaviour is picked with FAKE_CLI_MODE:
  *
  *   ok            init → text → tool_use → result, exit 0
- *   mcp           connect to the --mcp-config server, read the outline and
+ *   mcp           connect using --mcp-config or Codex -c overrides, read the outline and
  *                 insert a paragraph, then result
  *   forbidden     like mcp but try replace_text (a reviewer will be refused)
  *   sleep         init, then hang (spawns a child too) until killed
@@ -30,6 +30,10 @@ if (args[0] === 'auth' && args[1] === 'status') {
   console.log(JSON.stringify({ loggedIn: process.env.FAKE_CLI_LOGGED_OUT ? false : true }))
   process.exit(0)
 }
+if (args[0] === 'login' && args[1] === 'status') {
+  console.error(process.env.FAKE_CLI_LOGGED_OUT ? 'Not logged in' : 'Logged in using ChatGPT')
+  process.exit(process.env.FAKE_CLI_LOGGED_OUT ? 1 : 0)
+}
 if (args[0] === 'mcp') {
   // `agy mcp add/remove` stand-in: record the call so tests can assert on it.
   fs.appendFileSync(path.join(process.cwd(), 'mcp-calls.log'), `${args.join(' ')}\n`)
@@ -41,8 +45,49 @@ function flag(name) {
   return i >= 0 ? args[i + 1] : undefined
 }
 
-const emit = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`)
-const prompt = flag('-p') || flag('--prompt') || ''
+const codex = args[0] === 'exec'
+const calls = new Map()
+const writeEvent = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`)
+const emit = (obj) => {
+  if (!codex) return writeEvent(obj)
+  if (obj.type === 'system') return writeEvent({ type: 'thread.started', thread_id: 'fake' })
+  if (obj.type === 'result') {
+    if (obj.result)
+      writeEvent({ type: 'item.completed', item: { type: 'agent_message', text: obj.result } })
+    return writeEvent(
+      obj.is_error
+        ? { type: 'turn.failed', error: { message: obj.subtype } }
+        : { type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } }
+    )
+  }
+  for (const block of obj.message?.content || []) {
+    if (block.type === 'text')
+      writeEvent({ type: 'item.completed', item: { type: 'agent_message', text: block.text } })
+    if (block.type === 'tool_use') {
+      const item = {
+        id: block.id,
+        type: 'mcp_tool_call',
+        server: 'collabdoc',
+        tool: block.name.replace('mcp__collabdoc__', ''),
+        arguments: block.input,
+        status: 'in_progress'
+      }
+      calls.set(block.id, item)
+      writeEvent({ type: 'item.started', item })
+    }
+    if (block.type === 'tool_result')
+      writeEvent({
+        type: 'item.completed',
+        item: {
+          ...calls.get(block.tool_use_id),
+          status: block.is_error ? 'failed' : 'completed',
+          result: block.content,
+          error: block.is_error ? { message: block.content } : null
+        }
+      })
+  }
+}
+const prompt = codex ? fs.readFileSync(0, 'utf8') : flag('-p') || flag('--prompt') || ''
 const init = () =>
   emit({
     type: 'system',
@@ -129,8 +174,30 @@ async function main() {
     case 'forbidden': {
       init()
       const configFile = flag('--mcp-config')
-      const config = JSON.parse(fs.readFileSync(path.resolve(configFile), 'utf8'))
-      const server = config.mcpServers.collabdoc
+      let server
+      if (codex) {
+        const overrides = args.filter((_, i) => args[i - 1] === '-c')
+        const url = JSON.parse(
+          overrides
+            .find((o) => o.startsWith('mcp_servers.collabdoc.url='))
+            .split('=')
+            .slice(1)
+            .join('=')
+        )
+        const headerTable = overrides.find((o) =>
+          o.startsWith('mcp_servers.collabdoc.http_headers=')
+        )
+        const headers = Object.fromEntries(
+          [...headerTable.matchAll(/([A-Za-z0-9_-]+) = ("(?:[^"\\]|\\.)*")/g)].map((m) => [
+            m[1],
+            JSON.parse(m[2])
+          ])
+        )
+        server = { url, headers }
+      } else {
+        const config = JSON.parse(fs.readFileSync(path.resolve(configFile), 'utf8'))
+        server = config.mcpServers.collabdoc
+      }
       const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
       const { StreamableHTTPClientTransport } =
         await import('@modelcontextprotocol/sdk/client/streamableHttp.js')

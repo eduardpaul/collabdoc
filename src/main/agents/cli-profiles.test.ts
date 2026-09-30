@@ -137,9 +137,16 @@ describe('CLI profiles · launch plans', () => {
       '--skip-git-repo-check'
     ])
     const overrides = plan.args.filter((_, i) => plan.args[i - 1] === '-c')
-    expect(overrides[0]).toBe('mcp_servers.collabdoc.url="http://127.0.0.1:4242/mcp"')
-    expect(overrides[1]).toContain(`Authorization = "Bearer ${TOKEN}"`)
-    expect(CLI_PROFILES.codex.verified).toBe(false)
+    expect(overrides).toContain('mcp_servers.collabdoc.url="http://127.0.0.1:4242/mcp"')
+    expect(overrides.some((o) => o.includes(`Authorization = "Bearer ${TOKEN}"`))).toBe(true)
+    expect(CLI_PROFILES.codex.verified).toBe(true)
+    expect(plan.args).toContain('--ignore-user-config')
+    expect(plan.args).toContain('--ignore-rules')
+    expect(plan.args).toContain('--ephemeral')
+    expect(overrides).toContain('approval_policy="never"')
+    expect(overrides).toContain('mcp_servers.collabdoc.default_tools_approval_mode="approve"')
+    expect(plan.args.at(-1)).toBe('-')
+    expect(plan.stdin).toContain(ctx().prompt)
   })
 
   it('sources ride along as extra servers in every dialect', () => {

@@ -331,8 +331,8 @@ const codex: CliProfile = {
   label: 'Codex CLI',
   binary: 'codex',
   installHint: 'npm install -g @openai/codex',
-  minVersion: '0.50.0',
-  verified: false,
+  minVersion: '0.159.2',
+  verified: true,
   versionArgs: ['--version'],
   authCheck: {
     args: ['login', 'status'],
@@ -347,8 +347,8 @@ const codex: CliProfile = {
   parser: 'codex',
   sandboxNote:
     '--sandbox read-only plus MCP servers passed as -c overrides (enabled_tools when a source is ' +
-    'pinned to some tools); flag names taken from the Codex docs, not verified against an ' +
-    'installed binary.',
+    'pinned to some tools). User config and rules are ignored; sessions are ephemeral. ' +
+    'Verified with Codex CLI 0.159.2.',
   restrictsSourceTools: true,
   launch: (ctx) => ({
     args: [
@@ -357,16 +357,21 @@ const codex: CliProfile = {
       '--sandbox',
       'read-only',
       '--skip-git-repo-check',
+      '--ignore-user-config',
+      '--ignore-rules',
+      '--ephemeral',
+      '-c',
+      'approval_policy="never"',
       '-C',
       ctx.cwd,
       ...codexOverrides(entries(ctx)).flatMap((o) => ['-c', o]),
-      foldedPrompt(ctx)
+      '-'
     ],
     files: [],
     preRun: [],
     postRun: [],
     env: {},
-    stdin: null
+    stdin: foldedPrompt(ctx)
   })
 }
 

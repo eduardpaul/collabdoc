@@ -300,7 +300,7 @@ export class DocumentMcpServer {
       case 'claude-code':
         return `claude mcp add --transport http collabdoc ${url} --header "${header}"`
       case 'codex':
-        return `codex mcp add collabdoc --url ${url} --bearer-token ${token}`
+        return `${process.platform === 'win32' ? '$env:COLLABDOC_MCP_TOKEN=' : 'export COLLABDOC_MCP_TOKEN='}"${token}"\ncodex mcp add collabdoc --url ${url} --bearer-token-env-var COLLABDOC_MCP_TOKEN`
       case 'grok':
         return `grok mcp add --transport http -H "${header}" collabdoc ${url}`
       case 'antigravity':

@@ -73,6 +73,7 @@ export function codexOverrides(entries: McpServerEntry[]): string[] {
   const out: string[] = []
   for (const entry of entries) {
     const base = `mcp_servers.${tomlKey(entry.name)}`
+    out.push(`${base}.default_tools_approval_mode="approve"`)
     if (entry.transport === 'http') {
       out.push(`${base}.url=${tomlString(entry.url ?? '')}`)
       if (entry.headers && Object.keys(entry.headers).length > 0) {

@@ -305,6 +305,13 @@ export function BackendsTab(): React.JSX.Element {
           </Button>
         </div>
 
+        {setupFor === 'codex' && (
+          <p className="muted">
+            Paste setup in a terminal (PowerShell on Windows), then start Codex in that same
+            terminal. Set COLLABDOC_MCP_TOKEN again when opening a new terminal.
+          </p>
+        )}
+
         {server && server.pending.length > 0 ? (
           <ul className="settings-list">
             {server.pending.map((name) => (

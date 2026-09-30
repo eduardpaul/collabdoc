@@ -307,3 +307,49 @@ describe('AgentRuntime · CLIs with one shared MCP config (antigravity)', () => 
     expect(warning?.message).toMatch(/My notes skipped: Antigravity CLI \(agy\) cannot limit/)
   })
 })
+
+describe('AgentRuntime · Codex CLI', () => {
+  it('detects sign-in and attributes MCP writes and the final summary to the persona', async () => {
+    const h = await harness({ binaries: ['codex'] })
+    process.env.FAKE_CLI_MODE = 'mcp'
+    expect(await h.runtime.detect('codex')).toMatchObject({ available: true, auth: 'ok' })
+    const record = await untilDone(h, h.runtime.run(request(h, { backendId: 'codex' })).runId)
+    expect(record.status).toBe('done')
+    expect(record.summary).toBe('Done.')
+    expect(record.steps.map((s) => s.tool)).toEqual(['get_document', 'insert_blocks'])
+    expect(record.writes).toBe(1)
+    expect(listHistory(h.registry.get(h.docId)!.hub.doc).at(-1)!.author.actorId).toBe(nova.id)
+    expect(h.mcp.sessionsForRun(record.runId)).toBe(0)
+  })
+
+  it('enforces reviewer permissions and records forbidden writes', async () => {
+    const h = await harness({ binaries: ['codex'] })
+    process.env.FAKE_CLI_MODE = 'forbidden'
+    const record = await untilDone(
+      h,
+      h.runtime.run(request(h, { backendId: 'codex', persona: rex })).runId
+    )
+    expect(record.status).toBe('done')
+    expect(record.steps.map((s) => [s.tool, s.ok, s.error ?? null])).toEqual([
+      ['get_document', true, null],
+      ['replace_text', false, 'forbidden'],
+      ['add_comment', true, null]
+    ])
+    expect(textOf(human(h.registry.get(h.docId)!.hub, 'ana'), h.blockId)).toBe(
+      'The quick brown fox jumps.'
+    )
+    expect(h.mcp.sessionsForRun(record.runId)).toBe(0)
+  })
+
+  it('cancels Codex and its children within two seconds', async () => {
+    const h = await harness({ binaries: ['codex'] })
+    process.env.FAKE_CLI_MODE = 'sleep'
+    const { runId } = h.runtime.run(request(h, { backendId: 'codex' }))
+    await new Promise((r) => setTimeout(r, 400))
+    const started = Date.now()
+    expect(h.runtime.cancel(runId)).toBe(true)
+    expect((await untilDone(h, runId)).status).toBe('cancelled')
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(h.mcp.sessionsForRun(runId)).toBe(0)
+  })
+})

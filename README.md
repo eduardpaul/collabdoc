@@ -91,15 +91,23 @@ COLLABDOC_DISABLE_GPU=1 npm run dev
 
 Personas run on a CLI agent you already have installed and signed in — Claude Code, grok, Antigravity (`agy`), Gemini CLI or Codex — through the document's own MCP server; no API key is entered in CollabDoc. Open **Settings → Backends**, click **Detect**, then invite an agent in a document and ask it to draft or review. Every edit is attributed to the persona, not to the CLI.
 
-Your interactive CLI session can join too: keep the **Document MCP server** running (same tab), paste the **setup command** into your CLI, and approve the client the first time it calls in. Knowledge sources (Microsoft Learn, a read-only folder, any MCP server) live under **Settings → Sources** and are attached per agent.
+Codex requires CLI 0.159.2 or newer (`npm install -g @openai/codex`, then `codex login`). Runs use the existing sign-in with an ephemeral session, a read-only filesystem sandbox, and only the MCP servers selected in CollabDoc. Codex's user config is ignored for persona runs.
+
+Your interactive CLI session can join too: keep the **Document MCP server** running (same tab), paste the **setup command** into your CLI, and approve the client the first time it calls in. For Codex, launch your interactive session in the same terminal after pasting setup; the bearer token is read from `COLLABDOC_MCP_TOKEN` and must be set again in a new terminal. Knowledge sources (Microsoft Learn, a read-only folder, any MCP server) live under **Settings → Sources** and are attached per agent.
 
 Opt-in checks against the real binaries:
 
 ```bash
 # unit-level, each CLI drives a document as a persona
-COLLABDOC_REAL_CLI=claude-code,grok,antigravity npx vitest run real-cli
+COLLABDOC_REAL_CLI=claude-code,codex,grok,antigravity npx vitest run real-cli
 # the whole flow in the built app
 npx electron-vite build && COLLABDOC_ELECTRON_E2E=1 npx playwright test e2e/electron-agent.spec.ts
+```
+
+To exercise the Electron UI with Codex explicitly:
+
+```bash
+COLLABDOC_ELECTRON_E2E=1 COLLABDOC_ELECTRON_BACKEND=codex npx playwright test e2e/electron-agent.spec.ts
 ```
 
 `COLLABDOC_USER_DATA=<dir>` points the app at a separate profile (tests and side-by-side setups).

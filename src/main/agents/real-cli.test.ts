@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * Runs the real, locally installed CLIs against the document MCP server.
- * Opt-in: COLLABDOC_REAL_CLI=claude-code,grok,antigravity npx vitest run real-cli
+ * Opt-in: COLLABDOC_REAL_CLI=claude-code,codex,grok,antigravity npx vitest run real-cli
  * Each CLI uses the user's own sign-in and takes a minute or two.
  */
 import { mkdtemp, rm } from 'fs/promises'
@@ -12,7 +12,7 @@ import { listHistory } from '../../core/history'
 import { DocumentRegistry } from '../../core/registry'
 import { addParagraph, human } from '../../core/test-helpers'
 import { allBlocks, blockPlainText } from '../../core/tree'
-import { isBackendId, type BackendId, type RunRecord } from '../../shared/agents'
+import { isBackendId, type BackendId, type RunRecord, type RunRequest } from '../../shared/agents'
 import { DocumentMcpServer } from '../mcp/DocumentMcpServer'
 import { AgentRuntime } from './AgentRuntime'
 import { SecretStore, plainCipher } from './secrets'
@@ -30,7 +30,7 @@ afterEach(async () => {
 
 describe.skipIf(wanted.length === 0)('real CLI backends (opt-in)', () => {
   for (const backendId of wanted) {
-    it(`${backendId}: a writer persona inserts a paragraph attributed to itself`, async () => {
+    it(`${backendId}: persona writes are attributed (Codex also reviews and cancels)`, async () => {
       const userData = await mkdtemp(join(tmpdir(), 'collabdoc-real-'))
       const registry = new DocumentRegistry({ closeDelayMs: Number.POSITIVE_INFINITY })
       const entry = registry.create({ title: 'Tides' })
@@ -73,7 +73,7 @@ describe.skipIf(wanted.length === 0)('real CLI backends (opt-in)', () => {
       expect(availability.available, availability.reason ?? '').toBe(true)
 
       const before = allBlocks(entry.hub.doc).length
-      const started = runtime.run({
+      const writerRequest: RunRequest = {
         docId: entry.docId,
         docTitle: 'Tides',
         kind: 'ask',
@@ -91,7 +91,8 @@ describe.skipIf(wanted.length === 0)('real CLI backends (opt-in)', () => {
           'Read the document, then insert exactly one short paragraph (two sentences) at the end ' +
           'explaining what causes tides. Do not change existing text.',
         sourceIds: []
-      })
+      }
+      const started = runtime.run(writerRequest)
       const record = await untilDone(runtime, started.runId, 240_000)
       console.log(`[${backendId}] record`, { ...record, transcript: record.transcript.slice(-2) })
       expect(record.status, JSON.stringify(record.error)).toBe('done')
@@ -105,7 +106,43 @@ describe.skipIf(wanted.length === 0)('real CLI backends (opt-in)', () => {
       const texts = allBlocks(entry.hub.doc).map(({ node }) => blockPlainText(node))
       console.log(`[${backendId}] document now:\n${texts.join('\n')}`)
       expect(mcp.sessionsForRun(record.runId)).toBe(0)
-    }, 300_000)
+
+      if (backendId === 'codex') {
+        const review = runtime.run({
+          ...writerRequest,
+          persona: {
+            ...writerRequest.persona,
+            id: 'agent_rex',
+            name: 'Rex',
+            handle: 'rex',
+            role: 'reviewer'
+          },
+          prompt:
+            'Read the document and add exactly one brief comment to the tides paragraph suggesting an improvement. Leave all document text unchanged.'
+        })
+        const reviewed = await untilDone(runtime, review.runId, 240_000)
+        expect(reviewed.status, JSON.stringify(reviewed.error)).toBe('done')
+        expect(reviewed.steps.some((s) => s.tool === 'add_comment' && s.ok)).toBe(true)
+        expect(allBlocks(entry.hub.doc).map(({ node }) => blockPlainText(node))).toEqual(texts)
+        expect(mcp.sessionsForRun(reviewed.runId)).toBe(0)
+
+        const pending = runtime.run({
+          ...writerRequest,
+          prompt: 'Read the document and explain tides in detail without editing it.'
+        })
+        const deadline = Date.now() + 10_000
+        while (!runtime.getRun(pending.runId)?.command && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 25))
+        }
+        expect(runtime.getRun(pending.runId)?.command).toBeTruthy()
+        const cancelAt = Date.now()
+        expect(runtime.cancel(pending.runId)).toBe(true)
+        const cancelled = await untilDone(runtime, pending.runId, 5_000)
+        expect(cancelled.status).toBe('cancelled')
+        expect(Date.now() - cancelAt).toBeLessThan(2_000)
+        expect(mcp.sessionsForRun(cancelled.runId)).toBe(0)
+      }
+    }, 600_000)
   }
 })
 
