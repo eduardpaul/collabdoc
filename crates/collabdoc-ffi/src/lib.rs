@@ -10,6 +10,7 @@
 //! Everything here must be called from one thread (Dart's UI isolate).
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -19,7 +20,7 @@ use collabdoc_core::model::ListKind;
 use collabdoc_core::persist;
 use collabdoc_core::schema::mark_bit;
 use collabdoc_core::sync::Hub;
-use collabdoc_core::{BlockKind, Document, Editor};
+use collabdoc_core::{BlockKind, Document, Editor, ViewBlock};
 use serde_json::{Value, json};
 
 struct Shared {
@@ -30,6 +31,9 @@ struct Shared {
 pub struct Session {
     editor: Editor,
     shared: Rc<RefCell<Shared>>,
+    /// What the UI was last sent, so `view` only sends what changed.
+    sent_order: Vec<String>,
+    sent: HashMap<String, ViewBlock>,
 }
 
 impl Session {
@@ -47,24 +51,35 @@ impl Session {
             hub: Hub::new(&doc),
             path,
         };
-        Ok(Self {
-            editor: Editor::new(doc),
-            shared: Rc::new(RefCell::new(shared)),
-        })
+        Ok(Self::with(Editor::new(doc), Rc::new(RefCell::new(shared))))
     }
 
     fn fork(&self) -> Self {
         let doc = self.editor.document().fork(&new_actor_id());
+        Self::with(Editor::new(doc), self.shared.clone())
+    }
+
+    fn with(editor: Editor, shared: Rc<RefCell<Shared>>) -> Self {
         Self {
-            editor: Editor::new(doc),
-            shared: self.shared.clone(),
+            editor,
+            shared,
+            sent_order: Vec::new(),
+            sent: HashMap::new(),
         }
     }
 
-    fn view(&self) -> Value {
+    /// Blocks and selection. Only blocks that changed since the last call
+    /// are included (`changed`), and the block order only when it changed
+    /// (`order`), so a keystroke in a long document sends one block.
+    fn view(&mut self) -> Value {
         let e = &self.editor;
-        let blocks: Vec<Value> = e
+        let order: Vec<String> = e.blocks().iter().map(|b| b.key.clone()).collect();
+        let changed: Vec<&ViewBlock> = e
             .blocks()
+            .iter()
+            .filter(|b| self.sent.get(&b.key) != Some(*b))
+            .collect();
+        let blocks: Vec<Value> = changed
             .iter()
             .map(|b| {
                 let (kind, level) = match b.kind {
@@ -97,8 +112,21 @@ impl Session {
             BlockKind::Paragraph => ("paragraph", 0),
         };
         let shared = self.shared.borrow();
+        let order_changed = order != self.sent_order;
+        let mut sent: HashMap<String, ViewBlock> = HashMap::with_capacity(order.len());
+        for b in e.blocks() {
+            sent.insert(b.key.clone(), b.clone());
+        }
+        self.sent = sent;
+        let order_json = if order_changed {
+            Some(order.clone())
+        } else {
+            None
+        };
+        self.sent_order = order;
         json!({
-            "blocks": blocks,
+            "order": order_json,
+            "changed": blocks,
             "anchor": e.anchor(),
             "head": e.head(),
             "marks": e.marks_at_cursor(),
@@ -171,6 +199,12 @@ impl Session {
             "end" => {
                 e.move_end(extend);
                 false
+            }
+            "resetView" => {
+                // The UI lost its copy (hot restart): the next view is complete.
+                self.sent.clear();
+                self.sent_order.clear();
+                return json!({ "ok": true });
             }
             "textIn" => return json!({ "ok": true, "text": e.text_in(n("start")..n("end")) }),
             "push" => {
@@ -284,8 +318,8 @@ pub unsafe extern "C" fn cd_call(session: *mut Session, command: *const c_char) 
 /// # Safety
 /// `session` is live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn cd_view(session: *const Session) -> *mut c_char {
-    to_c(unsafe { &*session }.view())
+pub unsafe extern "C" fn cd_view(session: *mut Session) -> *mut c_char {
+    to_c(unsafe { &mut *session }.view())
 }
 
 /// # Safety
@@ -305,6 +339,12 @@ mod tests {
         s.call(&cmd)
     }
 
+    /// Every block, in order (a view after a reset sends them all).
+    fn all_blocks(s: &mut Session) -> Vec<Value> {
+        call(s, json!({"op": "resetView"}));
+        s.view()["changed"].as_array().unwrap().clone()
+    }
+
     #[test]
     fn commands_edit_and_participants_sync() {
         let mut me = Session::open(None).unwrap();
@@ -319,10 +359,10 @@ mod tests {
         call(&mut me, json!({"op": "toggleMark", "mark": "bold"}));
         call(&mut me, json!({"op": "push"}));
         assert_eq!(call(&mut peer, json!({"op": "pull"}))["changed"], true);
-        let view = peer.view();
-        assert_eq!(view["blocks"][0]["text"], "Hello");
-        assert_eq!(view["blocks"][0]["spans"][0], json!([0, 5, 1, ""]));
-        assert_eq!(view["blocks"][1]["text"], "world");
+        let blocks = all_blocks(&mut peer);
+        assert_eq!(blocks[0]["text"], "Hello");
+        assert_eq!(blocks[0]["spans"][0], json!([0, 5, 1, ""]));
+        assert_eq!(blocks[1]["text"], "world");
     }
 
     #[test]
@@ -361,10 +401,36 @@ mod tests {
         );
         call(&mut s, json!({"op": "select", "anchor": 4, "head": 4}));
         assert_eq!(call(&mut s, json!({"op": "indent"}))["changed"], true);
-        let view = s.view();
-        assert_eq!(view["blocks"][1]["list"], "task");
-        assert_eq!(view["blocks"][1]["listDepth"], 2);
-        assert_eq!(view["blocks"][1]["checked"], true);
+        let blocks = all_blocks(&mut s);
+        assert_eq!(blocks[1]["list"], "task");
+        assert_eq!(blocks[1]["listDepth"], 2);
+        assert_eq!(blocks[1]["checked"], true);
+    }
+
+    #[test]
+    fn views_send_only_what_changed() {
+        let mut s = Session::open(None).unwrap();
+        call(&mut s, json!({"op": "insert", "text": "one\ntwo\nthree"}));
+        let first = s.view();
+        assert_eq!(first["order"].as_array().unwrap().len(), 3);
+        assert_eq!(first["changed"].as_array().unwrap().len(), 3);
+
+        // Typing in one block: that block only, and no order.
+        call(&mut s, json!({"op": "select", "anchor": 1, "head": 1}));
+        call(&mut s, json!({"op": "insert", "text": "x"}));
+        let typed = s.view();
+        assert!(typed["order"].is_null());
+        assert_eq!(typed["changed"].as_array().unwrap().len(), 1);
+        assert_eq!(typed["changed"][0]["text"], "oxne");
+
+        // Nothing changed: nothing sent.
+        assert_eq!(s.view()["changed"].as_array().unwrap().len(), 0);
+
+        // Enter: the new block plus the split one, and the new order.
+        call(&mut s, json!({"op": "newline"}));
+        let split = s.view();
+        assert_eq!(split["order"].as_array().unwrap().len(), 4);
+        assert_eq!(split["changed"].as_array().unwrap().len(), 2);
     }
 
     #[test]

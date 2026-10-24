@@ -111,7 +111,11 @@ class Session {
     return reply['changed'] == true;
   }
 
-  ViewState view() => ViewState.fromJson(
+  ViewState? _view;
+
+  /// The current view, built from the previous one plus what changed.
+  ViewState view() => _view = ViewState.next(
+    _view,
     jsonDecode(_lib.take(_lib.view(_ptr))) as Map<String, dynamic>,
   );
 

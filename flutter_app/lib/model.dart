@@ -54,20 +54,46 @@ class BlockView {
 }
 
 class ViewState {
-  ViewState.fromJson(Map<String, dynamic> j)
-    : blocks = [
-        for (final b in j['blocks'] as List)
-          BlockView.fromJson(b as Map<String, dynamic>),
-      ],
-      anchor = j['anchor'] as int,
-      head = j['head'] as int,
-      marks = j['marks'] as int,
-      kind = j['kind'] as String,
-      level = j['level'] as int,
-      canUndo = j['canUndo'] as bool,
-      canRedo = j['canRedo'] as bool,
-      title = j['title'] as String,
-      path = j['path'] as String? {
+  /// The next view: the previous one with the blocks Rust says changed
+  /// (`changed`), in Rust's order (`order`, sent only when it changed).
+  factory ViewState.next(ViewState? previous, Map<String, dynamic> j) {
+    final known = <String, BlockView>{...?previous?._byKey};
+    for (final b in j['changed'] as List) {
+      final view = BlockView.fromJson(b as Map<String, dynamic>);
+      known[view.key] = view;
+    }
+    final order =
+        (j['order'] as List?)?.cast<String>() ?? previous?.order ?? const [];
+    final byKey = {for (final k in order) k: known[k]!};
+    return ViewState._(
+      order: order,
+      byKey: byKey,
+      anchor: j['anchor'] as int,
+      head: j['head'] as int,
+      marks: j['marks'] as int,
+      kind: j['kind'] as String,
+      level: j['level'] as int,
+      canUndo: j['canUndo'] as bool,
+      canRedo: j['canRedo'] as bool,
+      title: j['title'] as String,
+      path: j['path'] as String?,
+    );
+  }
+
+  ViewState._({
+    required this.order,
+    required Map<String, BlockView> byKey,
+    required this.anchor,
+    required this.head,
+    required this.marks,
+    required this.kind,
+    required this.level,
+    required this.canUndo,
+    required this.canRedo,
+    required this.title,
+    required this.path,
+  }) : _byKey = byKey,
+       blocks = [for (final k in order) byKey[k]!] {
     var at = 0;
     for (final b in blocks) {
       starts.add(at);
@@ -75,6 +101,8 @@ class ViewState {
     }
   }
 
+  final List<String> order;
+  final Map<String, BlockView> _byKey;
   final List<BlockView> blocks;
   final List<int> starts = [];
   final int anchor;
