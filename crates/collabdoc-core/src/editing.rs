@@ -115,6 +115,12 @@ impl Editor {
         editor
     }
 
+    /// Renames the document (its `meta` title; one undo step).
+    pub fn set_title(&mut self, title: &str) {
+        self.doc.set_title(title);
+        self.reload();
+    }
+
     /// The document, done editing.
     pub fn into_document(self) -> Document {
         self.doc

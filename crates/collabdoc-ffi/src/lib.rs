@@ -6,8 +6,12 @@
 //! code units, which is what Dart strings index by.
 //!
 //! A session is one participant (one Loro peer, one undo stack). Sessions
-//! opened from each other share a workspace: the document's hub and its path.
-//! Everything here must be called from one thread (Dart's UI isolate).
+//! opened from each other share a workspace: the document's hub. The hub's
+//! document is what the store autosaves and journals; the store itself (drafts,
+//! recents) is one per process, configured from `COLLABDOC_USER_DATA` and
+//! `COLLABDOC_DOCUMENTS_DIR` or the platform's folders, and reached without a
+//! session through `cd_store`. Everything here must be called from one thread
+//! (Dart's UI isolate).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -15,18 +19,57 @@ use std::ffi::{CStr, CString, c_char};
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use collabdoc_core::document::now_ms;
 use collabdoc_core::ids::new_actor_id;
 use collabdoc_core::model::ListKind;
-use collabdoc_core::persist;
 use collabdoc_core::presence::{Presence, User};
 use collabdoc_core::schema::mark_bit;
+use collabdoc_core::store::{Opened, SaveOutcome, Store, StoreConfig};
 use collabdoc_core::sync::Hub;
-use collabdoc_core::{BlockKind, Document, Editor, ViewBlock};
+use collabdoc_core::{BlockKind, Editor, ViewBlock};
 use serde_json::{Value, json};
 
 struct Shared {
     hub: Hub,
-    path: Option<PathBuf>,
+    /// What opening found: replayed edits, a damaged asset section.
+    recovered_edits: bool,
+    warnings: Vec<String>,
+}
+
+thread_local! {
+    static STORE: RefCell<Option<Store>> = const { RefCell::new(None) };
+}
+
+/// The process's store, created on first use.
+fn with_store<R>(f: impl FnOnce(&mut Store) -> R) -> R {
+    STORE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let store = slot.get_or_insert_with(|| Store::open(store_config(None)));
+        f(store)
+    })
+}
+
+/// The platform's folders, unless the environment or `overrides` name others.
+fn store_config(overrides: Option<&Value>) -> StoreConfig {
+    let mut config = StoreConfig::for_user();
+    let pick = |key: &str, env: &str| {
+        overrides
+            .and_then(|o| o[key].as_str())
+            .map(str::to_owned)
+            .or_else(|| std::env::var(env).ok())
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    if let Some(dir) = pick("userData", "COLLABDOC_USER_DATA") {
+        config.user_data = dir;
+    }
+    if let Some(dir) = pick("documentsDir", "COLLABDOC_DOCUMENTS_DIR") {
+        config.documents_dir = dir;
+    }
+    if let Some(ms) = overrides.and_then(|o| o["idleMs"].as_i64()) {
+        config.idle_ms = ms;
+    }
+    config
 }
 
 pub struct Session {
@@ -40,21 +83,49 @@ pub struct Session {
 }
 
 impl Session {
-    fn open(path: Option<PathBuf>) -> Result<Self, String> {
+    /// `{"new": true}`, `{"path": …}` (a `.collabdoc`, or Markdown to
+    /// import) or `{"draft": docId}` (recover a draft).
+    fn open(spec: &Value) -> Result<Self, String> {
         let actor = new_actor_id();
-        let doc = match &path {
-            Some(p) if p.exists() => persist::open_file(p, &actor)?,
-            Some(p) => {
-                let title = p.file_stem().map(|s| s.to_string_lossy().into_owned());
-                Document::create(title.as_deref().unwrap_or("Untitled"), &actor)
+        let now = now_ms();
+        let opened = if let Some(path) = spec["path"].as_str().filter(|p| !p.is_empty()) {
+            let path = PathBuf::from(path);
+            if path.exists() {
+                with_store(|s| s.open_path(&path, &actor, now))?
+            } else {
+                // A new document that is to be saved there.
+                let title = path.file_stem().map(|s| s.to_string_lossy().into_owned());
+                let title = title.as_deref().unwrap_or("Untitled");
+                let document =
+                    with_store(|s| s.create(title, &actor, now)).map_err(|e| e.to_string())?;
+                with_store(|s| s.save_to(document.loro(), &path, now))
+                    .map_err(|e| e.to_string())?;
+                Opened {
+                    document,
+                    recovered_edits: false,
+                    warnings: vec![],
+                }
             }
-            None => Document::create("Untitled", &actor),
+        } else if let Some(id) = spec["draft"].as_str() {
+            with_store(|s| s.recover(id, &actor, now))?
+        } else {
+            let document =
+                with_store(|s| s.create("Untitled", &actor, now)).map_err(|e| e.to_string())?;
+            Opened {
+                document,
+                recovered_edits: false,
+                warnings: vec![],
+            }
         };
         let shared = Shared {
-            hub: Hub::new(&doc),
-            path,
+            hub: Hub::new(&opened.document),
+            recovered_edits: opened.recovered_edits,
+            warnings: opened.warnings,
         };
-        Ok(Self::with(Editor::new(doc), Rc::new(RefCell::new(shared))))
+        Ok(Self::with(
+            Editor::new(opened.document),
+            Rc::new(RefCell::new(shared)),
+        ))
     }
 
     fn fork(&self) -> Self {
@@ -123,6 +194,7 @@ impl Session {
             BlockKind::Paragraph => ("paragraph", 0),
         };
         let shared = self.shared.borrow();
+        let persist = with_store(|s| s.state(shared.hub.loro()));
         let order_changed = order != self.sent_order;
         let mut sent: HashMap<String, ViewBlock> = HashMap::with_capacity(order.len());
         for b in e.blocks() {
@@ -146,7 +218,7 @@ impl Session {
             "canUndo": e.document().can_undo(),
             "canRedo": e.document().can_redo(),
             "title": e.document().title(),
-            "path": shared.path.as_ref().map(|p| p.display().to_string()),
+            "persist": persist,
         })
     }
 
@@ -311,9 +383,18 @@ impl Session {
             "textIn" => return json!({ "ok": true, "text": e.text_in(n("start")..n("end")) }),
             "push" => {
                 let shared = self.shared.borrow();
-                return match shared.hub.push(self.editor.document()) {
+                // The hub has the edit: journal it, start the autosave clock.
+                let pushed = shared
+                    .hub
+                    .push(self.editor.document())
+                    .map_err(|e| e.to_string());
+                let journaled = pushed.and_then(|()| {
+                    with_store(|s| s.changed(shared.hub.loro(), now_ms()))
+                        .map_err(|e| e.to_string())
+                });
+                return match journaled {
                     Ok(()) => json!({ "ok": true }),
-                    Err(err) => json!({ "ok": false, "error": err.to_string() }),
+                    Err(err) => json!({ "ok": false, "error": err }),
                 };
             }
             "pull" => {
@@ -324,22 +405,95 @@ impl Session {
                     Err(err) => json!({ "ok": false, "error": err.to_string() }),
                 };
             }
-            "save" => {
-                let mut shared = self.shared.borrow_mut();
-                let path = match cmd["path"].as_str() {
-                    Some(p) if !p.is_empty() => PathBuf::from(p),
-                    _ => shared
-                        .path
-                        .clone()
-                        .unwrap_or_else(|| persist::default_path(&self.editor.document().title())),
+            // Every few hundred ms: journal to disk, autosave when due.
+            "tick" => {
+                let shared = self.shared.borrow();
+                let doc = shared.hub.loro();
+                return match with_store(|s| s.tick(doc, now_ms())) {
+                    Ok(saved) => json!({
+                        "ok": true,
+                        "saved": saved,
+                        "persist": with_store(|s| s.state(doc)),
+                    }),
+                    Err(err) => json!({ "ok": false, "error": err.to_string() }),
                 };
-                return match persist::save_file(&path, self.editor.document()) {
-                    Ok(()) => {
-                        let shown = path.display().to_string();
-                        shared.path = Some(path);
-                        json!({ "ok": true, "path": shown })
+            }
+            // Ctrl+S: written now, or `needsSaveAs` for a draft.
+            "save" => {
+                let shared = self.shared.borrow();
+                let doc = shared.hub.loro();
+                return match with_store(|s| s.save(doc, now_ms())) {
+                    Ok(SaveOutcome::Saved(path)) => {
+                        json!({ "ok": true, "path": path.display().to_string() })
                     }
+                    Ok(SaveOutcome::NeedsSaveAs) => json!({
+                        "ok": false,
+                        "needsSaveAs": true,
+                        "suggested": with_store(|s| s.suggested_path(doc)).display().to_string(),
+                    }),
+                    Err(err) => json!({ "ok": false, "error": err.to_string() }),
+                };
+            }
+            "suggestedPath" => {
+                let shared = self.shared.borrow();
+                let path = with_store(|s| s.suggested_path(shared.hub.loro()));
+                return json!({ "ok": true, "path": path.display().to_string() });
+            }
+            // Save As: the document lives there from now on. An untitled
+            // document takes the file's name as its title.
+            "saveAs" => {
+                let path = PathBuf::from(s("path"));
+                if path.as_os_str().is_empty() {
+                    return json!({ "ok": false, "error": "no path" });
+                }
+                if e.document().title() == "Untitled"
+                    && let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned())
+                {
+                    e.set_title(&stem);
+                }
+                let shared = self.shared.borrow();
+                let saved = shared
+                    .hub
+                    .push(self.editor.document())
+                    .map_err(|e| e.to_string())
+                    .and_then(|()| {
+                        with_store(|s| s.save_to(shared.hub.loro(), &path, now_ms()))
+                            .map_err(|e| e.to_string())
+                    });
+                return match saved {
+                    Ok(()) => json!({ "ok": true, "path": path.display().to_string() }),
                     Err(err) => json!({ "ok": false, "error": err }),
+                };
+            }
+            "exportMarkdown" => {
+                let path = PathBuf::from(s("path"));
+                return match Store::export_markdown(e.document(), &path) {
+                    Ok(()) => json!({ "ok": true, "path": path.display().to_string() }),
+                    Err(err) => json!({ "ok": false, "error": err.to_string() }),
+                };
+            }
+            "openInfo" => {
+                let shared = self.shared.borrow();
+                return json!({
+                    "ok": true,
+                    "recoveredEdits": shared.recovered_edits,
+                    "warnings": shared.warnings,
+                });
+            }
+            // Leaving the document: unsaved edits are written, an untouched
+            // draft is not kept. With `discard`, a draft is deleted instead.
+            "close" => {
+                let shared = self.shared.borrow();
+                let doc = shared.hub.loro();
+                let id = collabdoc_core::document::meta_string(doc, "docId");
+                let done = if cmd["discard"].as_bool() == Some(true) {
+                    with_store(|s| s.discard_draft(&id))
+                } else {
+                    with_store(|s| s.release(doc, now_ms()))
+                };
+                return match done {
+                    Ok(()) => json!({ "ok": true }),
+                    Err(err) => json!({ "ok": false, "error": err.to_string() }),
                 };
             }
             other => return json!({ "ok": false, "error": format!("unknown op {other:?}") }),
@@ -368,9 +522,37 @@ pub unsafe extern "C" fn cd_open(path: *const c_char, error: *mut *mut c_char) -
                 .to_string_lossy()
                 .into_owned()
         })
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from);
-    match Session::open(path) {
+        .filter(|p| !p.is_empty());
+    let spec = match path {
+        Some(p) => json!({ "path": p }),
+        None => json!({ "new": true }),
+    };
+    open_spec(&spec, error)
+}
+
+/// Opens per a JSON spec: `{"new": true}`, `{"path": …}` or `{"draft": docId}`.
+///
+/// # Safety
+/// `spec` is a NUL-terminated UTF-8 string; `error` is null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cd_open_with(
+    spec: *const c_char,
+    error: *mut *mut c_char,
+) -> *mut Session {
+    let spec = unsafe { CStr::from_ptr(spec) }.to_string_lossy();
+    match serde_json::from_str::<Value>(&spec) {
+        Ok(spec) => open_spec(&spec, error),
+        Err(err) => {
+            if !error.is_null() {
+                unsafe { *error = to_c(Value::String(err.to_string())) };
+            }
+            std::ptr::null_mut()
+        }
+    }
+}
+
+fn open_spec(spec: &Value, error: *mut *mut c_char) -> *mut Session {
+    match Session::open(spec) {
         Ok(session) => Box::into_raw(Box::new(session)),
         Err(message) => {
             if !error.is_null() {
@@ -378,6 +560,45 @@ pub unsafe extern "C" fn cd_open(path: *const c_char, error: *mut *mut c_char) -
             }
             std::ptr::null_mut()
         }
+    }
+}
+
+/// Store calls that need no open document (the start screen):
+/// `configure {userData, documentsDir}`, `listing`, `removeRecent {docId}`,
+/// `discardDraft {docId}`, `exists {path}`.
+///
+/// # Safety
+/// `command` is a NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cd_store(command: *const c_char) -> *mut c_char {
+    let command = unsafe { CStr::from_ptr(command) }.to_string_lossy();
+    let reply = match serde_json::from_str::<Value>(&command) {
+        Ok(cmd) => store_call(&cmd),
+        Err(err) => json!({ "ok": false, "error": err.to_string() }),
+    };
+    to_c(reply)
+}
+
+fn store_call(cmd: &Value) -> Value {
+    let id = cmd["docId"].as_str().unwrap_or("");
+    let done = |r: std::io::Result<()>| match r {
+        Ok(()) => json!({ "ok": true }),
+        Err(err) => json!({ "ok": false, "error": err.to_string() }),
+    };
+    match cmd["op"].as_str().unwrap_or("") {
+        "configure" => {
+            let config = store_config(Some(cmd));
+            STORE.with(|cell| *cell.borrow_mut() = Some(Store::open(config)));
+            json!({ "ok": true })
+        }
+        "listing" => json!({ "ok": true, "listing": with_store(|s| s.listing()) }),
+        "removeRecent" => done(with_store(|s| s.remove_recent(id))),
+        "discardDraft" => done(with_store(|s| s.discard_draft(id))),
+        "documentsDir" => {
+            let dir = with_store(|s| s.config().documents_dir.clone());
+            json!({ "ok": true, "path": dir.display().to_string() })
+        }
+        other => json!({ "ok": false, "error": format!("unknown op {other:?}") }),
     }
 }
 
@@ -448,6 +669,30 @@ impl Drop for Session {
 mod tests {
     use super::*;
 
+    /// This test thread's store, in a folder of its own.
+    fn scratch_store() -> PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "collabdoc-ffi-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        store_call(&json!({
+            "op": "configure",
+            "userData": dir.join("user"),
+            "documentsDir": dir.join("docs"),
+            "idleMs": 20,
+        }));
+        dir
+    }
+
+    fn fresh() -> Session {
+        scratch_store();
+        Session::open(&json!({ "new": true })).unwrap()
+    }
+
     fn call(s: &mut Session, cmd: Value) -> Value {
         s.call(&cmd)
     }
@@ -460,7 +705,7 @@ mod tests {
 
     #[test]
     fn commands_edit_and_participants_sync() {
-        let mut me = Session::open(None).unwrap();
+        let mut me = fresh();
         let mut peer = me.fork();
         assert_eq!(
             call(&mut me, json!({"op": "insert", "text": "Hello"}))["changed"],
@@ -480,6 +725,7 @@ mod tests {
 
     #[test]
     fn the_c_entry_points_round_trip_json() {
+        scratch_store();
         unsafe {
             let session = cd_open(std::ptr::null(), std::ptr::null_mut());
             let cmd = CString::new(r#"{"op":"insert","text":"é👍"}"#).unwrap();
@@ -501,7 +747,7 @@ mod tests {
 
     #[test]
     fn list_commands() {
-        let mut s = Session::open(None).unwrap();
+        let mut s = fresh();
         call(&mut s, json!({"op": "insert", "text": "one\ntwo"}));
         call(&mut s, json!({"op": "selectAll"}));
         assert_eq!(
@@ -522,7 +768,7 @@ mod tests {
 
     #[test]
     fn views_send_only_what_changed() {
-        let mut s = Session::open(None).unwrap();
+        let mut s = fresh();
         call(&mut s, json!({"op": "insert", "text": "one\ntwo\nthree"}));
         let first = s.view();
         assert_eq!(first["order"].as_array().unwrap().len(), 3);
@@ -548,7 +794,7 @@ mod tests {
 
     #[test]
     fn link_commands() {
-        let mut s = Session::open(None).unwrap();
+        let mut s = fresh();
         call(&mut s, json!({"op": "insert", "text": "see docs"}));
         call(&mut s, json!({"op": "select", "anchor": 4, "head": 8}));
         assert_eq!(
@@ -565,7 +811,7 @@ mod tests {
 
     #[test]
     fn unknown_commands_are_errors_not_crashes() {
-        let mut s = Session::open(None).unwrap();
+        let mut s = fresh();
         assert_eq!(call(&mut s, json!({"op": "fly"}))["ok"], false);
         assert_eq!(
             call(&mut s, json!({"op": "toggleMark", "mark": "blink"}))["ok"],
@@ -575,7 +821,7 @@ mod tests {
 
     #[test]
     fn markdown_goes_through_the_clipboard_ops() {
-        let mut s = Session::open(None).unwrap();
+        let mut s = fresh();
         call(
             &mut s,
             json!({"op": "paste", "text": "# Title\n\n- one\n- two"}),
@@ -587,7 +833,7 @@ mod tests {
 
     #[test]
     fn carets_go_through_the_hub() {
-        let mut me = Session::open(None).unwrap();
+        let mut me = fresh();
         let mut peer = me.fork();
         call(&mut me, json!({"op": "insert", "text": "hello"}));
         call(&mut me, json!({"op": "push"}));
@@ -620,5 +866,85 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn drafts_autosave_save_as_and_reopen() {
+        let dir = scratch_store();
+        let mut s = Session::open(&json!({ "new": true })).unwrap();
+        assert_eq!(s.view()["persist"]["isDraft"], true);
+        call(&mut s, json!({"op": "insert", "text": "Kept"}));
+        call(&mut s, json!({"op": "push"}));
+        assert_eq!(s.view()["persist"]["dirty"], true);
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        let tick = call(&mut s, json!({"op": "tick"}));
+        assert_eq!(tick["saved"], true, "{tick}");
+        assert_eq!(tick["persist"]["dirty"], false);
+        let listing = store_call(&json!({"op": "listing"}))["listing"].clone();
+        assert_eq!(listing["recents"][0]["path"], Value::Null, "a draft");
+        assert_eq!(listing["recents"][0]["preview"], "Kept");
+
+        let save = call(&mut s, json!({"op": "save"}));
+        assert_eq!(save["needsSaveAs"], true);
+        assert!(
+            save["suggested"]
+                .as_str()
+                .unwrap()
+                .ends_with("Untitled.collabdoc")
+        );
+        let file = dir.join("Report.collabdoc");
+        let saved = call(&mut s, json!({"op": "saveAs", "path": file}));
+        assert_eq!(saved["ok"], true, "{saved}");
+        assert_eq!(
+            s.view()["title"],
+            "Report",
+            "an untitled document takes the name"
+        );
+        assert_eq!(call(&mut s, json!({"op": "close"}))["ok"], true);
+        drop(s);
+
+        let mut again = Session::open(&json!({ "path": file })).unwrap();
+        let blocks = all_blocks(&mut again);
+        assert_eq!(blocks[0]["text"], "Kept");
+        assert_eq!(again.view()["persist"]["path"], file.display().to_string());
+        let md = dir.join("report.md");
+        call(&mut again, json!({"op": "exportMarkdown", "path": md}));
+        assert_eq!(std::fs::read_to_string(md).unwrap(), "# Report\n\nKept\n");
+    }
+
+    #[test]
+    fn a_crash_leaves_a_draft_to_recover() {
+        let dir = scratch_store();
+        let mut s = Session::open(&json!({ "new": true })).unwrap();
+        call(
+            &mut s,
+            json!({"op": "insert", "text": "typed just before the crash"}),
+        );
+        call(&mut s, json!({"op": "push"}));
+        let id = s.view()["persist"]["docId"].as_str().unwrap().to_owned();
+        std::mem::forget(s); // killed: nothing closed or saved
+        // The next run of the app: a new store over the same folders.
+        store_call(&json!({
+            "op": "configure",
+            "userData": dir.join("user"),
+            "documentsDir": dir.join("docs"),
+        }));
+
+        let listing = store_call(&json!({"op": "listing"}))["listing"].clone();
+        assert_eq!(listing["recoveries"][0]["docId"], id);
+        let mut recovered = Session::open(&json!({ "draft": id })).unwrap();
+        assert_eq!(
+            call(&mut recovered, json!({"op": "openInfo"}))["recoveredEdits"],
+            true
+        );
+        assert_eq!(
+            all_blocks(&mut recovered)[0]["text"],
+            "typed just before the crash"
+        );
+        // Discarded on request: gone from the recents and the disk.
+        call(&mut recovered, json!({"op": "close", "discard": true}));
+        let listing = store_call(&json!({"op": "listing"}))["listing"].clone();
+        assert!(listing["recents"].as_array().unwrap().is_empty());
+        assert!(listing["recoveries"].as_array().unwrap().is_empty());
     }
 }

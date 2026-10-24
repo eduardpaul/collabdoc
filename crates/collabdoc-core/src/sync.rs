@@ -27,6 +27,11 @@ impl Hub {
         }
     }
 
+    /// The authoritative document: what is saved and journaled.
+    pub fn loro(&self) -> &LoroDoc {
+        &self.doc
+    }
+
     /// Sends what `document` has that the hub does not.
     pub fn push(&self, document: &Document) -> Result<(), DocError> {
         let bytes = document.export_since(&self.doc.oplog_vv());
