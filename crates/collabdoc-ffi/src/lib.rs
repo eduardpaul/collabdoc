@@ -389,6 +389,8 @@ impl Session {
                 });
             }
             "copyMarkdown" => return json!({ "ok": true, "text": e.selection_markdown() }),
+            // This participant's Loro actor (a mention's `id`).
+            "actor" => return json!({ "ok": true, "actor": e.document().actor() }),
             "setUser" => {
                 self.user.name = s("name").to_owned();
                 if let Some(color) = cmd["color"].as_str() {

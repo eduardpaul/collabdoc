@@ -11,7 +11,7 @@ fn targets(blocks: &[ViewBlock]) -> Vec<TargetBlock> {
 }
 
 fn texts(doc: &Document) -> Vec<String> {
-    doc.blocks().into_iter().map(|b| b.text).collect()
+    doc.blocks().iter().map(|b| b.label()).collect()
 }
 
 fn bold(start: u32, end: u32) -> Span {
@@ -292,9 +292,11 @@ fn tiptap_like() -> Document {
 fn nested_lists_and_figures_flatten_in_reading_order() {
     let doc = tiptap_like();
     let blocks = doc.blocks();
+    let labels: Vec<String> = blocks.iter().map(|b| b.label()).collect();
     let summary: Vec<_> = blocks
         .iter()
-        .map(|b| (b.text.as_str(), b.kind, b.list, b.list_depth, b.editable))
+        .zip(&labels)
+        .map(|(b, label)| (label.as_str(), b.kind, b.list, b.list_depth, b.editable))
         .collect();
     assert_eq!(
         summary,
@@ -326,7 +328,7 @@ fn enter_in_a_list_makes_a_list_item_in_reading_order() {
     let got: Vec<_> = doc
         .blocks()
         .iter()
-        .map(|b| (b.text.clone(), b.list, b.list_depth))
+        .map(|b| (b.label(), b.list, b.list_depth))
         .collect();
     let want: Vec<(String, Option<ListKind>, u8)> = vec![
         ("Plan".into(), None, 0),

@@ -30,9 +30,11 @@ fn reads_a_file_written_by_the_typescript_core() {
     let doc = ts_document();
     assert_eq!(doc.title(), "Made by the TypeScript core");
     let blocks = doc.blocks();
+    let labels: Vec<String> = blocks.iter().map(|b| b.label()).collect();
     let summary: Vec<_> = blocks
         .iter()
-        .map(|b| (b.kind, b.list, b.list_depth, b.text.as_str()))
+        .zip(&labels)
+        .map(|(b, label)| (b.kind, b.list, b.list_depth, label.as_str()))
         .collect();
     assert_eq!(
         summary,

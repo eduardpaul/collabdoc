@@ -6,6 +6,7 @@
 // and sync are decided in Rust.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -18,6 +19,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'app.dart';
 import 'clipboard.dart';
+import 'figures.dart';
 import 'find_bar.dart';
 import 'model.dart';
 import 'native.dart';
@@ -369,11 +371,133 @@ class EditorPaneState extends State<EditorPane>
     }
     final html = await RichClipboard.readHtml();
     if (!mounted) return;
+    // An image (a screenshot, an image copied in a browser, whose HTML only
+    // points at it) goes in as an image figure.
+    if (text == null || text.trim().isEmpty || html?.contains('<img') == true) {
+      final image = await RichClipboard.readImage();
+      if (!mounted) return;
+      if (image != null && !(html?.contains('data:image/') ?? false)) {
+        _insertImage({'base64': base64Encode(image)});
+        return;
+      }
+    }
     if (html != null) {
       run({'op': 'pasteHtml', 'html': html, 'text': text ?? ''});
     } else if (text != null) {
       run({'op': 'paste', 'text': text});
     }
+  }
+
+  /// Insert image… (Ctrl+Alt+P): a PNG, JPEG, GIF, WebP or SVG file.
+  Future<void> _pickImage() async {
+    final file = await widget.app.pickImagePath();
+    if (!mounted || file == null) return;
+    focus.requestFocus();
+    _insertImage({'path': file});
+  }
+
+  /// Inserts an image from `source` (`path` or `base64`); a refusal (too
+  /// big, not an image) shows in the status bar.
+  void _insertImage(Map<String, Object?> source) {
+    final reply = session.call({'op': 'insertImage', ...source});
+    if (reply['ok'] != true) {
+      widget.workspace.setStatus('${reply['error']}');
+      return;
+    }
+    if (reply['changed'] == true) {
+      widget.workspace.broadcast(widget.participant);
+    }
+    _refresh(reveal: true);
+  }
+
+  FigureActions _figureActions(int i) => FigureActions(
+    caption: () => _editFigureText(i, caption: true),
+    source: () => _editFigureText(i, caption: false),
+    width: (percent) => run({
+      'op': 'setFigureAttr',
+      'block': i,
+      'key': 'width',
+      'value': percent,
+    }),
+    align: (align) => run({
+      'op': 'setFigureAttr',
+      'block': i,
+      'key': 'align',
+      'value': align,
+    }),
+  );
+
+  /// The figure's caption, or a diagram's source, in a dialog.
+  Future<void> _editFigureText(int i, {required bool caption}) async {
+    final b = view.blocks[i];
+    final text = await showDialog<String>(
+      context: context,
+      builder: (context) => _TextDialog(
+        title: caption ? 'Caption' : 'Diagram source',
+        initial: caption ? b.caption : b.attr('source'),
+        multiline: !caption,
+      ),
+    );
+    if (!mounted) return;
+    focus.requestFocus();
+    if (text == null) return;
+    run(
+      caption
+          ? {'op': 'setCaption', 'block': i, 'text': text}
+          : {'op': 'setFigureAttr', 'block': i, 'key': 'source', 'value': text},
+    );
+  }
+
+  /// @: a chip for one of the people on the document. After a typed `@`
+  /// (`replacingAt`), the chip takes the `@`'s place; dismissed, it stays.
+  Future<void> _mention({bool replacingAt = false}) async {
+    final people = widget.workspace.participants;
+    final picked = await showDialog<Participant>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        backgroundColor: AppColors.panel,
+        title: const Text(
+          'Mention',
+          style: TextStyle(fontFamily: uiFont, fontSize: 15),
+        ),
+        children: [
+          for (final p in people)
+            SimpleDialogOption(
+              key: ValueKey('mention-${p.name}'),
+              onPressed: () => Navigator.of(context).pop(p),
+              child: Text(
+                '@${p.name}',
+                style: TextStyle(color: Color(parseHexColor(p.color))),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    focus.requestFocus();
+    if (picked == null) return;
+    final handle = picked.name.toLowerCase().replaceAll(RegExp(r'\s+'), '-');
+    final head = view.head;
+    if (replacingAt &&
+        view.selectionStart == view.selectionEnd &&
+        head > 0 &&
+        session.call({
+              'op': 'textIn',
+              'start': head - 1,
+              'end': head,
+            })['text'] ==
+            '@') {
+      session.call({'op': 'select', 'anchor': head - 1, 'head': head});
+    }
+    run({
+      'op': 'insertMention',
+      'attrs': {
+        'kind': 'person',
+        'id': picked.session.call({'op': 'actor'})['actor'] ?? handle,
+        'handle': handle,
+        'label': picked.name,
+      },
+    });
   }
 
   /// Ctrl+K: edit the link on the selection or under the caret.
@@ -448,6 +572,12 @@ class EditorPaneState extends State<EditorPane>
         LogicalKeyboardKey.digit2: () => kind('heading', 2),
         LogicalKeyboardKey.digit3: () => kind('heading', 3),
         LogicalKeyboardKey.keyC: () => kind('code'),
+        // The Tiptap app's figure shortcuts.
+        LogicalKeyboardKey.keyM: () =>
+            op('insertFigure', {'name': 'mermaidFigure'}),
+        LogicalKeyboardKey.keyI: () =>
+            op('insertFigure', {'name': 'infographicFigure'}),
+        LogicalKeyboardKey.keyP: _pickImage,
       };
     } else if (ctrl) {
       table = {
@@ -485,8 +615,10 @@ class EditorPaneState extends State<EditorPane>
         LogicalKeyboardKey.backspace: () => op('backspace'),
         LogicalKeyboardKey.tab: () => op(shift ? 'outdent' : 'indent'),
         LogicalKeyboardKey.delete: () => op('delete'),
-        LogicalKeyboardKey.enter: () => op('newline'),
-        LogicalKeyboardKey.numpadEnter: () => op('newline'),
+        // Shift+Enter: a line break inside the paragraph.
+        LogicalKeyboardKey.enter: () => op(shift ? 'hardBreak' : 'newline'),
+        LogicalKeyboardKey.numpadEnter: () =>
+            op(shift ? 'hardBreak' : 'newline'),
         LogicalKeyboardKey.arrowLeft: () => op('left', {'extend': shift}),
         LogicalKeyboardKey.arrowRight: () => op('right', {'extend': shift}),
         LogicalKeyboardKey.home: () => _lineEdge(false, shift),
@@ -861,6 +993,18 @@ class EditorPaneState extends State<EditorPane>
     }
     _goalX = null;
     _refresh(reveal: true);
+    // `@` opens the mention picker, as in the Tiptap app (not in code).
+    final last = deltas.isEmpty ? null : deltas.last;
+    final typedAt =
+        last is TextEditingDeltaInsertion && last.textInserted == '@' ||
+        last is TextEditingDeltaReplacement && last.replacementText == '@';
+    if (typedAt &&
+        !_composing.isValid &&
+        view.blocks[view.blockAt(view.head)].kind != 'code') {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _mention(replacingAt: true);
+      });
+    }
   }
 
   void _edit(int start, int end, String text) {
@@ -962,9 +1106,11 @@ class EditorPaneState extends State<EditorPane>
     );
   }
 
-  TextSpan _spans(BlockView b, TextStyle base, int blockStart) {
+  InlineSpan _spans(BlockView b, TextStyle base, int blockStart) {
     final text = b.text;
     if (text.isEmpty) return TextSpan(text: '', style: base);
+    // Inline nodes: one character each, a chip or a line break.
+    final nodes = {for (final n in b.inlines) n.at: n};
     final marks = List<int>.filled(text.length, 0);
     for (final s in b.spans) {
       for (var u = s.start; u < s.end && u < text.length; u++) {
@@ -976,13 +1122,31 @@ class EditorPaneState extends State<EditorPane>
         : -1;
     final composeEnd = _composing.isValid ? _composing.end - blockStart : -1;
     bool composed(int u) => u >= composeStart && u < composeEnd;
-    final children = <TextSpan>[];
+    final children = <InlineSpan>[];
     var start = 0;
     while (start < text.length) {
+      if (nodes[start] case final node?) {
+        children.add(
+          node.name == 'hardBreak'
+              ? const TextSpan(text: '\n')
+              : node.name == 'mention'
+              ? WidgetSpan(
+                  alignment: PlaceholderAlignment.baseline,
+                  baseline: TextBaseline.alphabetic,
+                  child: MentionChip(node: node, style: base),
+                )
+              : const TextSpan(text: '\uFFFC'),
+        );
+        start++;
+        continue;
+      }
       final m = marks[start];
       final c = composed(start);
       var end = start + 1;
-      while (end < text.length && marks[end] == m && composed(end) == c) {
+      while (end < text.length &&
+          marks[end] == m &&
+          composed(end) == c &&
+          !nodes.containsKey(end)) {
         end++;
       }
       bool has(int bit) => m & bit != 0;
@@ -1027,19 +1191,45 @@ class EditorPaneState extends State<EditorPane>
   Widget _block(int i, BlockView b, int? number) {
     final base = _base(b);
     final start = view.starts[i];
-    final paragraph = RichText(
+    final end = start + b.text.length;
+    final atom = b.kind == 'atom';
+    // A figure is selected with the caret on it or a selection over it.
+    final selected =
+        atom &&
+        focus.hasFocus &&
+        (view.blockAt(view.head) == i ||
+            (view.selectionStart <= start &&
+                view.selectionEnd >= end &&
+                view.selectionEnd > view.selectionStart));
+    Widget paragraph([double? width]) => RichText(
       key: _keys[i],
-      text: _spans(b, base, start),
+      text: atom
+          ? TextSpan(
+              style: base,
+              children: [
+                WidgetSpan(
+                  alignment: PlaceholderAlignment.middle,
+                  child: FigureView(
+                    block: b,
+                    session: session,
+                    // Room for the caret beside it.
+                    width: (width ?? 400) - 4,
+                    selected: selected,
+                    actions: _figureActions(i),
+                  ),
+                ),
+              ],
+            )
+          : _spans(b, base, start),
       textScaler: TextScaler.noScaling,
     );
-    final end = start + b.text.length;
-    final painted = CustomPaint(
+    Widget painted(Widget paragraph) => CustomPaint(
       foregroundPainter: _SelectionPainter(
         paragraph: _keys[i],
         start: view.selectionStart - start,
         end: view.selectionEnd - start,
         length: b.text.length,
-        caret: focus.hasFocus && view.blockAt(view.head) == i
+        caret: !atom && focus.hasFocus && view.blockAt(view.head) == i
             ? view.head - start
             : null,
         hits: [
@@ -1107,7 +1297,13 @@ class EditorPaneState extends State<EditorPane>
               child: marker,
             ),
           ),
-        Expanded(child: painted),
+        Expanded(
+          child: atom
+              ? LayoutBuilder(
+                  builder: (context, c) => painted(paragraph(c.maxWidth)),
+                )
+              : painted(paragraph()),
+        ),
       ],
     );
     final indent = 26.0 * (b.listDepth > 0 ? b.listDepth - 1 : 0);
@@ -1142,13 +1338,8 @@ class EditorPaneState extends State<EditorPane>
         ),
         child: row,
       ),
-      ('atom', _) => Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          border: Border.all(color: AppColors.border),
-          borderRadius: BorderRadius.circular(6),
-        ),
+      ('atom', _) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
         child: row,
       ),
       _ => Padding(
@@ -1284,6 +1475,14 @@ class EditorPaneState extends State<EditorPane>
                     () => op('toggleList', {'kind': 'task'}),
                   ),
                   _tool('Quote', quoteHere, () => op('toggleQuote')),
+                  sep,
+                  _tool('Image', false, _pickImage),
+                  _tool(
+                    'Diagram',
+                    false,
+                    () => op('insertFigure', {'name': 'mermaidFigure'}),
+                  ),
+                  _tool('@', false, _mention),
                   sep,
                   _tool('Undo', false, () => op('undo')),
                   _tool('Redo', false, () => op('redo')),
@@ -1680,6 +1879,74 @@ typedef RemoteMark = ({
   int color,
   String? name,
 });
+
+/// One text: a figure caption (one line) or a diagram's source.
+class _TextDialog extends StatefulWidget {
+  const _TextDialog({
+    required this.title,
+    required this.initial,
+    required this.multiline,
+  });
+
+  final String title;
+  final String initial;
+  final bool multiline;
+
+  @override
+  State<_TextDialog> createState() => _TextDialogState();
+}
+
+class _TextDialogState extends State<_TextDialog> {
+  late final TextEditingController text = TextEditingController(
+    text: widget.initial,
+  );
+
+  @override
+  void dispose() {
+    text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: AppColors.panel,
+      title: Text(
+        widget.title,
+        style: const TextStyle(fontFamily: uiFont, fontSize: 15),
+      ),
+      content: SizedBox(
+        width: widget.multiline ? 520 : 360,
+        child: TextField(
+          key: const ValueKey('figure-text-field'),
+          controller: text,
+          autofocus: true,
+          minLines: widget.multiline ? 6 : 1,
+          maxLines: widget.multiline ? 16 : 1,
+          style: TextStyle(
+            fontFamily: widget.multiline ? monoFont : uiFont,
+            fontSize: 13,
+            color: AppColors.text,
+          ),
+          onSubmitted: widget.multiline
+              ? null
+              : (value) => Navigator.of(context).pop(value),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          key: const ValueKey('figure-text-ok'),
+          onPressed: () => Navigator.of(context).pop(text.text),
+          child: const Text('OK'),
+        ),
+      ],
+    );
+  }
+}
 
 class _LinkDialog extends StatefulWidget {
   const _LinkDialog({required this.initial});

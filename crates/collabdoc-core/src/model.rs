@@ -135,6 +135,26 @@ impl ViewBlock {
     pub fn plain_text(&self) -> String {
         plain_text(&self.text, &self.inlines)
     }
+
+    /// How the block reads in a list of blocks: its plain text, or for a
+    /// figure `[Image: caption]`, `[Mermaid diagram]`…, `───` for a rule.
+    pub fn label(&self) -> String {
+        if self.kind != BlockKind::Atom {
+            return self.plain_text();
+        }
+        let label = match self.node_name.as_str() {
+            "horizontalRule" => return "───".to_owned(),
+            "imageFigure" => "Image",
+            "mermaidFigure" => "Mermaid diagram",
+            "infographicFigure" => "Infographic",
+            other => other,
+        };
+        if self.caption.is_empty() {
+            format!("[{label}]")
+        } else {
+            format!("[{label}: {}]", self.caption)
+        }
+    }
 }
 
 /// `text` with each [`INLINE_CHAR`] that is an inline node spelled out.

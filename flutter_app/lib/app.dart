@@ -38,6 +38,7 @@ class AppController extends ChangeNotifier {
 
   PickPath pickOpenPath = _pickOpen;
   PickPath pickSavePath = _pickSave;
+  Future<String?> Function() pickImagePath = _pickImage;
 
   void refreshListing() {
     listing = CoreStore.listing();
@@ -215,6 +216,18 @@ Future<String?> _pickSave({String? suggested, bool markdown = false}) async {
     acceptedTypeGroups: [markdown ? _markdownFiles : _collabdocFiles],
   );
   return location?.path;
+}
+
+Future<String?> _pickImage() async {
+  final file = await openFile(
+    acceptedTypeGroups: const [
+      XTypeGroup(
+        label: 'Images',
+        extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'],
+      ),
+    ],
+  );
+  return file?.path;
 }
 
 enum _Leave { saveAs, discard, cancel }

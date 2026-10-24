@@ -1119,7 +1119,7 @@ pub fn preview(doc: &LoroDoc) -> String {
     let text: Vec<String> = tree::flatten(doc)
         .into_iter()
         .filter(|(_, v)| v.editable)
-        .map(|(_, v)| v.text.trim().to_owned())
+        .map(|(_, v)| v.plain_text().trim().to_owned())
         .filter(|t| !t.is_empty())
         .collect();
     let joined = text.join(" ");

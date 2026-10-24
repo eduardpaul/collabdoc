@@ -367,22 +367,6 @@ fn kind_of(node: &LoroMap, name: &str) -> BlockKind {
     }
 }
 
-fn atom_label(node: &LoroMap, name: &str) -> String {
-    let caption = content(node).0;
-    let label = match name {
-        "horizontalRule" => return "───".to_owned(),
-        "imageFigure" => "Image",
-        "mermaidFigure" => "Mermaid diagram",
-        "infographicFigure" => "Infographic",
-        other => other,
-    };
-    if caption.is_empty() {
-        format!("[{label}]")
-    } else {
-        format!("[{label}: {caption}]")
-    }
-}
-
 /// Every leaf block in reading order, with its view.
 pub fn flatten(doc: &LoroDoc) -> Vec<(Located, ViewBlock)> {
     let mut out = Vec::new();
@@ -434,7 +418,8 @@ fn view_of(node: &LoroMap, name: &str, ancestors: &[LoroMap]) -> ViewBlock {
         }
     }
     let (editable, text, spans, inlines) = if kind == BlockKind::Atom {
-        (false, atom_label(node, name), vec![], vec![])
+        // One unit, like an inline node: the caret goes before or after it.
+        (false, INLINE_CHAR.to_string(), vec![], vec![])
     } else {
         let (text, spans, inlines) = content(node);
         (true, text, spans, inlines)

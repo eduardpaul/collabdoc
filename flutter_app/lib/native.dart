@@ -7,6 +7,7 @@
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
@@ -21,6 +22,39 @@ typedef _CallC = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 typedef _ViewC = Pointer<Utf8> Function(Pointer<Void>);
 typedef _StringFreeC = Void Function(Pointer<Utf8>);
 typedef _StringFreeDart = void Function(Pointer<Utf8>);
+typedef _AssetC = Pointer<Uint8> Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+  Pointer<Size>,
+);
+typedef _MermaidC = Pointer<Uint8> Function(
+  Pointer<Utf8>,
+  Float,
+  Pointer<Size>,
+  Pointer<Pointer<Utf8>>,
+);
+typedef _MermaidDart = Pointer<Uint8> Function(
+  Pointer<Utf8>,
+  double,
+  Pointer<Size>,
+  Pointer<Pointer<Utf8>>,
+);
+typedef _SvgC = Pointer<Uint8> Function(
+  Pointer<Uint8>,
+  Size,
+  Float,
+  Pointer<Size>,
+  Pointer<Pointer<Utf8>>,
+);
+typedef _SvgDart = Pointer<Uint8> Function(
+  Pointer<Uint8>,
+  int,
+  double,
+  Pointer<Size>,
+  Pointer<Pointer<Utf8>>,
+);
+typedef _BytesFreeC = Void Function(Pointer<Uint8>, Size);
+typedef _BytesFreeDart = void Function(Pointer<Uint8>, int);
 
 class _Lib {
   _Lib(DynamicLibrary lib)
@@ -33,6 +67,14 @@ class _Lib {
       view = lib.lookupFunction<_ViewC, _ViewC>('cd_view'),
       stringFree = lib.lookupFunction<_StringFreeC, _StringFreeDart>(
         'cd_string_free',
+      ),
+      asset = lib.lookupFunction<_AssetC, _AssetC>('cd_asset'),
+      renderMermaid = lib.lookupFunction<_MermaidC, _MermaidDart>(
+        'cd_render_mermaid',
+      ),
+      renderSvg = lib.lookupFunction<_SvgC, _SvgDart>('cd_render_svg'),
+      bytesFree = lib.lookupFunction<_BytesFreeC, _BytesFreeDart>(
+        'cd_bytes_free',
       );
 
   final _OpenC open;
@@ -43,6 +85,10 @@ class _Lib {
   final _CallC call;
   final _ViewC view;
   final _StringFreeDart stringFree;
+  final _AssetC asset;
+  final _MermaidDart renderMermaid;
+  final _SvgDart renderSvg;
+  final _BytesFreeDart bytesFree;
 
   /// The bundled `lib/libcollabdoc_ffi.so`, or `COLLABDOC_FFI_LIB` (tests).
   static _Lib load() {
@@ -61,6 +107,21 @@ class _Lib {
   String take(Pointer<Utf8> s) {
     final out = s.toDartString();
     stringFree(s);
+    return out;
+  }
+
+  /// Copies bytes Rust handed over (or reads its error), then frees them.
+  Uint8List takeBytes(
+    Pointer<Uint8> ptr,
+    Pointer<Size> len,
+    Pointer<Pointer<Utf8>>? error,
+  ) {
+    if (ptr == nullptr) {
+      final e = error?.value ?? nullptr;
+      throw CoreException(e == nullptr ? 'not available' : take(e));
+    }
+    final out = Uint8List.fromList(ptr.asTypedList(len.value));
+    bytesFree(ptr, len.value);
     return out;
   }
 }
@@ -150,6 +211,19 @@ class Session {
     jsonDecode(_lib.take(_lib.view(_ptr))) as Map<String, dynamic>,
   );
 
+  /// The bytes of image `hash` (PNG, JPEG, GIF, WebP or SVG), or null.
+  Uint8List? asset(String hash) {
+    final cHash = hash.toNativeUtf8();
+    final len = calloc<Size>();
+    try {
+      final ptr = _lib.asset(_ptr, cHash, len);
+      return ptr == nullptr ? null : _lib.takeBytes(ptr, len, null);
+    } finally {
+      calloc.free(cHash);
+      calloc.free(len);
+    }
+  }
+
   void dispose() {
     if (_ptr != nullptr) {
       _lib.free(_ptr);
@@ -196,4 +270,43 @@ class CoreStore {
 
   static String documentsDir() =>
       call({'op': 'documentsDir'})['path'] as String;
+}
+
+/// Mermaid `source` drawn by the core as a PNG, `scale` device pixels per
+/// unit. Pure: safe in a background isolate. Throws [CoreException] with the
+/// reason a diagram cannot be drawn.
+Uint8List renderMermaid(String source, double scale) {
+  final cSource = source.toNativeUtf8();
+  final len = calloc<Size>();
+  final error = calloc<Pointer<Utf8>>();
+  try {
+    return _lib.takeBytes(
+      _lib.renderMermaid(cSource, scale, len, error),
+      len,
+      error,
+    );
+  } finally {
+    calloc.free(cSource);
+    calloc.free(len);
+    calloc.free(error);
+  }
+}
+
+/// An SVG image drawn as a PNG. Pure: safe in a background isolate.
+Uint8List renderSvg(Uint8List svg, double scale) {
+  final data = calloc<Uint8>(svg.length);
+  data.asTypedList(svg.length).setAll(0, svg);
+  final len = calloc<Size>();
+  final error = calloc<Pointer<Utf8>>();
+  try {
+    return _lib.takeBytes(
+      _lib.renderSvg(data, svg.length, scale, len, error),
+      len,
+      error,
+    );
+  } finally {
+    calloc.free(data);
+    calloc.free(len);
+    calloc.free(error);
+  }
 }

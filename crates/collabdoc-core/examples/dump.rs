@@ -15,9 +15,41 @@ fn main() {
             .list
             .map(|l| format!(" {l:?}@{}", block.list_depth))
             .unwrap_or_default();
+        let mut extra = String::new();
+        if !block.inlines.is_empty() {
+            let nodes: Vec<String> = block
+                .inlines
+                .iter()
+                .map(|n| {
+                    format!(
+                        "{}@{} {}",
+                        n.name,
+                        n.at,
+                        serde_json::Value::Object(n.attrs.clone())
+                    )
+                })
+                .collect();
+            extra.push_str(&format!(" inlines={nodes:?}"));
+        }
+        if !block.attrs.is_empty() {
+            extra.push_str(&format!(
+                " attrs={}",
+                serde_json::Value::Object(block.attrs.clone())
+            ));
+        }
         println!(
-            "{:?}{list} {:?} spans={:?}",
-            block.kind, block.text, block.spans
+            "{:?}{list} {:?} spans={:?}{extra}",
+            block.kind,
+            block.label(),
+            block.spans
+        );
+    }
+    for asset in doc.assets() {
+        println!(
+            "asset {} {} {} bytes",
+            asset.hash,
+            asset.mime,
+            asset.bytes.len()
         );
     }
 }

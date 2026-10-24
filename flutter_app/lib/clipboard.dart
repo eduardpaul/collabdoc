@@ -26,6 +26,17 @@ class RichClipboard {
     }
   }
 
+  /// An image on the clipboard, as PNG bytes (the GTK runner converts
+  /// whatever image it holds), or null.
+  static Future<Uint8List?> readImage() async {
+    try {
+      final png = await _channel.invokeMethod<Uint8List>('readImage');
+      return png == null || png.isEmpty ? null : png;
+    } on MissingPluginException {
+      return null;
+    }
+  }
+
   static Future<String?> readText() async =>
       (await Clipboard.getData(Clipboard.kTextPlain))?.text;
 }

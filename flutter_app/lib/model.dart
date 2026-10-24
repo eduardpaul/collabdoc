@@ -35,7 +35,14 @@ class BlockView {
       spans = [
         for (final s in j['spans'] as List)
           Span(s[0] as int, s[1] as int, s[2] as int, s[3] as String),
-      ];
+      ],
+      inlines = [
+        for (final n in j['inlines'] as List? ?? const [])
+          InlineView.fromJson(n as Map<String, dynamic>),
+      ],
+      nodeName = j['nodeName'] as String? ?? '',
+      attrs = (j['attrs'] as Map?)?.cast<String, Object?>() ?? const {},
+      caption = j['caption'] as String? ?? '';
 
   final String key;
 
@@ -49,8 +56,38 @@ class BlockView {
   final int quoteDepth;
   final bool checked;
   final bool editable;
+
+  /// Each inline node (mention, hard break) is one U+FFFC in `text`; a
+  /// figure's whole text is one U+FFFC.
   final String text;
   final List<Span> spans;
+  final List<InlineView> inlines;
+
+  /// For atoms: `imageFigure`, `mermaidFigure`, `infographicFigure` or
+  /// `horizontalRule`, with their attributes and caption.
+  final String nodeName;
+  final Map<String, Object?> attrs;
+  final String caption;
+
+  String attr(String key) => attrs[key] as String? ?? '';
+}
+
+/// A mention chip or hard break at `at` in its block's text.
+class InlineView {
+  InlineView.fromJson(Map<String, dynamic> j)
+    : at = j['at'] as int,
+      name = j['name'] as String,
+      attrs = (j['attrs'] as Map).cast<String, Object?>();
+
+  final int at;
+  final String name;
+  final Map<String, Object?> attrs;
+
+  String attr(String key) => attrs[key] as String? ?? '';
+
+  /// What a chip shows: `@Label` (the handle when there is no label).
+  String get chip =>
+      '@${attr('label').isEmpty ? attr('handle') : attr('label')}';
 }
 
 class ViewState {

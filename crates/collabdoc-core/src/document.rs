@@ -353,7 +353,7 @@ impl Document {
     pub fn plain_text(&self) -> String {
         self.blocks()
             .iter()
-            .map(|b| b.text.as_str())
+            .map(ViewBlock::label)
             .collect::<Vec<_>>()
             .join("\n")
     }

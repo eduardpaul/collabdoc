@@ -76,6 +76,13 @@ class Workspace extends ChangeNotifier {
   final Settings settings;
   final List<Participant> participants = [];
   String status = '';
+
+  /// One line for the status bar (a refused image…).
+  void setStatus(String text) {
+    status = text;
+    notifyListeners();
+  }
+
   PersistState? persist;
   bool _closed = false;
 

@@ -83,6 +83,24 @@ void html_received(GtkClipboard*, GtkSelectionData* selection,
   fl_method_call_respond_success(call, result, nullptr);
 }
 
+// An image on the clipboard (a screenshot, an image copied in a browser),
+// re-encoded as PNG whatever its format, or null.
+void image_received(GtkClipboard*, GdkPixbuf* pixbuf, gpointer user_data) {
+  g_autoptr(FlMethodCall) call = FL_METHOD_CALL(user_data);
+  g_autoptr(FlValue) result = nullptr;
+  gchar* buffer = nullptr;
+  gsize size = 0;
+  if (pixbuf != nullptr &&
+      gdk_pixbuf_save_to_buffer(pixbuf, &buffer, &size, "png", nullptr,
+                                nullptr)) {
+    result = fl_value_new_uint8_list(reinterpret_cast<const uint8_t*>(buffer),
+                                     size);
+  }
+  g_free(buffer);
+  if (result == nullptr) result = fl_value_new_null();
+  fl_method_call_respond_success(call, result, nullptr);
+}
+
 const gchar* string_arg(FlValue* args, const gchar* key) {
   if (args == nullptr || fl_value_get_type(args) != FL_VALUE_TYPE_MAP) {
     return "";
@@ -104,6 +122,9 @@ void method_call(FlMethodChannel*, FlMethodCall* call, gpointer) {
         gtk_clipboard_get(GDK_SELECTION_CLIPBOARD),
         gdk_atom_intern_static_string("text/html"), html_received,
         g_object_ref(call));
+  } else if (g_strcmp0(method, "readImage") == 0) {
+    gtk_clipboard_request_image(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD),
+                                image_received, g_object_ref(call));
   } else {
     fl_method_call_respond_not_implemented(call, nullptr);
   }
