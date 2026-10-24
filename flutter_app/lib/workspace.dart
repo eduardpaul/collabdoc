@@ -5,9 +5,12 @@
 // same shape as the GPUI build's windows and the TS SyncHub. Carets travel
 // the same way, as presence beside the document.
 
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 
 import 'native.dart';
+import 'settings.dart';
 
 /// Caret colors, one per participant in join order.
 const participantColors = [
@@ -36,12 +39,14 @@ class Participant {
 }
 
 class Workspace extends ChangeNotifier {
-  Workspace.open(String? path) {
+  Workspace.open(String? path, {Settings? settings})
+    : settings = settings ?? Settings.forUser() {
     participants.add(
       Participant('You', participantColors[0], Session.open(path)),
     );
   }
 
+  final Settings settings;
   final List<Participant> participants = [];
   bool dirty = false;
   String status = '';
@@ -65,6 +70,19 @@ class Workspace extends ChangeNotifier {
     participants.remove(p);
     p.session.dispose(); // which also takes its caret away
     _presenceChanged(null);
+    notifyListeners();
+  }
+
+  /// Chooses the renderer for the next start.
+  void setRenderer(Renderer renderer) {
+    try {
+      settings.renderer = renderer;
+      status = renderer == settings.activeRenderer || renderer == Renderer.auto
+          ? 'Renderer: ${renderer.label}'
+          : 'Renderer: ${renderer.label} from the next start';
+    } on FileSystemException catch (e) {
+      status = 'Could not save settings: ${e.message}';
+    }
     notifyListeners();
   }
 

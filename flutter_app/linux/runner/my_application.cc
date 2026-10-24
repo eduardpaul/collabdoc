@@ -19,6 +19,48 @@ static void first_frame_cb(MyApplication* self, FlView* view) {
   gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
 }
 
+// The renderer, chosen before Flutter starts (lib/settings.dart writes the
+// choice): `[display] renderer=auto|gpu|software` in
+// $XDG_CONFIG_HOME/collabdoc/settings.ini, overridden by COLLABDOC_RENDERER.
+// Software is Skia's CPU rasterizer: about 100 MB less memory than the GPU
+// path and no GPU needed. `auto` picks it when there is no GPU render node.
+
+static gboolean has_gpu() {
+  if (g_strcmp0(g_getenv("LIBGL_ALWAYS_SOFTWARE"), "1") == 0) return FALSE;
+  g_autoptr(GDir) dri = g_dir_open("/dev/dri", 0, nullptr);
+  if (dri == nullptr) return FALSE;
+  const gchar* name;
+  while ((name = g_dir_read_name(dri)) != nullptr) {
+    if (g_str_has_prefix(name, "renderD")) return TRUE;
+  }
+  return FALSE;
+}
+
+static gchar* configured_renderer() {
+  const gchar* env = g_getenv("COLLABDOC_RENDERER");
+  if (env != nullptr && *env != '\0') return g_strdup(env);
+  g_autofree gchar* path = g_build_filename(
+      g_get_user_config_dir(), "collabdoc", "settings.ini", nullptr);
+  g_autoptr(GKeyFile) settings = g_key_file_new();
+  gchar* value = nullptr;
+  if (g_key_file_load_from_file(settings, path, G_KEY_FILE_NONE, nullptr)) {
+    value = g_key_file_get_string(settings, "display", "renderer", nullptr);
+  }
+  return value != nullptr ? value : g_strdup("auto");
+}
+
+static gboolean use_software_renderer() {
+  // Flutter's own switch set by hand: honour it, with Impeller off below
+  // (the engine aborts on software rendering with Impeller on).
+  if (g_strcmp0(g_getenv("FLUTTER_LINUX_RENDERER"), "software") == 0) {
+    return TRUE;
+  }
+  g_autofree gchar* choice = configured_renderer();
+  if (g_strcmp0(choice, "software") == 0) return TRUE;
+  if (g_strcmp0(choice, "gpu") == 0) return FALSE;
+  return !has_gpu();
+}
+
 // Implements GApplication::activate.
 static void my_application_activate(GApplication* application) {
   MyApplication* self = MY_APPLICATION(application);
@@ -57,6 +99,13 @@ static void my_application_activate(GApplication* application) {
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(
       project, self->dart_entrypoint_arguments);
+  const gboolean software = use_software_renderer();
+  if (software) {
+    fl_dart_project_set_enable_impeller(project, FALSE);
+    g_setenv("FLUTTER_LINUX_RENDERER", "software", TRUE);
+  }
+  // For the app to show which renderer is running.
+  g_setenv("COLLABDOC_RENDERER_ACTIVE", software ? "software" : "gpu", TRUE);
 
   FlView* view = fl_view_new(project);
   GdkRGBA background_color;

@@ -4,8 +4,11 @@
 // Needs the native library: `cargo build -p collabdoc-ffi`, then
 //   COLLABDOC_FFI_LIB=../target/debug/libcollabdoc_ffi.so flutter test
 
+import 'dart:io';
+
 import 'package:collabdoc/editor.dart';
 import 'package:collabdoc/main.dart';
+import 'package:collabdoc/settings.dart';
 import 'package:collabdoc/workspace.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -50,7 +53,13 @@ Future<Workspace> launch(WidgetTester tester) async {
   tester.view.physicalSize = const Size(1600, 900);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
-  final ws = Workspace.open(null);
+  // Settings in a temporary folder, never the user's.
+  final config = Directory.systemTemp.createTempSync('collabdoc-test');
+  addTearDown(() => config.deleteSync(recursive: true));
+  final ws = Workspace.open(
+    null,
+    settings: Settings(File('${config.path}/settings.ini')),
+  );
   addTearDown(ws.dispose);
   await tester.pumpWidget(CollabDocApp(workspace: ws));
   await tester.pump();
@@ -395,5 +404,31 @@ void main() {
     await drag.up();
     await tester.pump(const Duration(milliseconds: 200));
     expect(pane.scroll.offset, scrolled);
+  });
+
+  testWidgets('the status bar picks the renderer for the next start', (
+    tester,
+  ) async {
+    final ws = await launch(tester);
+    expect(find.text('Renderer: Automatic'), findsOneWidget);
+    ws.addPeer();
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('renderer-menu')),
+      findsOneWidget,
+      reason: 'one per app, not per pane',
+    );
+
+    await tester.tap(find.byKey(const ValueKey('renderer-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('renderer-software')));
+    await tester.pumpAndSettle();
+    expect(ws.settings.renderer, Renderer.software);
+    expect(
+      ws.settings.file.readAsStringSync(),
+      '[display]\nrenderer=software\n',
+    );
+    expect(find.text('Renderer: Software'), findsOneWidget);
+    expect(ws.status, 'Renderer: Software from the next start');
   });
 }

@@ -160,7 +160,7 @@ flutter run -d linux -a notes.collabdoc            # CMake builds crates/collabd
 cargo build -p collabdoc-ffi && COLLABDOC_FFI_LIB=$PWD/../target/debug/libcollabdoc_ffi.so flutter test
 ```
 
-`scripts/flutter-smoke.sh` drives the built app on a virtual display and saves screenshots.
+`scripts/flutter-smoke.sh` drives the built app on a virtual display and saves screenshots. `scripts/flutter-onefile.sh` builds the release app as one executable (`dist/collabdoc-linux-x86_64`, about 11 MB) with `crates/collabdoc-launcher`.
 
 ## Layout
 
@@ -173,6 +173,7 @@ crates/
   collabdoc-core/  Rust document core (Loro), toolkit-independent editing
   collabdoc-gpui/  Rust desktop editor (GPUI), the `collabdoc` binary
   collabdoc-ffi/   C ABI over the core for the Flutter front end
+  collabdoc-launcher/  Packs the Flutter build into one self-unpacking executable
 flutter_app/     Flutter desktop editor over collabdoc-ffi (experiment)
 scripts/         Dev launcher (WSL / Windows), GPUI and Flutter smoke tests
 electron.vite.config.ts

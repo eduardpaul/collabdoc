@@ -1,0 +1,11 @@
+[package]
+name = "collabdoc-launcher"
+description = "Ships a folder app (the Flutter build) as one self-unpacking executable"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tar = "0.4"
+zstd = "0.13"

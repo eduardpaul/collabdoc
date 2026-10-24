@@ -148,9 +148,21 @@ Expect it to sit around 110–120 MB with the 50-page document; that figure is a
 4. Skip glibc tuning; it didn't pay off.
 5. Consider a custom embedder only if the last ~40–50 MB matters more than the maintenance.
 
+### Implemented
+
+- **`crates/collabdoc-launcher`** packs the bundle into one file. `scripts/flutter-onefile.sh` builds the release app with `--split-debug-info --obfuscate` and writes `dist/collabdoc-linux-x86_64`.
+  - Size: 10.9 MB, of which the launcher is 1.06 MB.
+  - Memory: the same as the folder build in both renderers (257 / 158 MB on the 50-page document).
+  - First run checks the payload's hash and unpacks it atomically. Later runs `exec` the app directly, and older versions are removed from the cache.
+  - The Windows launcher cross-compiles (`x86_64-pc-windows-gnu`, GUI subsystem; it starts the app and exits) but has not been run on Windows.
+- **Renderer setting:** the status bar of the first pane shows the running renderer, with a menu for the next start (Automatic / GPU / Software).
+  - The choice is stored in `$XDG_CONFIG_HOME/collabdoc/settings.ini` and `COLLABDOC_RENDERER` overrides it.
+  - The GTK runner resolves it before the engine starts. Automatic means software when there is no `/dev/dri/renderD*` (or `LIBGL_ALWAYS_SOFTWARE=1`).
+  - Software always turns Impeller off with it, so `FLUTTER_LINUX_RENDERER=software` set by hand now works instead of aborting.
+
 ## Conclusion for the decision
 
-- **The goal was a single binary and the lowest resource use.** GPUI meets both: one 20 MB file and about half of Flutter's memory. Flutter can't ship as one file (the engine, AOT code and assets are separate files) and uses roughly twice the memory in this setup.
+- **The goal was a single binary and the lowest resource use.** GPUI meets both: one 20 MB file and about half of Flutter's memory with Flutter's default renderer. Flutter's build is a folder, but the launcher above ships it as one 10.9 MB file. The software renderer brings it to 158 MB on the 50-page document, against GPUI's 150 MB.
 - **Flutter is quicker to build UI with.** Hot reload, a mature text stack, built-in semantics and stable APIs, and it would also reach mobile.
 - **The editing core is shared.** Choosing a front end does not throw away editor work: all editing rules, sync and file compatibility live in `collabdoc-core`, and both front ends stay thin (`editor_view.rs` ≈ 1,250 lines, `editor.dart` ≈ 1,100 lines).
 

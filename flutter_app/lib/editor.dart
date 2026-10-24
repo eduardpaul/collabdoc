@@ -19,6 +19,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'model.dart';
 import 'native.dart';
+import 'settings.dart';
 import 'theme.dart';
 import 'workspace.dart';
 
@@ -1232,9 +1233,47 @@ class EditorPaneState extends State<EditorPane>
             Flexible(child: Text(saved, overflow: TextOverflow.ellipsis)),
             const Spacer(),
             Flexible(child: Text(ws.status, overflow: TextOverflow.ellipsis)),
+            // The renderer is the app's, not a participant's: shown once.
+            if (identical(widget.participant, ws.participants.first)) ...[
+              const SizedBox(width: 16),
+              _rendererMenu(ws),
+            ],
           ],
         ),
       ),
+    );
+  }
+
+  /// Which renderer is running, and a menu to pick one for the next start.
+  Widget _rendererMenu(Workspace ws) {
+    final chosen = ws.settings.renderer;
+    final active = ws.settings.activeRenderer;
+    final label = active == null
+        ? chosen.label
+        : chosen == Renderer.auto
+        ? '${active.label} (auto)'
+        : active.label;
+    return PopupMenuButton<Renderer>(
+      key: const ValueKey('renderer-menu'),
+      tooltip:
+          'Renderer: Software uses about 100 MB less memory and needs '
+          'no GPU; GPU draws faster on large screens. Applies on restart.',
+      initialValue: chosen,
+      onSelected: ws.setRenderer,
+      itemBuilder: (context) => [
+        for (final r in Renderer.values)
+          PopupMenuItem(
+            key: ValueKey('renderer-${r.name}'),
+            value: r,
+            child: Row(
+              children: [
+                SizedBox(width: 20, child: Text(r == chosen ? '●' : '')),
+                Text(r.label),
+              ],
+            ),
+          ),
+      ],
+      child: Text('Renderer: $label'),
     );
   }
 
