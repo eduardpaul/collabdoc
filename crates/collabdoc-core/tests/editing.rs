@@ -266,3 +266,39 @@ fn links_are_set_edited_found_and_removed() {
     assert_eq!(e.blocks()[0].text, "read the docs todayhttps://example.com");
     assert_eq!(e.link_at(e.len()).unwrap().0, 19..38);
 }
+
+#[test]
+fn ctrl_arrows_move_by_word_and_ctrl_backspace_deletes_one() {
+    let mut e = Editor::new(Document::create("t", "me"));
+    e.insert_text("Hello, wörld 👍 snake_case\nnext");
+    let end = e.block_start(0) + "Hello, wörld 👍 snake_case".encode_utf16().count();
+    // Left: to word starts, skipping punctuation, spaces and emoji.
+    e.move_to(end);
+    let mut stops = vec![];
+    for _ in 0..4 {
+        e.move_word_left(false);
+        stops.push(e.head());
+    }
+    let at = |s: &str| s.encode_utf16().count();
+    assert_eq!(stops, [at("Hello, wörld 👍 "), at("Hello, "), 0, 0]);
+    // Right: to word ends; at the end of the block, into the next.
+    let mut stops = vec![];
+    for _ in 0..4 {
+        e.move_word_right(false);
+        stops.push(e.head());
+    }
+    assert_eq!(stops, [at("Hello"), at("Hello, wörld"), end, end + 1]);
+    // Left at the start of a block goes to the end of the one before.
+    e.move_word_left(false);
+    assert_eq!(e.head(), end);
+    // Shift extends.
+    e.move_word_left(true);
+    assert_eq!(e.text_in(e.selection()), "snake_case");
+
+    e.move_to(end);
+    assert!(e.delete_word_backward());
+    assert_eq!(e.blocks()[0].text, "Hello, wörld 👍 ");
+    e.move_to(0);
+    assert!(e.delete_word_forward());
+    assert_eq!(e.blocks()[0].text, ", wörld 👍 ");
+}

@@ -20,6 +20,7 @@ COLLABDOC_FFI_LIB=$PWD/../target/debug/libcollabdoc_ffi.so flutter test
 | Ctrl+Alt+0 / 1 / 2 / 3 / C | Paragraph, heading 1–3, code block |
 | Ctrl+Shift+8 / 7 / 9, Tab, Shift+Tab | Bullet, numbered, task list; nest, lift |
 | Ctrl+Shift+B | Quote on or off |
+| Ctrl+←/→ (with Shift), Ctrl+Backspace/Delete | Move or select by word; delete a word |
 | Ctrl+K, Ctrl+click | Edit link, open link |
 | Ctrl+C / X / V, Ctrl+Shift+V | Copy, cut and paste as Markdown; paste plain text |
 | Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z | Undo, redo (per participant) |

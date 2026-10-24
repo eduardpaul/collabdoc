@@ -353,8 +353,10 @@ class EditorPaneState extends State<EditorPane>
         if (shift) LogicalKeyboardKey.keyN: widget.workspace.addPeer,
         LogicalKeyboardKey.home: () => _select(0, 0),
         LogicalKeyboardKey.end: () => _select(view.length, view.length),
-        LogicalKeyboardKey.arrowLeft: () => _word(false, shift),
-        LogicalKeyboardKey.arrowRight: () => _word(true, shift),
+        LogicalKeyboardKey.arrowLeft: () => op('wordLeft', {'extend': shift}),
+        LogicalKeyboardKey.arrowRight: () => op('wordRight', {'extend': shift}),
+        LogicalKeyboardKey.backspace: () => op('deleteWordBack'),
+        LogicalKeyboardKey.delete: () => op('deleteWordForward'),
       };
     } else {
       table = {
@@ -376,44 +378,6 @@ class EditorPaneState extends State<EditorPane>
     if (action == null) return KeyEventResult.ignored;
     action();
     return KeyEventResult.handled;
-  }
-
-  void _word(bool forward, bool extend) {
-    final i = view.blockAt(view.head);
-    final text = view.blocks[i].text;
-    final start = view.starts[i];
-    var local = view.head - start;
-    final isWord = RegExp(r'[\p{L}\p{N}_]', unicode: true);
-    bool word(int at) =>
-        at >= 0 && at < text.length && isWord.hasMatch(text[at]);
-    int target;
-    if (forward) {
-      if (local >= text.length) {
-        target = view.head + 1;
-      } else {
-        while (local < text.length && !word(local)) {
-          local++;
-        }
-        while (local < text.length && word(local)) {
-          local++;
-        }
-        target = start + local;
-      }
-    } else {
-      if (local == 0) {
-        target = view.head - 1;
-      } else {
-        while (local > 0 && !word(local - 1)) {
-          local--;
-        }
-        while (local > 0 && word(local - 1)) {
-          local--;
-        }
-        target = start + local;
-      }
-    }
-    target = target.clamp(0, view.length);
-    _select(extend ? view.anchor : target, target);
   }
 
   // ── Geometry ─────────────────────────────────────────────────────────

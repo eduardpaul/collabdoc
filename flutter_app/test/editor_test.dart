@@ -463,4 +463,27 @@ void main() {
     expect(texts(pane), ['one', 'two', 'after']);
     expect(depths(), [1, 1, 0]);
   });
+
+  testWidgets('Ctrl+arrows move by word, Ctrl+Backspace deletes one', (
+    tester,
+  ) async {
+    await launch(tester);
+    final pane = tester.state<EditorPaneState>(find.byType(EditorPane));
+    type(pane, 'alpha beta gamma');
+    await tester.pump();
+    final ctrl = [LogicalKeyboardKey.controlLeft];
+    await chord(tester, ctrl, LogicalKeyboardKey.arrowLeft);
+    expect(pane.view.head, 11);
+    await chord(tester, [
+      ...ctrl,
+      LogicalKeyboardKey.shiftLeft,
+    ], LogicalKeyboardKey.arrowLeft);
+    expect((pane.view.anchor, pane.view.head), (11, 6));
+    await chord(tester, ctrl, LogicalKeyboardKey.end);
+    await chord(tester, ctrl, LogicalKeyboardKey.backspace);
+    expect(texts(pane), ['alpha beta ']);
+    await chord(tester, ctrl, LogicalKeyboardKey.home);
+    await chord(tester, ctrl, LogicalKeyboardKey.delete);
+    expect(texts(pane), [' beta ']);
+  });
 }

@@ -252,6 +252,77 @@ impl Editor {
         self.starts[index] + utf16::from_utf8(text, next8)
     }
 
+    /// Ctrl+Left: the start of the word before `offset` (Chromium on Linux);
+    /// at the start of a block, the end of the one before.
+    pub fn previous_word(&self, offset: usize) -> usize {
+        let (index, local) = self.locate(offset);
+        if local == 0 {
+            return offset.saturating_sub(1);
+        }
+        let text = &self.blocks[index].text;
+        let local8 = utf16::to_utf8(text, local);
+        let start8 = text
+            .split_word_bound_indices()
+            .filter(|(i, w)| *i < local8 && is_word(w))
+            .last()
+            .map_or(0, |(i, _)| i);
+        self.starts[index] + utf16::from_utf8(text, start8)
+    }
+
+    /// Ctrl+Right: the end of the word after `offset`; at the end of a block,
+    /// the start of the next.
+    pub fn next_word(&self, offset: usize) -> usize {
+        let (index, local) = self.locate(offset);
+        if local >= self.block_len(index) {
+            return (offset + 1).min(self.len());
+        }
+        let text = &self.blocks[index].text;
+        let local8 = utf16::to_utf8(text, local);
+        let end8 = text
+            .split_word_bound_indices()
+            .map(|(i, w)| (i + w.len(), w))
+            .find(|(end, w)| *end > local8 && is_word(w))
+            .map_or(text.len(), |(end, _)| end);
+        self.starts[index] + utf16::from_utf8(text, end8)
+    }
+
+    pub fn move_word_left(&mut self, extend: bool) {
+        let target = self.previous_word(self.head);
+        if extend {
+            self.select_to(target)
+        } else {
+            self.move_to(target)
+        }
+    }
+
+    pub fn move_word_right(&mut self, extend: bool) {
+        let target = self.next_word(self.head);
+        if extend {
+            self.select_to(target)
+        } else {
+            self.move_to(target)
+        }
+    }
+
+    /// Ctrl+Backspace: deletes back to the start of the word (or the
+    /// selection).
+    pub fn delete_word_backward(&mut self) -> bool {
+        let mut range = self.selection();
+        if range.is_empty() {
+            range.start = self.previous_word(range.start);
+        }
+        self.replace(range, "")
+    }
+
+    /// Ctrl+Delete: deletes to the end of the word (or the selection).
+    pub fn delete_word_forward(&mut self) -> bool {
+        let mut range = self.selection();
+        if range.is_empty() {
+            range.end = self.next_word(range.end);
+        }
+        self.replace(range, "")
+    }
+
     pub fn move_left(&mut self, extend: bool) {
         let sel = self.selection();
         let target = if !extend && !sel.is_empty() {
@@ -926,6 +997,11 @@ struct Anchor {
     key: String,
     local: usize,
     cursor: Option<Cursor>,
+}
+
+/// A word segment, as opposed to spaces and punctuation between words.
+fn is_word(segment: &str) -> bool {
+    segment.chars().any(|c| c.is_alphanumeric() || c == '_')
 }
 
 /// Characters (Unicode scalar values) in the first `utf16_offset` units of `text`.

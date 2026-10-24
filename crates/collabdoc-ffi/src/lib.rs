@@ -212,6 +212,16 @@ impl Session {
                 e.move_right(extend);
                 false
             }
+            "wordLeft" => {
+                e.move_word_left(extend);
+                false
+            }
+            "wordRight" => {
+                e.move_word_right(extend);
+                false
+            }
+            "deleteWordBack" => e.delete_word_backward(),
+            "deleteWordForward" => e.delete_word_forward(),
             "home" => {
                 e.move_home(extend);
                 false
