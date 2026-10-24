@@ -13,9 +13,11 @@ use loro::cursor::{Cursor, Side};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::document::Document;
+use crate::html;
 use crate::markdown;
 use crate::model::{BlockKind, ListKind, TargetBlock, ViewBlock, masks, spans_from_masks};
 use crate::schema::{LINK_BIT, mark_bit};
+use crate::structure::NodeSnap;
 use crate::utf16;
 use loro::LoroValue;
 
@@ -834,13 +836,28 @@ impl Editor {
     /// The selection as Markdown: what Ctrl+C puts on the clipboard, as the
     /// Tiptap app's `ClipboardMarkdown` does.
     pub fn selection_markdown(&self) -> String {
+        markdown::render(&self.selected_views())
+    }
+
+    /// The selection as HTML, for the clipboard's `text/html` beside the
+    /// Markdown text.
+    pub fn selection_html(&self) -> String {
+        let views = self.selected_views();
+        if views.is_empty() {
+            return String::new();
+        }
+        html::render(&views)
+    }
+
+    /// The selected blocks, the first and last cut to the selection.
+    fn selected_views(&self) -> Vec<ViewBlock> {
         let range = self.selection();
         if range.is_empty() {
-            return String::new();
+            return vec![];
         }
         let (bs, os) = self.locate(range.start);
         let (be, oe) = self.locate(range.end);
-        let views: Vec<ViewBlock> = (bs..=be)
+        (bs..=be)
             .map(|i| {
                 let mut view = self.blocks[i].clone();
                 if view.editable {
@@ -853,8 +870,7 @@ impl Editor {
                 }
                 view
             })
-            .collect();
-        markdown::render(&views)
+            .collect()
     }
 
     /// Ctrl+V. Text that looks like Markdown (as the TS clipboard decides)
@@ -863,8 +879,28 @@ impl Editor {
         if !markdown::looks_like_markdown(text) {
             return self.insert_text(text);
         }
-        let nodes = markdown::parse(text);
-        if let Some(runs) = markdown::single_paragraph(&nodes) {
+        self.paste_nodes(&markdown::parse(text), text)
+    }
+
+    /// Paste with `text/html` on the clipboard: the HTML decides (as in
+    /// ProseMirror), `text` is the fallback where blocks cannot go.
+    pub fn paste_html(&mut self, html: &str, text: &str) -> bool {
+        let nodes = html::parse(html);
+        if nodes.is_empty() {
+            return self.paste(text);
+        }
+        self.paste_nodes(&nodes, text)
+    }
+
+    /// Inserts a Mermaid diagram with `source` at the caret (the "Insert as
+    /// diagram" answer when pasted text looks like Mermaid).
+    pub fn insert_mermaid(&mut self, source: &str) -> bool {
+        let figure = markdown::mermaid_figure(source.trim_end());
+        self.paste_nodes(&[figure], source)
+    }
+
+    fn paste_nodes(&mut self, nodes: &[NodeSnap], text: &str) -> bool {
+        if let Some(runs) = markdown::single_paragraph(nodes) {
             let runs: Vec<Run> = runs
                 .iter()
                 .map(|(t, marks)| {
@@ -900,7 +936,7 @@ impl Editor {
             return self.insert_text(text);
         }
         let id = stable_id(block);
-        match self.doc.paste_blocks(&id, local, &nodes) {
+        match self.doc.paste_blocks(&id, local, nodes) {
             Some(last) => {
                 self.reload();
                 if let Some(i) = self.blocks.iter().position(|b| stable_id(b) == last) {

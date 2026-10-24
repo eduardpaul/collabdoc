@@ -159,6 +159,12 @@ impl Session {
         let changed = match s("op") {
             "insert" => e.insert_text(s("text")),
             "paste" => e.paste(s("text")),
+            "pasteHtml" => e.paste_html(s("html"), s("text")),
+            "insertMermaid" => e.insert_mermaid(s("source")),
+            "looksLikeMermaid" => {
+                let yes = collabdoc_core::markdown::looks_like_mermaid(s("text"));
+                return json!({ "ok": true, "mermaid": yes });
+            }
             "replace" => e.replace(n("start")..n("end"), s("text")),
             "newline" => e.newline(),
             "backspace" => e.backspace(),
@@ -254,6 +260,14 @@ impl Session {
                     })
                     .unwrap_or_default();
                 e.replace_matches(&ranges, s("text"))
+            }
+            // The selection as Markdown text and as HTML, for the clipboard.
+            "copy" => {
+                return json!({
+                    "ok": true,
+                    "text": e.selection_markdown(),
+                    "html": e.selection_html(),
+                });
             }
             "copyMarkdown" => return json!({ "ok": true, "text": e.selection_markdown() }),
             "setUser" => {

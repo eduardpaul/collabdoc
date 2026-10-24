@@ -17,6 +17,7 @@ import 'package:flutter/services.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'clipboard.dart';
 import 'find_bar.dart';
 import 'model.dart';
 import 'native.dart';
@@ -330,22 +331,46 @@ class EditorPaneState extends State<EditorPane>
     );
   }
 
+  /// Copies the selection as Markdown text and as HTML.
   Future<void> _copy({bool cut = false}) async {
     if (view.selectionStart == view.selectionEnd) return;
-    final reply = session.call({'op': 'copyMarkdown'});
-    await Clipboard.setData(ClipboardData(text: reply['text'] as String));
+    final reply = session.call({'op': 'copy'});
+    await RichClipboard.write(reply['text'] as String, reply['html'] as String);
     if (cut) run({'op': 'insert', 'text': ''});
   }
 
-  /// Ctrl+V reads Markdown into blocks and marks; Ctrl+Shift+V types it as is.
+  /// Ctrl+V, in the TS app's order: Mermaid source asks whether it is a
+  /// diagram; HTML becomes blocks and marks; text that looks like Markdown
+  /// too; anything else is typed. Ctrl+Shift+V types the text as is.
   Future<void> _paste({bool plain = false}) async {
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    final text = data?.text;
-    if (text != null && mounted) {
-      run({
-        'op': plain ? 'insert' : 'paste',
-        'text': text.replaceAll('\r\n', '\n'),
-      });
+    final text = (await RichClipboard.readText())?.replaceAll('\r\n', '\n');
+    if (!mounted) return;
+    if (plain) {
+      if (text != null) run({'op': 'insert', 'text': text});
+      return;
+    }
+    if (text != null &&
+        session.call({'op': 'looksLikeMermaid', 'text': text})['mermaid'] ==
+            true) {
+      final diagram = await showDialog<bool>(
+        context: context,
+        builder: (context) => const _MermaidDialog(),
+      );
+      if (!mounted || diagram == null) return;
+      focus.requestFocus();
+      run(
+        diagram
+            ? {'op': 'insertMermaid', 'source': text}
+            : {'op': 'insert', 'text': text},
+      );
+      return;
+    }
+    final html = await RichClipboard.readHtml();
+    if (!mounted) return;
+    if (html != null) {
+      run({'op': 'pasteHtml', 'html': html, 'text': text ?? ''});
+    } else if (text != null) {
+      run({'op': 'paste', 'text': text});
     }
   }
 
@@ -1700,6 +1725,40 @@ class _LinkDialogState extends State<_LinkDialog> {
           key: const ValueKey('link-save'),
           onPressed: () => Navigator.of(context).pop(url.text),
           child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
+/// "Insert as Mermaid diagram?" when pasted text looks like Mermaid source,
+/// as in the TS app: true for a diagram, false for text.
+class _MermaidDialog extends StatelessWidget {
+  const _MermaidDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: AppColors.panel,
+      title: const Text(
+        'Insert as Mermaid diagram?',
+        style: TextStyle(
+          fontFamily: uiFont,
+          fontSize: 15,
+          color: AppColors.text,
+        ),
+      ),
+      actions: [
+        TextButton(
+          key: const ValueKey('mermaid-text'),
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Insert as text'),
+        ),
+        TextButton(
+          key: const ValueKey('mermaid-diagram'),
+          autofocus: true,
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Insert as diagram'),
         ),
       ],
     );

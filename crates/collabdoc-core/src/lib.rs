@@ -6,6 +6,7 @@
 pub mod document;
 pub mod editing;
 pub mod file;
+pub mod html;
 pub mod ids;
 pub mod markdown;
 pub mod model;

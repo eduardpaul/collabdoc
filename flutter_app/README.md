@@ -23,7 +23,7 @@ COLLABDOC_FFI_LIB=$PWD/../target/debug/libcollabdoc_ffi.so flutter test
 | Ctrl+←/→ (with Shift), Ctrl+Backspace/Delete | Move or select by word; delete a word |
 | Ctrl+K, Ctrl+click | Edit link, open link |
 | Ctrl+F, Ctrl+H | Find, replace (Enter / Shift+Enter: next / previous; Esc closes) |
-| Ctrl+C / X / V, Ctrl+Shift+V | Copy, cut and paste as Markdown; paste plain text |
+| Ctrl+C / X / V, Ctrl+Shift+V | Copy and cut as Markdown text plus HTML; paste HTML, Markdown or text (Mermaid source asks); paste plain text |
 | Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z | Undo, redo (per participant) |
 | Ctrl+Shift+N | Add a participant pane |
 | Ctrl+S, Ctrl+O | Save, open |

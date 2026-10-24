@@ -242,7 +242,20 @@ void main() {
     );
   });
 
-  testWidgets('copy writes Markdown, paste reads it back', (tester) async {
+  testWidgets('without the rich clipboard, copy and paste use plain text', (
+    tester,
+  ) async {
+    // No runner channel (another platform): nobody answers, plain text only.
+    tester.binding.defaultBinaryMessenger.setMockMessageHandler(
+      'collabdoc/clipboard',
+      (message) async => null,
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMessageHandler(
+        'collabdoc/clipboard',
+        null,
+      ),
+    );
     String? clipboard;
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
       SystemChannels.platform,
@@ -542,5 +555,71 @@ void main() {
     expect(pane.focus.hasFocus, isTrue);
     await chord(tester, ctrl, LogicalKeyboardKey.keyZ);
     expect(texts(pane), ['one two 1', 'three One']);
+  });
+
+  testWidgets('rich clipboard: copy offers HTML, paste prefers it, '
+      'Mermaid source asks first', (tester) async {
+    String? text;
+    String? html;
+    final messenger = tester.binding.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.getData') return {'text': text};
+      return null;
+    });
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('collabdoc/clipboard'),
+      (call) async {
+        if (call.method == 'write') {
+          final args = call.arguments as Map;
+          text = args['text'] as String;
+          html = args['html'] as String;
+        }
+        if (call.method == 'readHtml') return html;
+        return null;
+      },
+    );
+    addTearDown(() {
+      messenger.setMockMethodCallHandler(SystemChannels.platform, null);
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('collabdoc/clipboard'),
+        null,
+      );
+    });
+    final ctrl = [LogicalKeyboardKey.controlLeft];
+
+    await launch(tester);
+    final pane = tester.state<EditorPaneState>(find.byType(EditorPane));
+    type(pane, 'Bold');
+    await chord(tester, [
+      LogicalKeyboardKey.shiftLeft,
+    ], LogicalKeyboardKey.home);
+    await chord(tester, ctrl, LogicalKeyboardKey.keyB);
+    await chord(tester, ctrl, LogicalKeyboardKey.keyC);
+    await tester.pumpAndSettle();
+    expect(text, '**Bold**');
+    expect(html, '<meta charset="utf-8"><p><strong>Bold</strong></p>');
+
+    // HTML wins over the text beside it.
+    text = 'plain words';
+    html = '<h2>From a browser</h2><ul><li>item</li></ul>';
+    await chord(tester, ctrl, LogicalKeyboardKey.end);
+    await chord(tester, ctrl, LogicalKeyboardKey.keyV);
+    await tester.pumpAndSettle();
+    expect(texts(pane), ['Bold', 'From a browser', 'item']);
+    expect(pane.view.blocks[1].kind, 'heading');
+    expect(pane.view.blocks[2].list, 'bullet');
+
+    // Mermaid source: asked, then inserted as a diagram.
+    text = 'graph TD\n  A --> B';
+    html = null;
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await chord(tester, ctrl, LogicalKeyboardKey.keyV);
+    await tester.pumpAndSettle();
+    expect(find.text('Insert as Mermaid diagram?'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('mermaid-diagram')));
+    await tester.pumpAndSettle();
+    expect(pane.view.blocks.any((b) => b.kind == 'atom'), isTrue);
+    expect(pane.focus.hasFocus, isTrue);
   });
 }

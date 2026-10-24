@@ -34,6 +34,37 @@ pub fn looks_like_markdown(text: &str) -> bool {
         })
 }
 
+/// First words of Mermaid diagrams (`MERMAID_PREFIXES` in the TS app).
+const MERMAID_PREFIXES: &[&str] = &[
+    "flowchart",
+    "graph",
+    "sequenceDiagram",
+    "classDiagram",
+    "stateDiagram",
+    "erDiagram",
+    "gantt",
+    "pie",
+    "mindmap",
+    "timeline",
+];
+
+/// Whether pasted plain text is Mermaid source the app should offer to turn
+/// into a diagram (`looksLikeMermaidSource` and the paste rule around it).
+pub fn looks_like_mermaid(text: &str) -> bool {
+    let first = text.trim().lines().next().unwrap_or("");
+    !text.contains("\n```")
+        && MERMAID_PREFIXES.iter().any(|p| {
+            first == *p
+                || first.starts_with(&format!("{p} "))
+                || first.starts_with(&format!("{p}\t"))
+        })
+}
+
+/// A `mermaidFigure` with `source` and no caption.
+pub(crate) fn mermaid_figure(source: &str) -> NodeSnap {
+    node("mermaidFigure", vec![("source".into(), source.into())])
+}
+
 // ── Out ─────────────────────────────────────────────────────────────────
 
 /// Markdown for a run of blocks in reading order (a selection, or a whole
@@ -143,9 +174,9 @@ fn inline(block: &ViewBlock) -> String {
 
 // ── In ──────────────────────────────────────────────────────────────────
 
-type Runs = Vec<(String, Vec<(String, LoroValue)>)>;
+pub(crate) type Runs = Vec<(String, Vec<(String, LoroValue)>)>;
 
-fn mark(name: &str, href: Option<&str>) -> (String, LoroValue) {
+pub(crate) fn mark(name: &str, href: Option<&str>) -> (String, LoroValue) {
     let mut attrs: HashMap<String, LoroValue> = HashMap::new();
     if let Some(href) = href {
         attrs.insert("href".into(), href.into());
@@ -153,7 +184,7 @@ fn mark(name: &str, href: Option<&str>) -> (String, LoroValue) {
     (name.to_owned(), attrs.into())
 }
 
-fn node(name: &str, attrs: Vec<(String, LoroValue)>) -> NodeSnap {
+pub(crate) fn node(name: &str, attrs: Vec<(String, LoroValue)>) -> NodeSnap {
     let mut all = vec![(BLOCK_ID_ATTR.to_owned(), LoroValue::from(new_block_id()))];
     all.extend(attrs);
     let children = if is_container_type(name) || name == "horizontalRule" {
@@ -168,7 +199,7 @@ fn node(name: &str, attrs: Vec<(String, LoroValue)>) -> NodeSnap {
     }
 }
 
-fn container(name: &str) -> NodeSnap {
+pub(crate) fn container(name: &str) -> NodeSnap {
     // Lists carry no blockId in the TS schema (BLOCK_ID_TYPES).
     if is_list_type(name) {
         return NodeSnap {
@@ -180,31 +211,65 @@ fn container(name: &str) -> NodeSnap {
     node(name, vec![])
 }
 
-fn is_textblock(name: &str) -> bool {
+pub(crate) fn is_textblock(name: &str) -> bool {
     matches!(
         name,
         "paragraph" | "heading" | "codeBlock" | "mermaidFigure" | "imageFigure"
     )
 }
 
-struct Builder {
+/// Builds block snapshots from a stream of open/close/text events; shared by
+/// the Markdown and HTML readers.
+pub(crate) struct Builder {
     /// Open nodes; `stack[0]` is the document.
-    stack: Vec<NodeSnap>,
-    marks: Vec<(String, LoroValue)>,
+    pub(crate) stack: Vec<NodeSnap>,
+    pub(crate) marks: Vec<(String, LoroValue)>,
+    /// Markdown text: `==highlight==` is mark syntax, not text.
+    markdown: bool,
 }
 
 impl Builder {
-    fn top(&mut self) -> &mut NodeSnap {
+    pub(crate) fn new(markdown: bool) -> Self {
+        Builder {
+            stack: vec![NodeSnap {
+                name: "doc".into(),
+                attrs: vec![],
+                children: vec![],
+            }],
+            marks: vec![],
+            markdown,
+        }
+    }
+
+    /// Closes what is still open; the top-level blocks.
+    pub(crate) fn finish(mut self) -> Vec<NodeSnap> {
+        while self.stack.len() > 1 {
+            self.close_textblock();
+            if self.stack.len() > 1 {
+                self.close();
+            }
+        }
+        let doc = self.stack.pop().expect("document");
+        doc.children
+            .into_iter()
+            .filter_map(|c| match c {
+                ChildSnap::Node(n) => Some(n),
+                ChildSnap::Text(_) => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn top(&mut self) -> &mut NodeSnap {
         self.stack.last_mut().expect("document stays open")
     }
 
-    fn close(&mut self) {
+    pub(crate) fn close(&mut self) {
         let done = self.stack.pop().expect("open node");
         self.top().children.push(ChildSnap::Node(done));
     }
 
     /// Closes an open paragraph left by tight list items or images.
-    fn close_textblock(&mut self) {
+    pub(crate) fn close_textblock(&mut self) {
         if self.stack.len() > 1 && is_textblock(&self.top().name.clone()) {
             self.close();
         }
@@ -212,7 +277,7 @@ impl Builder {
 
     /// A list with any task item is a task list; its other items become
     /// unticked tasks (a list holds one item type).
-    fn settle_task_list(&mut self) {
+    pub(crate) fn settle_task_list(&mut self) {
         let list = self.top();
         let any_task = list
             .children
@@ -232,7 +297,7 @@ impl Builder {
         }
     }
 
-    fn trim_trailing_newline(&mut self) {
+    pub(crate) fn trim_trailing_newline(&mut self) {
         if let Some(ChildSnap::Text(runs)) = self.top().children.first_mut()
             && let Some((last, _)) = runs.last_mut()
             && last.ends_with('\n')
@@ -244,7 +309,7 @@ impl Builder {
         }
     }
 
-    fn runs(&mut self) -> &mut Runs {
+    pub(crate) fn runs(&mut self) -> &mut Runs {
         if !is_textblock(&self.top().name.clone()) {
             self.stack.push(node("paragraph", vec![]));
         }
@@ -254,7 +319,7 @@ impl Builder {
         }
     }
 
-    fn text(&mut self, text: &str) {
+    pub(crate) fn text(&mut self, text: &str) {
         let name = self.top().name.clone();
         if name == "mermaidFigure" {
             // The source is an attribute; the text child is the caption.
@@ -271,8 +336,12 @@ impl Builder {
             runs.push((text.to_owned(), vec![]));
             return;
         }
-        // `==highlight==` is not CommonMark; split it out here.
         let marks = self.marks.clone();
+        if !self.markdown {
+            self.runs().push((text.to_owned(), marks));
+            return;
+        }
+        // `==highlight==` is not CommonMark; split it out here.
         let mut highlighted = false;
         for (i, piece) in text.split("==").enumerate() {
             if i > 0 {
@@ -296,14 +365,7 @@ pub fn parse(text: &str) -> Vec<NodeSnap> {
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_SUPERSCRIPT
         | Options::ENABLE_SUBSCRIPT;
-    let mut b = Builder {
-        stack: vec![NodeSnap {
-            name: "doc".into(),
-            attrs: vec![],
-            children: vec![],
-        }],
-        marks: vec![],
-    };
+    let mut b = Builder::new(true);
     for event in Parser::new_ext(text, options) {
         match event {
             Event::Start(tag) => match tag {
@@ -447,20 +509,7 @@ pub fn parse(text: &str) -> Vec<NodeSnap> {
             _ => {}
         }
     }
-    while b.stack.len() > 1 {
-        b.close_textblock();
-        if b.stack.len() > 1 {
-            b.close();
-        }
-    }
-    let doc = b.stack.pop().expect("document");
-    doc.children
-        .into_iter()
-        .filter_map(|c| match c {
-            ChildSnap::Node(n) => Some(n),
-            ChildSnap::Text(_) => None,
-        })
-        .collect()
+    b.finish()
 }
 
 /// When pasted Markdown is a single paragraph, its runs (to insert inline).
