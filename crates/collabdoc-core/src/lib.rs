@@ -5,6 +5,7 @@
 
 pub mod document;
 pub mod editing;
+pub mod figures;
 pub mod file;
 pub mod html;
 pub mod ids;
@@ -12,6 +13,8 @@ pub mod markdown;
 pub mod model;
 pub mod persist;
 pub mod presence;
+#[cfg(feature = "render")]
+pub mod render;
 pub mod schema;
 pub mod store;
 pub mod structure;

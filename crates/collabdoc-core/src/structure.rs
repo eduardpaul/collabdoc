@@ -670,12 +670,28 @@ pub fn paste_blocks(line: &Located, at: usize, nodes: &[NodeSnap]) -> Option<Str
         return None;
     }
     let index = tree::index_in(&parent, &line.node)?;
+    // A quote or list with no line in it (an empty quoted line copied) is
+    // nothing to paste.
+    let nodes: Vec<&NodeSnap> = nodes.iter().filter(|n| has_leaf(n)).collect();
+    if nodes.is_empty() {
+        return None;
+    }
+    // On a figure or rule: the blocks go before it from its start, else after.
+    if is_atom_type(&tree::node_name(&line.node)) {
+        let first = if at == 0 { index } else { index + 1 };
+        let mut last = None;
+        for (pos, snap) in (first..).zip(nodes) {
+            let node = materialize(&parent, pos, snap);
+            last = last_leaf(&node).map(|leaf| tree::block_id(&leaf)).or(last);
+        }
+        return last;
+    }
     let tail = cut_content(&line.node, at);
     let mut pos = index + 1;
     let mut last = None;
-    for snap in nodes {
+    for snap in nodes.iter().copied() {
         let node = materialize(&parent, pos, snap);
-        last = last_leaf(&node).map(|leaf| tree::block_id(&leaf));
+        last = last_leaf(&node).map(|leaf| tree::block_id(&leaf)).or(last);
         pos += 1;
     }
     if !tail.is_empty() {
@@ -688,6 +704,15 @@ pub fn paste_blocks(line: &Located, at: usize, nodes: &[NodeSnap]) -> Option<Str
             .expect("drop empty head");
     }
     last
+}
+
+/// Whether `snap` is, or holds, a leaf block.
+fn has_leaf(snap: &NodeSnap) -> bool {
+    !is_container_type(&snap.name)
+        || snap.children.iter().any(|c| match c {
+            ChildSnap::Node(n) => has_leaf(n),
+            ChildSnap::Text(_) => false,
+        })
 }
 
 /// The last leaf block inside `node` (or `node` itself).

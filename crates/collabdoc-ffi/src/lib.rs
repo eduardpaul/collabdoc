@@ -185,11 +185,17 @@ impl Session {
                     .iter()
                     .map(|n| json!({ "at": n.at, "name": n.name, "attrs": n.attrs }))
                     .collect();
-                json!({
+                let mut block = json!({
                     "key": b.key, "kind": kind, "level": level, "list": list,
                     "listDepth": b.list_depth, "quoteDepth": b.quote_depth, "checked": b.checked,
                     "editable": b.editable, "text": b.text, "spans": spans, "inlines": inlines,
-                })
+                });
+                if b.kind == BlockKind::Atom {
+                    block["nodeName"] = json!(b.node_name);
+                    block["attrs"] = Value::Object(b.attrs.clone());
+                    block["caption"] = json!(b.caption);
+                }
+                block
             })
             .collect();
         let (kind, level) = match e.kind_at_cursor() {
@@ -227,6 +233,13 @@ impl Session {
         })
     }
 
+    /// The images other participants added, known to this one too.
+    fn adopt_store_assets(&mut self) {
+        let id = self.editor.document().doc_id();
+        let assets = with_store(|s| s.assets_of(&id).to_vec());
+        self.editor.adopt_assets(assets);
+    }
+
     /// Runs one command. Every reply has `ok`; edits also say `changed`.
     fn call(&mut self, cmd: &Value) -> Value {
         let n = |key: &str| cmd[key].as_u64().unwrap_or(0) as usize;
@@ -238,6 +251,28 @@ impl Session {
             "paste" => e.paste(s("text")),
             "pasteHtml" => e.paste_html(s("html"), s("text")),
             "insertMermaid" => e.insert_mermaid(s("source")),
+            "insertFigure" => e.insert_figure(s("name")),
+            // An image from a file (`path`) or the clipboard (`base64`).
+            "insertImage" => {
+                let bytes = if let Some(path) = cmd["path"].as_str() {
+                    match std::fs::read(path) {
+                        Ok(bytes) => bytes,
+                        Err(err) => return json!({ "ok": false, "error": err.to_string() }),
+                    }
+                } else {
+                    use base64::Engine;
+                    match base64::engine::general_purpose::STANDARD.decode(s("base64")) {
+                        Ok(bytes) => bytes,
+                        Err(err) => return json!({ "ok": false, "error": err.to_string() }),
+                    }
+                };
+                match e.insert_image(bytes, s("alt")) {
+                    Ok(changed) => changed,
+                    Err(err) => return json!({ "ok": false, "error": err.to_string() }),
+                }
+            }
+            "setCaption" => e.set_caption(n("block"), s("text")),
+            "setFigureAttr" => e.set_figure_attr(n("block"), s("key"), &cmd["value"]),
             "looksLikeMermaid" => {
                 let yes = collabdoc_core::markdown::looks_like_mermaid(s("text"));
                 return json!({ "ok": true, "mermaid": yes });
@@ -345,6 +380,8 @@ impl Session {
             }
             // The selection as Markdown text and as HTML, for the clipboard.
             "copy" => {
+                self.adopt_store_assets();
+                let e = &mut self.editor;
                 return json!({
                     "ok": true,
                     "text": e.selection_markdown(),
@@ -392,15 +429,20 @@ impl Session {
             }
             "textIn" => return json!({ "ok": true, "text": e.text_in(n("start")..n("end")) }),
             "push" => {
+                let new_assets = self.editor.take_new_assets();
                 let shared = self.shared.borrow();
                 // The hub has the edit: journal it, start the autosave clock.
                 let pushed = shared
                     .hub
                     .push(self.editor.document())
                     .map_err(|e| e.to_string());
+                // New image bytes are on disk before the journal points at them.
                 let journaled = pushed.and_then(|()| {
-                    with_store(|s| s.changed(shared.hub.loro(), now_ms()))
-                        .map_err(|e| e.to_string())
+                    with_store(|s| {
+                        s.put_assets(shared.hub.loro(), new_assets, now_ms())?;
+                        s.changed(shared.hub.loro(), now_ms())
+                    })
+                    .map_err(|e| e.to_string())
                 });
                 return match journaled {
                     Ok(()) => json!({ "ok": true }),
@@ -477,7 +519,8 @@ impl Session {
             }
             "exportMarkdown" => {
                 let path = PathBuf::from(s("path"));
-                return match Store::export_markdown(e.document(), &path) {
+                self.adopt_store_assets();
+                return match Store::export_markdown(self.editor.document(), &path) {
                     Ok(()) => json!({ "ok": true, "path": path.display().to_string() }),
                     Err(err) => json!({ "ok": false, "error": err.to_string() }),
                 };
@@ -517,6 +560,106 @@ impl Session {
             other => return json!({ "ok": false, "error": format!("unknown op {other:?}") }),
         };
         json!({ "ok": true, "changed": changed })
+    }
+}
+
+/// Hands `bytes` to C: free with [`cd_bytes_free`].
+fn bytes_to_c(bytes: Vec<u8>, len: *mut usize) -> *mut u8 {
+    let mut boxed = bytes.into_boxed_slice();
+    if !len.is_null() {
+        unsafe { *len = boxed.len() };
+    }
+    let ptr = boxed.as_mut_ptr();
+    std::mem::forget(boxed);
+    ptr
+}
+
+fn set_error(error: *mut *mut c_char, message: &str) {
+    if !error.is_null() {
+        let message = CString::new(message.replace('\0', " ")).expect("no NUL");
+        unsafe { *error = message.into_raw() };
+    }
+}
+
+/// The bytes of image `hash` in the session's document (as stored: PNG,
+/// JPEG, GIF, WebP or SVG), or null when it does not have them.
+///
+/// # Safety
+/// `session` is from `cd_open*`/`cd_fork`; `hash` is a NUL-terminated string;
+/// `len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cd_asset(
+    session: *mut Session,
+    hash: *const c_char,
+    len: *mut usize,
+) -> *mut u8 {
+    let session = unsafe { &*session };
+    let hash = unsafe { CStr::from_ptr(hash) }.to_string_lossy();
+    let doc = session.editor.document();
+    let bytes = doc
+        .asset(&hash)
+        .map(|a| a.bytes.clone())
+        .or_else(|| with_store(|s| s.asset(&doc.doc_id(), &hash).map(|a| a.bytes.clone())));
+    match bytes {
+        Some(bytes) => bytes_to_c(bytes, len),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Mermaid `source` drawn as a PNG at `scale` device pixels per unit. Null
+/// with `*error` set when it cannot be drawn. Safe to call from any thread.
+///
+/// # Safety
+/// `source` is a NUL-terminated UTF-8 string; `len` is writable; `error` is
+/// null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cd_render_mermaid(
+    source: *const c_char,
+    scale: f32,
+    len: *mut usize,
+    error: *mut *mut c_char,
+) -> *mut u8 {
+    let source = unsafe { CStr::from_ptr(source) }.to_string_lossy();
+    match collabdoc_core::render::mermaid_png(&source, scale) {
+        Ok(png) => bytes_to_c(png.bytes, len),
+        Err(err) => {
+            set_error(error, &err);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// An SVG image drawn as a PNG at `scale`. Safe to call from any thread.
+///
+/// # Safety
+/// `svg` points at `svg_len` readable bytes; `len` is writable; `error` is
+/// null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cd_render_svg(
+    svg: *const u8,
+    svg_len: usize,
+    scale: f32,
+    len: *mut usize,
+    error: *mut *mut c_char,
+) -> *mut u8 {
+    let svg = unsafe { std::slice::from_raw_parts(svg, svg_len) };
+    match collabdoc_core::render::svg_png(svg, scale, None) {
+        Ok(png) => bytes_to_c(png.bytes, len),
+        Err(err) => {
+            set_error(error, &err);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Frees bytes from `cd_asset` and `cd_render_*`.
+///
+/// # Safety
+/// `ptr` and `len` are exactly what one of those returned, freed once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cd_bytes_free(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() {
+        drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) });
     }
 }
 
@@ -964,5 +1107,87 @@ mod tests {
         let listing = store_call(&json!({"op": "listing"}))["listing"].clone();
         assert!(listing["recents"].as_array().unwrap().is_empty());
         assert!(listing["recoveries"].as_array().unwrap().is_empty());
+    }
+
+    const PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn images_go_to_disk_and_back_through_the_bridge() {
+        let mut me = fresh();
+        let r = call(
+            &mut me,
+            json!({"op": "insertImage", "base64": PNG_B64, "alt": "dot"}),
+        );
+        assert_eq!(r["changed"], true, "{r}");
+        assert_eq!(call(&mut me, json!({"op": "push"}))["ok"], true);
+        let blocks = all_blocks(&mut me);
+        let figure = blocks.iter().find(|b| b["kind"] == "atom").unwrap();
+        assert_eq!(figure["nodeName"], "imageFigure");
+        assert_eq!(figure["attrs"]["alt"], "dot");
+        let src = figure["attrs"]["src"].as_str().unwrap().to_owned();
+        let hash = src.strip_prefix("asset:").unwrap();
+
+        // A second participant reads the bytes through the store.
+        let other = Box::into_raw(Box::new(me.fork()));
+        let c_hash = CString::new(hash).unwrap();
+        let mut len = 0usize;
+        let ptr = unsafe { cd_asset(other, c_hash.as_ptr(), &mut len) };
+        assert!(!ptr.is_null());
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+        assert!(bytes.starts_with(b"\x89PNG"));
+        unsafe { cd_bytes_free(ptr, len) };
+        drop(unsafe { Box::from_raw(other) });
+
+        // The draft on disk already holds them (written before the journal).
+        let doc = me.shared.borrow().hub.loro().clone();
+        let id = collabdoc_core::document::meta_string(&doc, "docId");
+        assert!(with_store(|s| s.asset(&id, hash).is_some()));
+
+        // Not an image: refused with the reason.
+        let bad = call(&mut me, json!({"op": "insertImage", "base64": "aGVsbG8="}));
+        assert_eq!(bad["ok"], false);
+        assert!(
+            bad["error"].as_str().unwrap().contains("not an image"),
+            "{bad}"
+        );
+    }
+
+    #[test]
+    fn figures_are_edited_and_drawn_natively() {
+        let mut me = fresh();
+        assert_eq!(
+            call(
+                &mut me,
+                json!({"op": "insertFigure", "name": "mermaidFigure"})
+            )["changed"],
+            true
+        );
+        let blocks = all_blocks(&mut me);
+        let index = blocks.iter().position(|b| b["kind"] == "atom").unwrap();
+        let r = call(
+            &mut me,
+            json!({"op": "setCaption", "block": index, "text": "Flow"}),
+        );
+        assert_eq!(r["changed"], true);
+        let r = call(
+            &mut me,
+            json!({"op": "setFigureAttr", "block": index, "key": "align", "value": "right"}),
+        );
+        assert_eq!(r["changed"], true);
+        let blocks = all_blocks(&mut me);
+        assert_eq!(blocks[index]["caption"], "Flow");
+        assert_eq!(blocks[index]["attrs"]["align"], "right");
+
+        let source = CString::new(blocks[index]["attrs"]["source"].as_str().unwrap()).unwrap();
+        let (mut len, mut err) = (0usize, std::ptr::null_mut());
+        let ptr = unsafe { cd_render_mermaid(source.as_ptr(), 1.5, &mut len, &mut err) };
+        assert!(!ptr.is_null() && err.is_null());
+        assert!(unsafe { std::slice::from_raw_parts(ptr, len) }.starts_with(b"\x89PNG"));
+        unsafe { cd_bytes_free(ptr, len) };
+
+        let bad = CString::new("").unwrap();
+        let ptr = unsafe { cd_render_mermaid(bad.as_ptr(), 1.0, &mut len, &mut err) };
+        assert!(ptr.is_null() && !err.is_null());
+        unsafe { cd_string_free(err) };
     }
 }

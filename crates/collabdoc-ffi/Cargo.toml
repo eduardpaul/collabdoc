@@ -12,3 +12,4 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 collabdoc-core = { path = "../collabdoc-core" }
 serde_json = "1"
+base64 = "0.22"

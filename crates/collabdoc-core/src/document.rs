@@ -11,6 +11,7 @@ use loro::{
     LoroValue, UndoManager, VersionVector,
 };
 
+use crate::figures::{self, AssetError};
 use crate::file::{self, Asset, FileError};
 use crate::ids::new_doc_id;
 use crate::model::{
@@ -61,6 +62,8 @@ pub struct Document {
     undo: UndoManager,
     actor: String,
     assets: Vec<Asset>,
+    /// Assets added since [`Document::take_new_assets`], for the store.
+    new_assets: Vec<Asset>,
     /// Block and time of the last human edit, to cut history and undo steps.
     last_edit: Option<(String, i64)>,
     /// The flattened tree, valid while the doc is at `frontiers`. Typing
@@ -141,6 +144,7 @@ impl Document {
             undo,
             actor: actor.to_owned(),
             assets,
+            new_assets: Vec::new(),
             last_edit: None,
             flat: RefCell::new(None),
         }
@@ -167,6 +171,98 @@ impl Document {
     /// Images and other files the document carries (`asset:<sha256>`).
     pub fn assets(&self) -> &[Asset] {
         &self.assets
+    }
+
+    pub fn asset(&self, hash: &str) -> Option<&Asset> {
+        self.assets.iter().find(|a| a.hash == hash)
+    }
+
+    /// Adds image bytes (checked against the size limits); returns the
+    /// `asset:<hash>` source that names them.
+    pub fn put_asset(&mut self, bytes: Vec<u8>) -> Result<String, AssetError> {
+        let asset = figures::make_asset(bytes, &self.assets)?;
+        let src = format!("asset:{}", asset.hash);
+        if self.asset(&asset.hash).is_none() {
+            self.new_assets.push(asset.clone());
+            self.assets.push(asset);
+        }
+        Ok(src)
+    }
+
+    /// Bytes someone else added (another participant, a merge): known here
+    /// from now on.
+    pub fn adopt_asset(&mut self, asset: Asset) {
+        if self.asset(&asset.hash).is_none() {
+            self.assets.push(asset);
+        }
+    }
+
+    /// The assets added since the last call, which the store must keep.
+    pub fn take_new_assets(&mut self) -> Vec<Asset> {
+        std::mem::take(&mut self.new_assets)
+    }
+
+    /// Sets attribute `key` of the figure `id` (`blockId` or view key):
+    /// `src`, `alt`, `source`, `width` (50, 75, 100 or null), `align`.
+    /// One undo step.
+    pub fn set_figure_attr(&mut self, id: &str, key: &str, value: &serde_json::Value) -> bool {
+        let valid = match key {
+            "src" | "alt" | "source" => value.is_string(),
+            "width" => {
+                value.is_null()
+                    || value
+                        .as_f64()
+                        .is_some_and(|w| figures::FIGURE_WIDTHS.contains(&(w as u8)))
+            }
+            "align" => value
+                .as_str()
+                .is_some_and(|a| figures::FIGURE_ALIGNS.contains(&a)),
+            _ => false,
+        };
+        if !valid {
+            return false;
+        }
+        self.structural(&format!("figure {key}"), |doc| {
+            let Some(located) = structure::find(doc, id) else {
+                return false;
+            };
+            if !figures::is_figure(&tree::node_name(&located.node)) {
+                return false;
+            }
+            let attrs = tree::attrs(&located.node);
+            let have = match attrs.get(key) {
+                Some(loro::ValueOrContainer::Value(v)) => tree::to_json(&v),
+                _ => serde_json::Value::Null,
+            };
+            if &have == value {
+                return false;
+            }
+            if value.is_null() {
+                attrs.delete(key).expect("clear attribute");
+            } else {
+                attrs
+                    .insert(key, tree::from_json(value))
+                    .expect("set attribute");
+            }
+            true
+        })
+    }
+
+    /// Sets the caption of the figure `id`. One undo step.
+    pub fn set_caption(&mut self, id: &str, caption: &str) -> bool {
+        let caption = caption.replace('\n', " ");
+        self.structural("caption", |doc| {
+            let Some(located) = structure::find(doc, id) else {
+                return false;
+            };
+            if !figures::is_figure(&tree::node_name(&located.node))
+                || tree::content(&located.node).0 == caption
+            {
+                return false;
+            }
+            write_text(&tree::ensure_text(&located.node), &caption, &[]);
+            true
+        })
     }
 
     /// Forgets undo and redo, after loading content that is not an edit

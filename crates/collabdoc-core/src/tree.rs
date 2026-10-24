@@ -439,6 +439,11 @@ fn view_of(node: &LoroMap, name: &str, ancestors: &[LoroMap]) -> ViewBlock {
         let (text, spans, inlines) = content(node);
         (true, text, spans, inlines)
     };
+    let (attrs, caption) = if kind == BlockKind::Atom {
+        (figure_attrs(node), content(node).0)
+    } else {
+        (Default::default(), String::new())
+    };
     ViewBlock {
         key: node.id().to_string(),
         block_id: block_id(node),
@@ -452,6 +457,23 @@ fn view_of(node: &LoroMap, name: &str, ancestors: &[LoroMap]) -> ViewBlock {
         text,
         spans,
         inlines,
+        attrs,
+        caption,
+    }
+}
+
+/// A node's attributes as JSON, without `blockId`.
+fn figure_attrs(node: &LoroMap) -> serde_json::Map<String, serde_json::Value> {
+    match node.get(ATTRIBUTES_KEY) {
+        Some(ValueOrContainer::Container(Container::Map(a))) => match a.get_deep_value() {
+            LoroValue::Map(m) => m
+                .iter()
+                .filter(|(k, v)| k.as_str() != BLOCK_ID_ATTR && !matches!(v, LoroValue::Null))
+                .map(|(k, v)| (k.to_string(), to_json(v)))
+                .collect(),
+            _ => Default::default(),
+        },
+        _ => Default::default(),
     }
 }
 

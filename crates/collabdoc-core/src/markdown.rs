@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use loro::LoroValue;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
+use crate::figures;
+use crate::file::Asset;
 use crate::ids::new_block_id;
 use crate::model::{BlockKind, ListKind, ViewBlock};
 use crate::schema::*;
@@ -62,14 +64,37 @@ pub fn looks_like_mermaid(text: &str) -> bool {
 
 /// A `mermaidFigure` with `source` and no caption.
 pub(crate) fn mermaid_figure(source: &str) -> NodeSnap {
-    node("mermaidFigure", vec![("source".into(), source.into())])
+    figure("mermaidFigure", vec![("source".into(), source.into())])
+}
+
+/// A figure node with the attributes the Tiptap app writes (`align`
+/// centred; `width` unset, which `loro-prosemirror` leaves out).
+pub(crate) fn figure(name: &str, attrs: Vec<(String, LoroValue)>) -> NodeSnap {
+    let mut n = node(name, attrs);
+    if name == "imageFigure" && !n.attrs.iter().any(|(k, _)| k == "alt") {
+        n.attrs.push(("alt".into(), "".into()));
+    }
+    n.attrs.push(("align".into(), "center".into()));
+    n
+}
+
+/// `caption="…"` in a fence's info string.
+fn fence_caption(info: &str) -> Option<String> {
+    let rest = info.split_once("caption=\"")?.1;
+    Some(rest.split_once('"')?.0.to_owned())
 }
 
 // ── Out ─────────────────────────────────────────────────────────────────
 
 /// Markdown for a run of blocks in reading order (a selection, or a whole
-/// document's blocks).
+/// document's blocks). Images point at `assets/<hash>.<ext>`.
 pub fn render(blocks: &[ViewBlock]) -> String {
+    render_with(blocks, &[], false)
+}
+
+/// [`render`] knowing the document's image bytes: with `inline`, images are
+/// written as `data:` URIs so the Markdown stands on its own.
+pub fn render_with(blocks: &[ViewBlock], assets: &[Asset], inline_assets: bool) -> String {
     let mut out = String::new();
     // Marker width per list depth, for nesting indents; ordinal per depth.
     let mut widths: Vec<usize> = Vec::new();
@@ -115,7 +140,12 @@ pub fn render(blocks: &[ViewBlock]) -> String {
                 }
                 out.push_str(&format!("{pad}```"));
             }
-            BlockKind::Atom => out.push_str(&format!("{lead}{}", block.text)),
+            BlockKind::Atom => {
+                let figure = figures::markdown(block, assets, inline_assets);
+                let pad = format!("{quote}{indent}");
+                let figure = figure.replace('\n', &format!("\n{pad}"));
+                out.push_str(&format!("{lead}{figure}"));
+            }
             BlockKind::Paragraph => out.push_str(&format!("{lead}{}", inline(block))),
         }
         let next_is_item = blocks.get(i + 1).is_some_and(|n| n.list.is_some());
@@ -227,8 +257,25 @@ pub(crate) fn container(name: &str) -> NodeSnap {
 pub(crate) fn is_textblock(name: &str) -> bool {
     matches!(
         name,
-        "paragraph" | "heading" | "codeBlock" | "mermaidFigure" | "imageFigure"
+        "paragraph"
+            | "heading"
+            | "codeBlock"
+            | "mermaidFigure"
+            | "infographicFigure"
+            | "imageFigure"
     )
+}
+
+/// Drops quotes, lists and items left with no line in them (Tiptap cannot
+/// load an empty one).
+fn prune(node: &mut NodeSnap) {
+    node.children.retain_mut(|c| match c {
+        ChildSnap::Node(n) => {
+            prune(n);
+            !is_container_type(&n.name) || !n.children.is_empty()
+        }
+        ChildSnap::Text(_) => true,
+    });
 }
 
 /// Builds block snapshots from a stream of open/close/text events; shared by
@@ -262,7 +309,8 @@ impl Builder {
                 self.close();
             }
         }
-        let doc = self.stack.pop().expect("document");
+        let mut doc = self.stack.pop().expect("document");
+        prune(&mut doc);
         doc.children
             .into_iter()
             .filter_map(|c| match c {
@@ -311,6 +359,14 @@ impl Builder {
     }
 
     pub(crate) fn trim_trailing_newline(&mut self) {
+        if let Some((_, LoroValue::String(source))) =
+            self.top().attrs.iter_mut().find(|(k, _)| k == "source")
+            && source.ends_with('\n')
+        {
+            let trimmed = source.trim_end_matches('\n').to_owned();
+            *source = trimmed.into();
+            return;
+        }
         if let Some(ChildSnap::Text(runs)) = self.top().children.last_mut()
             && let Some((last, _)) = runs.last_mut()
             && last.ends_with('\n')
@@ -350,13 +406,19 @@ impl Builder {
 
     pub(crate) fn text(&mut self, text: &str) {
         let name = self.top().name.clone();
-        if name == "mermaidFigure" {
-            // The source is an attribute; the text child is the caption.
-            if let Some((_, LoroValue::String(source))) =
-                self.top().attrs.iter_mut().find(|(k, _)| k == "source")
+        // A diagram's source and an image's alt text are attributes; their
+        // text child is the caption.
+        let attr = match name.as_str() {
+            "mermaidFigure" | "infographicFigure" => Some("source"),
+            "imageFigure" => Some("alt"),
+            _ => None,
+        };
+        if let Some(key) = attr {
+            if let Some((_, LoroValue::String(value))) =
+                self.top().attrs.iter_mut().find(|(k, _)| k == key)
             {
-                let joined = format!("{}{text}", source.as_str());
-                *source = joined.into();
+                let joined = format!("{}{text}", value.as_str());
+                *value = joined.into();
             }
             return;
         }
@@ -415,15 +477,22 @@ pub fn parse(text: &str) -> Vec<NodeSnap> {
                 }
                 Tag::CodeBlock(kind) => {
                     b.close_textblock();
-                    let lang = match kind {
-                        CodeBlockKind::Fenced(info) => {
-                            info.split_whitespace().next().unwrap_or("").to_owned()
-                        }
+                    let info = match kind {
+                        CodeBlockKind::Fenced(info) => info.to_string(),
                         CodeBlockKind::Indented => String::new(),
                     };
-                    if lang == "mermaid" {
-                        b.stack
-                            .push(node("mermaidFigure", vec![("source".into(), "".into())]));
+                    let lang = info.split_whitespace().next().unwrap_or("").to_owned();
+                    let diagram = match lang.as_str() {
+                        "mermaid" => Some("mermaidFigure"),
+                        "infographic" => Some("infographicFigure"),
+                        _ => None,
+                    };
+                    if let Some(name) = diagram {
+                        let mut f = figure(name, vec![("source".into(), "".into())]);
+                        if let Some(caption) = fence_caption(&info) {
+                            f.children = vec![ChildSnap::Text(vec![(caption, vec![])])];
+                        }
+                        b.stack.push(f);
                     } else if lang.is_empty() {
                         b.stack.push(node("codeBlock", vec![]));
                     } else {
@@ -453,12 +522,39 @@ pub fn parse(text: &str) -> Vec<NodeSnap> {
                 Tag::Superscript => b.marks.push(mark("superscript", None)),
                 Tag::Subscript => b.marks.push(mark("subscript", None)),
                 Tag::Link { dest_url, .. } => b.marks.push(mark("link", Some(&dest_url))),
-                Tag::Image { dest_url, .. } => {
-                    b.close_textblock();
-                    b.stack.push(node(
+                Tag::Image {
+                    dest_url, title, ..
+                } => {
+                    // An image alone on its line is a figure, not a paragraph.
+                    let empty_paragraph = b.top().name == "paragraph"
+                        && b.top().children.iter().all(|c| match c {
+                            ChildSnap::Text(runs) => runs.is_empty(),
+                            ChildSnap::Node(_) => false,
+                        });
+                    if empty_paragraph && b.stack.len() > 1 {
+                        b.stack.pop();
+                    } else {
+                        b.close_textblock();
+                    }
+                    // `assets/<hash>.png` (an export) names the bytes by hash.
+                    let src = if dest_url.starts_with("data:") {
+                        dest_url.to_string()
+                    } else {
+                        match figures::hash_from_src(&dest_url) {
+                            Some(hash) if dest_url.starts_with("assets/") => {
+                                format!("asset:{hash}")
+                            }
+                            _ => dest_url.to_string(),
+                        }
+                    };
+                    let mut f = figure(
                         "imageFigure",
-                        vec![("src".into(), dest_url.to_string().into())],
-                    ));
+                        vec![("src".into(), src.into()), ("alt".into(), "".into())],
+                    );
+                    if !title.is_empty() {
+                        f.children = vec![ChildSnap::Text(vec![(title.to_string(), vec![])])];
+                    }
+                    b.stack.push(f);
                 }
                 _ => {}
             },

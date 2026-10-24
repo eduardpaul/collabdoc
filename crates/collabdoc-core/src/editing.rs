@@ -13,6 +13,7 @@ use loro::cursor::Cursor;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::document::Document;
+use crate::figures::{self, AssetError};
 use crate::html;
 use crate::markdown;
 use crate::model::{
@@ -974,13 +975,13 @@ impl Editor {
     }
 
     /// The selection as HTML, for the clipboard's `text/html` beside the
-    /// Markdown text.
+    /// Markdown text (images inline, so other apps can show them).
     pub fn selection_html(&self) -> String {
         let views = self.selected_views();
         if views.is_empty() {
             return String::new();
         }
-        html::render(&views)
+        html::render_with(&views, self.doc.assets())
     }
 
     /// The selected blocks, the first and last cut to the selection.
@@ -1027,6 +1028,84 @@ impl Editor {
         self.paste_nodes(&nodes, text)
     }
 
+    /// Inserts an image figure for `bytes` at the caret (Insert image, a
+    /// pasted or dropped image). Fails on bytes that are no image or too big.
+    pub fn insert_image(&mut self, bytes: Vec<u8>, alt: &str) -> Result<bool, AssetError> {
+        let src = self.doc.put_asset(bytes)?;
+        let figure = markdown::figure(
+            "imageFigure",
+            vec![("src".into(), src.into()), ("alt".into(), alt.into())],
+        );
+        Ok(self.paste_nodes(&[figure], ""))
+    }
+
+    /// Image bytes added since the last call, for the store to keep.
+    pub fn take_new_assets(&mut self) -> Vec<crate::file::Asset> {
+        self.doc.take_new_assets()
+    }
+
+    /// Image bytes known elsewhere (another participant added them), so
+    /// copying and exporting here can carry them.
+    pub fn adopt_assets(&mut self, assets: impl IntoIterator<Item = crate::file::Asset>) {
+        for asset in assets {
+            self.doc.adopt_asset(asset);
+        }
+    }
+
+    /// Inserts a `mermaidFigure` or `infographicFigure` with its starting
+    /// source (Ctrl+Alt+M, Ctrl+Alt+I).
+    pub fn insert_figure(&mut self, name: &str) -> bool {
+        let source = match name {
+            "mermaidFigure" => figures::DEFAULT_MERMAID,
+            "infographicFigure" => figures::DEFAULT_INFOGRAPHIC,
+            _ => return false,
+        };
+        let figure = markdown::figure(name, vec![("source".into(), source.into())]);
+        self.paste_nodes(&[figure], "")
+    }
+
+    /// Sets an attribute of the figure at block `index` (see
+    /// [`Document::set_figure_attr`]).
+    pub fn set_figure_attr(&mut self, index: usize, key: &str, value: &serde_json::Value) -> bool {
+        let Some(id) = self.blocks.get(index).map(stable_id) else {
+            return false;
+        };
+        let key = key.to_owned();
+        self.structural(|doc, _| doc.set_figure_attr(&id, &key, value))
+    }
+
+    /// Sets the caption of the figure at block `index`.
+    pub fn set_caption(&mut self, index: usize, caption: &str) -> bool {
+        let Some(id) = self.blocks.get(index).map(stable_id) else {
+            return false;
+        };
+        self.structural(|doc, _| doc.set_caption(&id, caption))
+    }
+
+    /// Image figures whose `src` is a `data:` URI keep the bytes as an asset
+    /// instead (`convertDataUriSrc`).
+    fn adopt_data_uris(&mut self, nodes: &mut [NodeSnap]) {
+        for node in nodes {
+            for child in &mut node.children {
+                if let ChildSnap::Node(n) = child {
+                    self.adopt_data_uris(std::slice::from_mut(n));
+                }
+            }
+            if node.name != "imageFigure" {
+                continue;
+            }
+            let Some((_, LoroValue::String(src))) = node.attrs.iter_mut().find(|(k, _)| k == "src")
+            else {
+                continue;
+            };
+            if let Some((_, bytes)) = figures::parse_data_uri(src)
+                && let Ok(asset_src) = self.doc.put_asset(bytes)
+            {
+                *src = asset_src.into();
+            }
+        }
+    }
+
     /// Inserts a Mermaid diagram with `source` at the caret (the "Insert as
     /// diagram" answer when pasted text looks like Mermaid).
     pub fn insert_mermaid(&mut self, source: &str) -> bool {
@@ -1035,6 +1114,9 @@ impl Editor {
     }
 
     fn paste_nodes(&mut self, nodes: &[NodeSnap], text: &str) -> bool {
+        let mut nodes = nodes.to_vec();
+        self.adopt_data_uris(&mut nodes);
+        let nodes = &nodes[..];
         if let Some(children) = markdown::single_paragraph(nodes) {
             let mut runs: Vec<Run> = Vec::new();
             for child in children {
@@ -1080,7 +1162,7 @@ impl Editor {
         let block = &self.blocks[index];
         // Blocks go in at the top level for now; inside a list or quote the
         // Markdown is typed as text.
-        if !block.editable || block.list.is_some() || block.quote_depth > 0 {
+        if block.list.is_some() || block.quote_depth > 0 {
             return self.insert_text(text);
         }
         let id = stable_id(block);

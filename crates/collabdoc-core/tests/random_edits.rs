@@ -79,7 +79,7 @@ fn check_shape(doc: &Document) -> Result<(), String> {
 
 fn step(e: &mut Editor, rng: &mut Rng) {
     let len = e.len();
-    let op = rng.below(22);
+    let op = rng.below(25);
     if std::env::var("FUZZ_TRACE").is_ok() {
         eprintln!(
             "op {op} sel {:?} blocks {:?}",
@@ -177,6 +177,27 @@ fn step(e: &mut Editor, rng: &mut Rng) {
             let html = e.selection_html();
             let text = e.selection_markdown();
             e.paste_html(&html, &text);
+        }
+        22 => {
+            e.insert_figure(if rng.below(2) == 0 {
+                "mermaidFigure"
+            } else {
+                "infographicFigure"
+            });
+        }
+        23 => {
+            let png = collabdoc_core::figures::parse_data_uri(
+                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+            )
+            .unwrap()
+            .1;
+            let _ = e.insert_image(png, "dot");
+        }
+        24 => {
+            let block = rng.below(e.blocks().len());
+            let captions = ["", "A caption", "ü 👍🏽"];
+            e.set_caption(block, captions[rng.below(captions.len())]);
+            e.set_figure_attr(block, "width", &serde_json::json!(50));
         }
         _ => {
             let snippets = [

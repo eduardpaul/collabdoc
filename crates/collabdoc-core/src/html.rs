@@ -11,7 +11,9 @@
 use html5gum::{DefaultEmitter, Token, Tokenizer};
 use loro::LoroValue;
 
-use crate::markdown::{Builder, container, mark, node};
+use crate::figures;
+use crate::file::Asset;
+use crate::markdown::{Builder, container, figure, mark, node};
 use crate::model::{BlockKind, InlineNode, ListKind, ViewBlock, masks};
 use crate::schema::*;
 use crate::structure::{ChildSnap, NodeSnap};
@@ -28,6 +30,12 @@ enum Frame {
 
 /// HTML for a run of blocks in reading order.
 pub fn render(blocks: &[ViewBlock]) -> String {
+    render_with(blocks, &[])
+}
+
+/// [`render`] with the document's image bytes, which images carry inline as
+/// `data:` URIs (other apps cannot read `asset:` sources).
+pub fn render_with(blocks: &[ViewBlock], assets: &[Asset]) -> String {
     let mut out = String::from("<meta charset=\"utf-8\">");
     let mut open: Vec<Frame> = Vec::new();
     // The list kind open at each depth, for outer levels of nested lists.
@@ -86,7 +94,7 @@ pub fn render(blocks: &[ViewBlock]) -> String {
             BlockKind::CodeBlock => {
                 out.push_str(&format!("<pre><code>{}</code></pre>", escape(&block.text)));
             }
-            BlockKind::Atom => out.push_str(&format!("<p>{}</p>", escape(&block.text))),
+            BlockKind::Atom => out.push_str(&figures::html(block, assets, escape)),
             BlockKind::Paragraph => out.push_str(&format!("<p>{}</p>", inline(block))),
         }
     }
@@ -196,6 +204,8 @@ pub fn parse(html: &str) -> Vec<NodeSnap> {
         skip: 0,
         mention: None,
         pending_break: false,
+        in_figure: false,
+        caption: false,
         pre: 0,
         inline: Vec::new(),
         spaced: Vec::new(),
@@ -235,6 +245,9 @@ struct Reader {
     mention: Option<usize>,
     /// A `<br>` not written yet: it is dropped if its block ends there.
     pending_break: bool,
+    /// Inside one of our `<figure data-type=…>`s, and in its `<figcaption>`.
+    in_figure: bool,
+    caption: bool,
     /// Inside `script`, `style`, `head`…: ignored.
     skip: usize,
     /// Inside `pre`: whitespace is kept.
@@ -294,7 +307,50 @@ impl Reader {
         if style.contains("white-space: pre") || style.contains("white-space:pre") {
             self.spaced.push((name.to_owned(), *depth));
         }
+        if name == "figure"
+            && let Some(f) = attr("data-type").and_then(|t| figure_from(&t, attr))
+        {
+            self.end_textblock();
+            self.b.stack.push(f);
+            self.in_figure = true;
+            return;
+        }
+        if self.in_figure {
+            match name {
+                "figcaption" => {
+                    self.caption = true;
+                    return;
+                }
+                "img" => {
+                    // The image itself: its bytes when it carries them (copied
+                    // from another document), else where `data-src` did not say.
+                    let img = attr("src").unwrap_or_default();
+                    let top = self.b.top();
+                    if let Some((_, LoroValue::String(src))) =
+                        top.attrs.iter_mut().find(|(k, _)| k == "src")
+                        && (src.is_empty() || img.starts_with("data:"))
+                    {
+                        *src = img.into();
+                    }
+                    return;
+                }
+                _ if BLOCKS.contains(&name) || name == "div" => return,
+                _ => {}
+            }
+        }
         match name {
+            // A bare image from another app: only one that carries its bytes.
+            "img" => {
+                if let Some(src) = attr("src").filter(|s| s.starts_with("data:image/")) {
+                    self.end_textblock();
+                    let alt = attr("alt").unwrap_or_default();
+                    let f = figure(
+                        "imageFigure",
+                        vec![("src".into(), src.into()), ("alt".into(), alt.into())],
+                    );
+                    self.b.top().children.push(ChildSnap::Node(f));
+                }
+            }
             _ if BLOCKS.contains(&name) => self.end_textblock(),
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                 self.end_textblock();
@@ -445,6 +501,24 @@ impl Reader {
             }
             *depth -= 1;
         }
+        if self.in_figure {
+            match name {
+                "figure" => {
+                    self.in_figure = false;
+                    self.caption = false;
+                    if figures::is_figure(&self.b.top().name.clone()) {
+                        self.b.close();
+                    }
+                    return;
+                }
+                "figcaption" => {
+                    self.caption = false;
+                    return;
+                }
+                _ if BLOCKS.contains(&name) || name == "div" || name == "img" => return,
+                _ => {}
+            }
+        }
         match name {
             _ if BLOCKS.contains(&name) => self.end_textblock(),
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => self.end_textblock(),
@@ -475,6 +549,19 @@ impl Reader {
 
     fn text(&mut self, raw: &str) {
         if self.skip > 0 || self.mention.is_some() {
+            return;
+        }
+        if self.in_figure {
+            // Only the caption is text; it is the figure's text child.
+            if self.caption {
+                let text = raw.split_ascii_whitespace().collect::<Vec<_>>().join(" ");
+                if !text.is_empty() {
+                    let marks = self.b.marks.clone();
+                    let runs = self.b.runs();
+                    let lead = if runs.is_empty() { "" } else { " " };
+                    runs.push((format!("{lead}{text}"), marks));
+                }
+            }
             return;
         }
         if self.pending_break && !raw.trim().is_empty() {
@@ -656,4 +743,47 @@ fn inline_marks(
         marks.push(mark("link", Some(&href)));
     }
     marks
+}
+
+/// A figure for one of our `<figure data-type=…>`s, from its `data-*`.
+fn figure_from(kind: &str, attr: &dyn Fn(&str) -> Option<String>) -> Option<NodeSnap> {
+    let mut attrs: Vec<(String, LoroValue)> = match kind {
+        "image" => vec![
+            ("src".into(), attr("data-src").unwrap_or_default().into()),
+            ("alt".into(), attr("data-alt").unwrap_or_default().into()),
+        ],
+        "mermaid" => vec![(
+            "source".into(),
+            attr("data-source")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| figures::DEFAULT_MERMAID.into())
+                .into(),
+        )],
+        "infographic" => vec![(
+            "source".into(),
+            attr("data-source")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| figures::DEFAULT_INFOGRAPHIC.into())
+                .into(),
+        )],
+        _ => return None,
+    };
+    if let Some(width) = attr("data-width")
+        .and_then(|w| w.parse::<u8>().ok())
+        .filter(|w| figures::FIGURE_WIDTHS.contains(w))
+    {
+        attrs.push(("width".into(), f64::from(width).into()));
+    }
+    let name = match kind {
+        "image" => "imageFigure",
+        "mermaid" => "mermaidFigure",
+        _ => "infographicFigure",
+    };
+    let mut f = figure(name, attrs);
+    if let Some(align) = attr("data-align").filter(|a| figures::FIGURE_ALIGNS.contains(&a.as_str()))
+        && let Some((_, value)) = f.attrs.iter_mut().find(|(k, _)| k == "align")
+    {
+        *value = align.into();
+    }
+    Some(f)
 }

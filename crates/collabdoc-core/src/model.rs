@@ -118,6 +118,11 @@ pub struct ViewBlock {
     pub spans: Vec<Span>,
     /// The inline nodes, in order.
     pub inlines: Vec<InlineNode>,
+    /// A figure's attributes (`src`, `alt`, `source`, `width`, `align`),
+    /// without `blockId`; empty for textblocks.
+    pub attrs: serde_json::Map<String, serde_json::Value>,
+    /// A figure's caption (its text).
+    pub caption: String,
 }
 
 impl ViewBlock {

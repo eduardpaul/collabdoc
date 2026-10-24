@@ -644,11 +644,23 @@ impl Store {
             }
         }
         let mut document = editor.into_document();
+        // Images an export wrote beside the file (`assets/<hash>.<ext>`).
+        if let Some(dir) = path.parent() {
+            for hash in referenced_assets(document.loro()) {
+                if document.asset(&hash).is_none()
+                    && let Some(bytes) = asset_file(&dir.join("assets"), &hash)
+                {
+                    let _ = document.put_asset(bytes);
+                }
+            }
+        }
+        document.take_new_assets();
         // The import is where the document starts, not an edit to undo.
         document.clear_history();
         let draft = draft_path(&self.config.user_data, &document.doc_id());
-        atomic_write(&draft, &encode(document.loro(), &[], now)).map_err(|e| e.to_string())?;
-        self.track(document.loro(), None, vec![])
+        let assets = document.assets().to_vec();
+        atomic_write(&draft, &encode(document.loro(), &assets, now)).map_err(|e| e.to_string())?;
+        self.track(document.loro(), None, assets)
             .map_err(|e| e.to_string())?;
         if let Some(t) = self.tracked.get_mut(&document.doc_id()) {
             t.suggested = Some(twin_collabdoc_path(path));
@@ -818,8 +830,46 @@ impl Store {
 
     /// Markdown for `document`, with the title as its first heading (as the
     /// TS app's `serializeDocument`).
+    /// Image bytes added to `doc` (an insert, a paste): kept with it, and
+    /// written to its file or draft at once, so no image is ever only in
+    /// memory while the journal already points at it.
+    pub fn put_assets(&mut self, doc: &LoroDoc, assets: Vec<Asset>, now: i64) -> io::Result<()> {
+        let id = meta_string(doc, "docId");
+        let Some(t) = self.tracked.get_mut(&id) else {
+            return Ok(());
+        };
+        let mut added = false;
+        for asset in assets {
+            if !t.assets.iter().any(|a| a.hash == asset.hash) {
+                t.assets.push(asset);
+                added = true;
+            }
+        }
+        if added {
+            self.write(doc, now)?;
+        }
+        Ok(())
+    }
+
+    /// The bytes of image `hash` in the open document `doc_id`.
+    pub fn asset(&self, doc_id: &str, hash: &str) -> Option<&Asset> {
+        self.tracked
+            .get(doc_id)?
+            .assets
+            .iter()
+            .find(|a| a.hash == hash)
+    }
+
+    /// Every asset the open document `doc_id` has.
+    pub fn assets_of(&self, doc_id: &str) -> &[Asset] {
+        self.tracked
+            .get(doc_id)
+            .map_or(&[], |t| t.assets.as_slice())
+    }
+
+    /// The document as one Markdown file: images inline as `data:` URIs.
     pub fn markdown_of(document: &Document) -> String {
-        let body = markdown::render(&document.blocks());
+        let body = markdown::render_with(&document.blocks(), document.assets(), true);
         let first = body.lines().next().unwrap_or("");
         if first.starts_with("# ") {
             return format!("{}\n", body.trim_end());
@@ -1081,6 +1131,17 @@ fn document_is_empty(doc: &LoroDoc) -> bool {
     tree::flatten(doc)
         .iter()
         .all(|(_, v)| v.editable && v.text.trim().is_empty())
+}
+
+/// The bytes of `<dir>/<hash>.<ext>`, if such a file is there.
+fn asset_file(dir: &Path, hash: &str) -> Option<Vec<u8>> {
+    fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
+        let path = entry.path();
+        let stem = path.file_stem()?.to_str()?;
+        stem.eq_ignore_ascii_case(hash)
+            .then(|| fs::read(&path).ok())
+            .flatten()
+    })
 }
 
 /// `asset:<hash>` sources of image figures.
