@@ -8,6 +8,23 @@ pub fn len(s: &str) -> usize {
     s.encode_utf16().count()
 }
 
+/// UTF-8 byte index of a UTF-16 offset into `text` (clamped to its end).
+pub fn to_utf8(text: &str, utf16_offset: usize) -> usize {
+    let mut units = 0;
+    for (i, c) in text.char_indices() {
+        if units >= utf16_offset {
+            return i;
+        }
+        units += c.len_utf16();
+    }
+    text.len()
+}
+
+/// UTF-16 offset of a UTF-8 byte index into `text`.
+pub fn from_utf8(text: &str, utf8_offset: usize) -> usize {
+    len(&text[..utf8_offset.min(text.len())])
+}
+
 fn is_low_surrogate(u: u16) -> bool {
     (0xDC00..=0xDFFF).contains(&u)
 }

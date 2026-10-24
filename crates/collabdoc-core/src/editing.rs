@@ -1,0 +1,645 @@
+//! Editor behaviour without a UI toolkit: selection, typing, Enter/Backspace,
+//! marks and block types over a [`Document`].
+//!
+//! Positions are global UTF-16 offsets into the blocks joined by `\n` — the
+//! coordinate space platform text input (IME) speaks. Every edit is phrased as
+//! "the blocks should now read like this" and handed to
+//! [`Document::reconcile`], so the tree, block identity and undo stay the
+//! core's business and a UI only draws [`ViewBlock`]s and forwards input.
+
+use std::ops::Range;
+
+use loro::cursor::{Cursor, Side};
+use unicode_segmentation::UnicodeSegmentation;
+
+use crate::document::Document;
+use crate::model::{BlockKind, TargetBlock, ViewBlock, masks, spans_from_masks};
+use crate::schema::{LINK_BIT, mark_bit};
+use crate::utf16;
+
+/// Marks that grow when typing at their end (`expand: after`).
+fn expand_after_mask() -> u32 {
+    ["bold", "italic", "underline", "strike", "link"]
+        .iter()
+        .filter_map(|m| mark_bit(m))
+        .fold(0, |a, b| a | b)
+}
+
+/// One block's content as the editor rewrites it.
+#[derive(Clone)]
+struct Piece {
+    key: Option<String>,
+    kind: BlockKind,
+    units: Vec<u16>,
+    marks: Vec<u32>,
+    hrefs: Vec<Option<String>>,
+}
+
+impl Piece {
+    fn of(view: &ViewBlock) -> Self {
+        let units = utf16::units(&view.text);
+        let (marks, hrefs) = masks(units.len(), &view.spans);
+        Self {
+            key: Some(view.key.clone()),
+            kind: view.kind,
+            units,
+            marks,
+            hrefs,
+        }
+    }
+
+    fn slice(&self, range: Range<usize>) -> Self {
+        Self {
+            key: None,
+            kind: self.kind,
+            units: self.units[range.clone()].to_vec(),
+            marks: self.marks[range.clone()].to_vec(),
+            hrefs: self.hrefs[range].to_vec(),
+        }
+    }
+
+    fn append(&mut self, other: &Piece) {
+        self.units.extend_from_slice(&other.units);
+        self.marks.extend_from_slice(&other.marks);
+        self.hrefs.extend_from_slice(&other.hrefs);
+    }
+
+    fn push_text(&mut self, text: &str, marks: u32, href: &Option<String>) {
+        for u in text.encode_utf16() {
+            self.units.push(u);
+            self.marks.push(marks);
+            self.hrefs.push(if marks & LINK_BIT != 0 {
+                href.clone()
+            } else {
+                None
+            });
+        }
+    }
+
+    fn target(&self) -> TargetBlock {
+        TargetBlock {
+            key: self.key.clone(),
+            kind: Some(self.kind),
+            text: String::from_utf16_lossy(&self.units),
+            spans: spans_from_masks(&self.marks, &self.hrefs),
+        }
+    }
+}
+
+pub struct Editor {
+    doc: Document,
+    blocks: Vec<ViewBlock>,
+    /// Global offset where each block starts.
+    starts: Vec<usize>,
+    anchor: usize,
+    head: usize,
+    /// Marks for the next typed text after a toolbar toggle with no selection.
+    stored_marks: Option<u32>,
+}
+
+impl Editor {
+    pub fn new(doc: Document) -> Self {
+        let mut editor = Self {
+            doc,
+            blocks: vec![],
+            starts: vec![],
+            anchor: 0,
+            head: 0,
+            stored_marks: None,
+        };
+        editor.reload();
+        editor
+    }
+
+    pub fn document(&self) -> &Document {
+        &self.doc
+    }
+
+    pub fn blocks(&self) -> &[ViewBlock] {
+        &self.blocks
+    }
+
+    pub fn block_start(&self, index: usize) -> usize {
+        self.starts[index]
+    }
+
+    fn block_len(&self, index: usize) -> usize {
+        utf16::len(&self.blocks[index].text)
+    }
+
+    /// Total length of the joined text.
+    pub fn len(&self) -> usize {
+        let last = self.blocks.len() - 1;
+        self.starts[last] + self.block_len(last)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Re-reads the blocks (after a remote change, undo, open).
+    fn reload(&mut self) {
+        self.blocks = self.doc.blocks();
+        self.starts.clear();
+        let mut at = 0;
+        for block in &self.blocks {
+            self.starts.push(at);
+            at += utf16::len(&block.text) + 1;
+        }
+        let len = self.len();
+        self.anchor = self.anchor.min(len);
+        self.head = self.head.min(len);
+    }
+
+    /// `(block index, offset in block)` of a global offset.
+    pub fn locate(&self, global: usize) -> (usize, usize) {
+        let index = self
+            .starts
+            .partition_point(|&s| s <= global)
+            .saturating_sub(1);
+        (
+            index,
+            (global - self.starts[index]).min(self.block_len(index)),
+        )
+    }
+
+    pub fn selection(&self) -> Range<usize> {
+        self.anchor.min(self.head)..self.anchor.max(self.head)
+    }
+
+    pub fn is_reversed(&self) -> bool {
+        self.head < self.anchor
+    }
+
+    pub fn head(&self) -> usize {
+        self.head
+    }
+
+    pub fn anchor(&self) -> usize {
+        self.anchor
+    }
+
+    pub fn set_selection(&mut self, anchor: usize, head: usize) {
+        self.anchor = self.snap(anchor);
+        self.head = self.snap(head);
+        self.stored_marks = None;
+    }
+
+    /// Clamps `offset` to the text and off the inside of a surrogate pair, so
+    /// no edit can split a character.
+    fn snap(&self, offset: usize) -> usize {
+        let offset = offset.min(self.len());
+        let (index, local) = self.locate(offset);
+        let text = &self.blocks[index].text;
+        self.starts[index] + utf16::from_utf8(text, utf16::to_utf8(text, local))
+    }
+
+    pub fn move_to(&mut self, offset: usize) {
+        self.set_selection(offset, offset);
+    }
+
+    pub fn select_to(&mut self, offset: usize) {
+        self.set_selection(self.anchor, offset);
+    }
+
+    pub fn select_all(&mut self) {
+        self.set_selection(0, self.len());
+    }
+
+    /// The joined text of `range` (blocks separated by `\n`).
+    pub fn text_in(&self, range: Range<usize>) -> String {
+        let all: Vec<u16> = self
+            .blocks
+            .iter()
+            .map(|b| b.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .encode_utf16()
+            .collect();
+        let end = range.end.min(all.len());
+        String::from_utf16_lossy(&all[range.start.min(end)..end])
+    }
+
+    /// The previous grapheme boundary (block starts count as one step back).
+    pub fn previous_boundary(&self, offset: usize) -> usize {
+        let (index, local) = self.locate(offset);
+        if local == 0 {
+            return offset.saturating_sub(1);
+        }
+        let text = &self.blocks[index].text;
+        let local8 = utf16::to_utf8(text, local);
+        let prev8 = text
+            .grapheme_indices(true)
+            .map(|(i, _)| i)
+            .rfind(|&i| i < local8)
+            .unwrap_or(0);
+        self.starts[index] + utf16::from_utf8(text, prev8)
+    }
+
+    pub fn next_boundary(&self, offset: usize) -> usize {
+        let (index, local) = self.locate(offset);
+        if local >= self.block_len(index) {
+            return (offset + 1).min(self.len());
+        }
+        let text = &self.blocks[index].text;
+        let local8 = utf16::to_utf8(text, local);
+        let next8 = text
+            .grapheme_indices(true)
+            .map(|(i, _)| i)
+            .find(|&i| i > local8)
+            .unwrap_or(text.len());
+        self.starts[index] + utf16::from_utf8(text, next8)
+    }
+
+    pub fn move_left(&mut self, extend: bool) {
+        let sel = self.selection();
+        let target = if !extend && !sel.is_empty() {
+            sel.start
+        } else {
+            self.previous_boundary(self.head)
+        };
+        if extend {
+            self.select_to(target)
+        } else {
+            self.move_to(target)
+        }
+    }
+
+    pub fn move_right(&mut self, extend: bool) {
+        let sel = self.selection();
+        let target = if !extend && !sel.is_empty() {
+            sel.end
+        } else {
+            self.next_boundary(self.head)
+        };
+        if extend {
+            self.select_to(target)
+        } else {
+            self.move_to(target)
+        }
+    }
+
+    pub fn move_home(&mut self, extend: bool) {
+        let (index, _) = self.locate(self.head);
+        let target = self.starts[index];
+        if extend {
+            self.select_to(target)
+        } else {
+            self.move_to(target)
+        }
+    }
+
+    pub fn move_end(&mut self, extend: bool) {
+        let (index, _) = self.locate(self.head);
+        let target = self.starts[index] + self.block_len(index);
+        if extend {
+            self.select_to(target)
+        } else {
+            self.move_to(target)
+        }
+    }
+
+    /// Marks that typing at the caret would get.
+    pub fn marks_at_cursor(&self) -> u32 {
+        if let Some(marks) = self.stored_marks {
+            return marks;
+        }
+        let (index, local) = self.locate(self.head);
+        let piece = Piece::of(&self.blocks[index]);
+        typing_marks(&piece, local).0
+    }
+
+    pub fn kind_at_cursor(&self) -> BlockKind {
+        self.blocks[self.locate(self.head).0].kind
+    }
+
+    /// Types `text` over the selection. `\n` starts a new block, except in a
+    /// code block, where it is a line break.
+    pub fn insert_text(&mut self, text: &str) -> bool {
+        let range = self.selection();
+        self.replace(range, text)
+    }
+
+    pub fn newline(&mut self) -> bool {
+        self.insert_text("\n")
+    }
+
+    pub fn backspace(&mut self) -> bool {
+        let mut range = self.selection();
+        if range.is_empty() {
+            range.start = self.previous_boundary(range.start);
+        }
+        self.replace(range, "")
+    }
+
+    pub fn delete_forward(&mut self) -> bool {
+        let mut range = self.selection();
+        if range.is_empty() {
+            range.end = self.next_boundary(range.end);
+        }
+        self.replace(range, "")
+    }
+
+    /// Replaces `range` (global UTF-16) with `text`; the caret lands after it.
+    pub fn replace(&mut self, range: Range<usize>, text: &str) -> bool {
+        let range = self.snap(range.start)..self.snap(range.end);
+        let Some(targets) = self.plan_replace(range.clone(), text) else {
+            return false;
+        };
+        let changed = self.apply(&targets);
+        let caret = (range.start + utf16::len(text)).min(self.len());
+        self.anchor = caret;
+        self.head = caret;
+        self.stored_marks = None;
+        self.note_caret();
+        changed
+    }
+
+    fn plan_replace(&self, range: Range<usize>, text: &str) -> Option<Vec<TargetBlock>> {
+        let (mut bs, mut os) = self.locate(range.start);
+        let (mut be, mut oe) = self.locate(range.end);
+        // The newline next to a figure is not deletable: Backspace after it
+        // (or Delete before it) removes the figure instead.
+        if !self.blocks[bs].editable && os == self.block_len(bs) && bs < be {
+            if text.is_empty() && bs + 1 == be && oe == 0 {
+                return Some(self.without_block(bs));
+            }
+            (bs, os) = (bs + 1, 0);
+        }
+        if !self.blocks[be].editable && oe == 0 && bs < be {
+            if text.is_empty() && bs + 1 == be && os == self.block_len(bs) {
+                return Some(self.without_block(be));
+            }
+            be -= 1;
+            oe = self.block_len(be);
+        }
+        let head_editable = self.blocks[bs].editable;
+        let tail_editable = self.blocks[be].editable;
+        // A figure is replaced only as a whole.
+        if !head_editable && os != 0 {
+            return None;
+        }
+        if !tail_editable && oe != self.block_len(be) {
+            return None;
+        }
+        if !head_editable && bs == be && os == oe {
+            return None;
+        }
+
+        let first = Piece::of(&self.blocks[bs]);
+        let last = Piece::of(&self.blocks[be]);
+        let (marks, href) = match self.stored_marks {
+            Some(m) => (m, None),
+            None if head_editable => typing_marks(&first, os),
+            None => (0, None),
+        };
+        let code = head_editable && first.kind == BlockKind::CodeBlock;
+        let lines: Vec<&str> = if code {
+            vec![text]
+        } else {
+            text.split('\n').collect()
+        };
+
+        let mut head = if head_editable {
+            let mut p = first.slice(0..os);
+            p.key = first.key.clone();
+            p
+        } else {
+            Piece {
+                key: None,
+                kind: BlockKind::Paragraph,
+                units: vec![],
+                marks: vec![],
+                hrefs: vec![],
+            }
+        };
+        let tail = if tail_editable {
+            last.slice(oe..last.units.len())
+        } else {
+            last.slice(0..0)
+        };
+        if head.key.is_none() && tail_editable && lines.len() == 1 {
+            head.key = last.key.clone();
+            head.kind = last.kind;
+        }
+
+        let mut pieces = Vec::new();
+        head.push_text(lines[0], marks, &href);
+        if lines.len() == 1 {
+            head.append(&tail);
+            pieces.push(head);
+        } else {
+            // Enter at the end of a heading continues with a paragraph.
+            let next_kind = match head.kind {
+                BlockKind::Heading(_) if tail.units.is_empty() => BlockKind::Paragraph,
+                kind => kind,
+            };
+            pieces.push(head);
+            for (n, line) in lines[1..].iter().enumerate() {
+                let mut p = Piece {
+                    key: None,
+                    kind: next_kind,
+                    units: vec![],
+                    marks: vec![],
+                    hrefs: vec![],
+                };
+                p.push_text(line, marks, &href);
+                if n == lines.len() - 2 {
+                    p.append(&tail);
+                }
+                pieces.push(p);
+            }
+        }
+
+        let mut targets: Vec<TargetBlock> =
+            self.blocks[..bs].iter().map(TargetBlock::from).collect();
+        targets.extend(pieces.iter().map(Piece::target));
+        targets.extend(self.blocks[be + 1..].iter().map(TargetBlock::from));
+        Some(targets)
+    }
+
+    fn without_block(&self, index: usize) -> Vec<TargetBlock> {
+        self.blocks
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != index)
+            .map(|(_, b)| TargetBlock::from(b))
+            .collect()
+    }
+
+    /// Bold, italic, … on the selection; with no selection, for what is typed next.
+    pub fn toggle_mark(&mut self, bit: u32) -> bool {
+        let range = self.selection();
+        if range.is_empty() {
+            self.stored_marks = Some(self.marks_at_cursor() ^ bit);
+            return false;
+        }
+        let (bs, os) = self.locate(range.start);
+        let (be, oe) = self.locate(range.end);
+        let mut pieces: Vec<Piece> = self.blocks.iter().map(Piece::of).collect();
+        let span = |i: usize, p: &Piece| {
+            let start = if i == bs { os } else { 0 };
+            let end = if i == be { oe } else { p.units.len() };
+            start..end
+        };
+        let all_set = (bs..=be).all(|i| {
+            let p = &pieces[i];
+            !self.blocks[i].editable || p.marks[span(i, p)].iter().all(|m| m & bit != 0)
+        });
+        for (i, piece) in pieces.iter_mut().enumerate().take(be + 1).skip(bs) {
+            if !self.blocks[i].editable {
+                continue;
+            }
+            for u in span(i, piece) {
+                if all_set {
+                    piece.marks[u] &= !bit;
+                } else {
+                    piece.marks[u] |= bit;
+                }
+            }
+        }
+        let targets: Vec<TargetBlock> = pieces.iter().map(Piece::target).collect();
+        let changed = self.doc.reconcile_step(&targets);
+        self.reload();
+        changed
+    }
+
+    /// Paragraph / heading / code block for every block the selection touches.
+    pub fn set_kind(&mut self, kind: BlockKind) -> bool {
+        let range = self.selection();
+        let (bs, _) = self.locate(range.start);
+        let (be, _) = self.locate(range.end);
+        let targets: Vec<TargetBlock> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let mut t = TargetBlock::from(b);
+                if (bs..=be).contains(&i) && b.editable {
+                    t.kind = Some(kind);
+                }
+                t
+            })
+            .collect();
+        let changed = self.doc.reconcile_step(&targets);
+        self.reload();
+        changed
+    }
+
+    fn caret_key(&self) -> String {
+        self.blocks[self.locate(self.head).0].key.clone()
+    }
+
+    fn apply(&mut self, targets: &[TargetBlock]) -> bool {
+        let before = self.caret_key();
+        let changed = self.doc.reconcile_from(targets, Some(&before));
+        self.reload();
+        changed
+    }
+
+    fn note_caret(&mut self) {
+        let key = self.caret_key();
+        self.doc.set_caret_block(&key);
+    }
+
+    pub fn undo(&mut self) -> bool {
+        let anchor = self.anchor_point();
+        let done = self.doc.undo();
+        self.reload();
+        self.restore(anchor);
+        done
+    }
+
+    pub fn redo(&mut self) -> bool {
+        let anchor = self.anchor_point();
+        let done = self.doc.redo();
+        self.reload();
+        self.restore(anchor);
+        done
+    }
+
+    /// Applies a change from elsewhere (a collaborator's update) through `f`.
+    /// The selection rides along with the text around it, as Loro cursors do.
+    pub fn remote_change<R>(&mut self, f: impl FnOnce(&mut Document) -> R) -> R {
+        let anchor = self.anchor_point();
+        let result = f(&mut self.doc);
+        self.reload();
+        self.restore(anchor);
+        result
+    }
+
+    fn anchor_point(&self) -> (Anchor, Anchor) {
+        (self.point_at(self.anchor), self.point_at(self.head))
+    }
+
+    /// A caret position that survives other people's edits: a Loro cursor on
+    /// the character, plus block and offset for when that cannot resolve.
+    fn point_at(&self, offset: usize) -> Anchor {
+        let (i, local) = self.locate(offset);
+        let block = &self.blocks[i];
+        let char_pos = char_count(&block.text, local);
+        let cursor = self
+            .doc
+            .text_of(&block.key)
+            .and_then(|t| t.get_cursor(char_pos, Side::Middle));
+        Anchor {
+            key: block.key.clone(),
+            local,
+            cursor,
+        }
+    }
+
+    fn resolve(&self, point: &Anchor, fallback: usize) -> usize {
+        let Some(index) = self.blocks.iter().position(|b| b.key == point.key) else {
+            return fallback;
+        };
+        let text = &self.blocks[index].text;
+        let local = match point
+            .cursor
+            .as_ref()
+            .map(|c| self.doc.loro().get_cursor_pos(c))
+        {
+            Some(Ok(found)) => {
+                utf16::len(&text.chars().take(found.current.pos).collect::<String>())
+            }
+            _ => point.local,
+        };
+        self.starts[index] + local.min(utf16::len(text))
+    }
+
+    fn restore(&mut self, (anchor, head): (Anchor, Anchor)) {
+        let a = self.resolve(&anchor, self.anchor);
+        let h = self.resolve(&head, self.head);
+        let len = self.len();
+        self.anchor = a.min(len);
+        self.head = h.min(len);
+    }
+}
+
+struct Anchor {
+    key: String,
+    local: usize,
+    cursor: Option<Cursor>,
+}
+
+/// Characters (Unicode scalar values) in the first `utf16_offset` units of `text`.
+fn char_count(text: &str, utf16_offset: usize) -> usize {
+    text[..utf16::to_utf8(text, utf16_offset)].chars().count()
+}
+
+/// Marks for text typed at `at` in `piece`, mirroring Loro: inside a run the
+/// text joins it; at a run's end only `expand: after` marks continue.
+fn typing_marks(piece: &Piece, at: usize) -> (u32, Option<String>) {
+    if at == 0 || piece.units.is_empty() {
+        return (0, None);
+    }
+    let before = piece.marks[at - 1];
+    let after = piece.marks.get(at).copied().unwrap_or(0);
+    let marks = (before & after) | (before & expand_after_mask());
+    let href = if marks & LINK_BIT != 0 {
+        piece.hrefs[at - 1].clone()
+    } else {
+        None
+    };
+    (marks, href)
+}

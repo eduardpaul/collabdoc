@@ -1,0 +1,21 @@
+[package]
+name = "collabdoc-gpui"
+description = "CollabDoc desktop editor: GPUI over the Rust document core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "collabdoc"
+path = "src/main.rs"
+
+[dependencies]
+collabdoc-core = { path = "../collabdoc-core" }
+gpui = "0.2.2"
+env_logger = "0.11"
+log = "0.4"
+unicode-segmentation = "1"
+
+[dev-dependencies]
+gpui = { version = "0.2.2", features = ["test-support"] }

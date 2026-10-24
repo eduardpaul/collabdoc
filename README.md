@@ -131,6 +131,24 @@ $env:CSC_IDENTITY_AUTO_DISCOVERY="false"
 npm run build:win
 ```
 
+## Rust build (preview)
+
+The Electron app is being migrated to one native Rust binary: the document core on Loro's Rust crate and a GPUI editor, no webview. Plan and status: [specs/23-rust-gpui-migration.md](specs/23-rust-gpui-migration.md). Files are shared: the Rust editor opens and saves the same `.collabdoc` files.
+
+```bash
+# Linux build dependencies (Ubuntu/Debian; WSL included)
+sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev \
+  libfontconfig-dev libfreetype-dev libvulkan-dev mesa-vulkan-drivers
+
+cargo run -p collabdoc-gpui -- notes.collabdoc   # open or create a document
+cargo test                                        # core, cross-language and headless UI tests
+cargo build --release -p collabdoc-gpui           # target/release/collabdoc
+```
+
+In the editor, **Ctrl+Shift+N** opens a second participant window synced through Loro. Each window has its own undo history. Other shortcuts: Ctrl+B/I/U, Ctrl+Shift+X (strike), Ctrl+E (code), Ctrl+Alt+0–3 (paragraph, headings), Ctrl+Alt+C (code block), Ctrl+S.
+
+`scripts/gpui-smoke.sh` drives the real binary on a virtual display (Xvfb + xdotool) and saves screenshots. `COLLABDOC_TS_COMPAT=1 cargo test -p collabdoc-core --test ts_compat` also checks that the TypeScript core reads what the Rust editor writes (needs Bun and `loro-crdt` installed).
+
 ## Layout
 
 ```
@@ -138,7 +156,10 @@ src/
   main/          Electron main process
   preload/       Context-bridge IPC
   renderer/      React UI (Vite)
-scripts/         Dev launcher (WSL / Windows)
+crates/
+  collabdoc-core/  Rust document core (Loro), toolkit-independent editing
+  collabdoc-gpui/  Rust desktop editor (GPUI), the `collabdoc` binary
+scripts/         Dev launcher (WSL / Windows), GPUI smoke test
 electron.vite.config.ts
 electron-builder.yml
 ```

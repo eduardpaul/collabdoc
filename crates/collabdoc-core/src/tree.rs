@@ -278,6 +278,11 @@ fn walk(stack: &mut Vec<LoroMap>, out: &mut Vec<(Located, ViewBlock)>) {
     }
 }
 
+/// The view of one located leaf, read fresh from Loro.
+pub fn located_view(located: &Located) -> ViewBlock {
+    view_of(&located.node, &node_name(&located.node), &located.ancestors)
+}
+
 fn view_of(node: &LoroMap, name: &str, ancestors: &[LoroMap]) -> ViewBlock {
     let kind = kind_of(node, name);
     let mut list = None;

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/collabdoc-core"]
+members = ["crates/collabdoc-core", "crates/collabdoc-gpui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,3 +16,9 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# gpui 0.2.2 pulls xattr 0.2.3 (via zed-async-tar), which no longer builds
+# against current libc on Linux (ENOATTR is gone; it is ENODATA). One-line
+# fix in third_party/xattr; drop this once gpui moves to xattr 1.x.
+[patch.crates-io]
+xattr = { path = "third_party/xattr" }

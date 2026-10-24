@@ -1,10 +1,14 @@
 //! One open document: the Loro doc, this participant's undo stack, and the
 //! reconcile step that turns an editor's content back into Loro operations.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use loro::{CommitOptions, ExportMode, LoroDoc, LoroText, LoroValue, UndoManager, VersionVector};
+use loro::{
+    CommitOptions, ExportMode, Frontiers, LoroDoc, LoroText, LoroValue, UndoManager, VersionVector,
+};
 
 use crate::file::{self, Asset, FileError};
 use crate::ids::new_doc_id;
@@ -36,6 +40,9 @@ pub fn configure(doc: &LoroDoc) {
     doc.set_change_merge_interval(CHANGE_MERGE_INTERVAL);
 }
 
+/// Every leaf block with its location, in reading order.
+type Flat = Rc<Vec<(Located, ViewBlock)>>;
+
 pub struct Document {
     doc: LoroDoc,
     undo: UndoManager,
@@ -43,6 +50,9 @@ pub struct Document {
     assets: Vec<Asset>,
     /// Block and time of the last human edit, to cut history and undo steps.
     last_edit: Option<(String, i64)>,
+    /// The flattened tree, valid while the doc is at `frontiers`. Typing
+    /// re-reads only the blocks it touched instead of the whole tree.
+    flat: RefCell<Option<(Frontiers, Flat)>>,
 }
 
 impl Document {
@@ -119,6 +129,7 @@ impl Document {
             actor: actor.to_owned(),
             assets,
             last_edit: None,
+            flat: RefCell::new(None),
         }
     }
 
@@ -150,11 +161,30 @@ impl Document {
         self.commit_boundary(&format!("rename to “{title}”"));
     }
 
+    /// The editable text of the block with view key `key`.
+    pub fn text_of(&self, key: &str) -> Option<LoroText> {
+        self.flat()
+            .iter()
+            .find(|(_, view)| view.key == key && view.editable)
+            .and_then(|(located, _)| tree::sole_text(&located.node).flatten())
+    }
+
     pub fn blocks(&self) -> Vec<ViewBlock> {
-        tree::flatten(&self.doc)
-            .into_iter()
-            .map(|(_, view)| view)
-            .collect()
+        self.flat().iter().map(|(_, view)| view.clone()).collect()
+    }
+
+    /// The flattened tree, recomputed only when the doc moved on without us
+    /// (an import, undo, or a direct Loro edit).
+    fn flat(&self) -> Flat {
+        let frontiers = self.doc.state_frontiers();
+        if let Some((at, flat)) = self.flat.borrow().as_ref()
+            && *at == frontiers
+        {
+            return flat.clone();
+        }
+        let flat = Rc::new(tree::flatten(&self.doc));
+        *self.flat.borrow_mut() = Some((frontiers, flat.clone()));
+        flat
     }
 
     /// Plain text of the editable document, blocks separated by `\n`.
@@ -192,31 +222,45 @@ impl Document {
     /// re-renders from [`Document::blocks`] afterwards, so any shape the tree
     /// does not allow (a heading as a list item's first line) snaps back.
     pub fn reconcile(&mut self, target: &[TargetBlock]) -> bool {
-        let current = tree::flatten(&self.doc);
+        self.reconcile_from(target, None)
+    }
+
+    /// [`Document::reconcile`] for an editor that knows where the caret was
+    /// before the edit: history and undo cut when that block differs from the
+    /// one the caret was in after the previous edit (see
+    /// [`Document::set_caret_block`]), as `humanCommitCutter` does. Without
+    /// it, the first changed block stands in for the caret.
+    pub fn reconcile_from(&mut self, target: &[TargetBlock], caret_block: Option<&str>) -> bool {
+        let current = self.flat();
         let assigned = assign_keys(&current, target);
         let changed_key = first_change(&current, target, &assigned);
         let Some(changed_key) = changed_key else {
             return false;
         };
 
-        let retained: Vec<bool> = {
-            let mut r = vec![false; current.len()];
-            for c in assigned.iter().flatten() {
-                r[*c] = true;
-            }
-            r
-        };
+        let mut retained = vec![false; current.len()];
+        for c in assigned.iter().flatten() {
+            retained[*c] = true;
+        }
         for (i, (located, _)) in current.iter().enumerate() {
             if !retained[i] {
                 tree::delete_leaf(located);
             }
         }
+        // The new flat view, built as we go: untouched blocks keep their view,
+        // touched and new ones are read back from Loro.
+        let mut flat = Vec::with_capacity(target.len());
         let mut prev: Option<Located> = None;
         for (t, slot) in target.iter().zip(&assigned) {
             match slot {
                 Some(c) => {
                     let (located, view) = &current[*c];
-                    update_block(located, view, t);
+                    if view.editable && block_differs(view, t) {
+                        update_block(located, view, t);
+                        flat.push((located.clone(), tree::located_view(located)));
+                    } else {
+                        flat.push((located.clone(), view.clone()));
+                    }
                     prev = Some(located.clone());
                 }
                 None => {
@@ -229,15 +273,39 @@ impl Document {
                         t.kind.unwrap_or(BlockKind::Paragraph),
                     );
                     write_text(&tree::ensure_text(&located.node), &t.text, &t.spans);
+                    flat.push((located.clone(), tree::located_view(&located)));
                     prev = Some(located);
                 }
             }
         }
-        if tree::flatten(&self.doc).is_empty() {
+        let rebuilt = flat.is_empty();
+        if rebuilt {
             tree::create_textblock(&tree::root(&self.doc), 0, BlockKind::Paragraph);
         }
-        self.commit_human(&changed_key);
+        self.commit_human(caret_block.unwrap_or(&changed_key));
+        let flat = if rebuilt {
+            tree::flatten(&self.doc)
+        } else {
+            flat
+        };
+        *self.flat.borrow_mut() = Some((self.doc.state_frontiers(), Rc::new(flat)));
         true
+    }
+
+    /// A command (bold, heading, …): its own history entry and undo step,
+    /// never merged with typing before or after it.
+    pub fn reconcile_step(&mut self, target: &[TargetBlock]) -> bool {
+        self.last_edit = None;
+        let changed = self.reconcile(target);
+        self.last_edit = None;
+        changed
+    }
+
+    /// Where the caret ended up after an edit, for the next cut decision.
+    pub fn set_caret_block(&mut self, key: &str) {
+        if let Some((last, _)) = &mut self.last_edit {
+            *last = key.to_owned();
+        }
     }
 
     /// Human typing is one history entry and undo step until 1 s idle or a
