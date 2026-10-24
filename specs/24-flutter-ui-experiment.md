@@ -1,6 +1,6 @@
 # 24 · Flutter UI experiment: same Rust core, Flutter front end
 
-**Phase:** platform (experiment) · **Depends on:** 23 Phase 0 · **Status:** Phase 0 reached on branch `flutter`
+**Phase:** platform (experiment) · **Depends on:** 23 Phase 0 · **Status:** Phase 1 reached on branch `flutter`
 
 Written 2026-10-24. Flutter 3.47.8 (Dart 3.13.7), Linux desktop.
 
@@ -42,6 +42,32 @@ Flutter's Linux embedding has no stable multi-window API, so participants are si
 - `cargo test -p collabdoc-ffi` covers the bridge.
 - `scripts/flutter-smoke.sh` drives the real app under Xvfb and takes screenshots.
 
+## Phase 1 result
+
+Phase 1 makes the editor usable for real documents with several participants. Everything below is in the shared core unless it is drawing.
+
+- **Lists:** bullet, numbered and task lists (Ctrl+Shift+8/7/9 or the toolbar), and Tab / Shift+Tab to nest and lift. Enter splits an item and hands its sub-list to the new item; Enter on an empty item or Backspace at its start leaves the list. Clicking a task box ticks it. Every list command is one undo step, and the tree stays loadable by Tiptap (items start with a paragraph; no empty lists).
+- **Links:** Ctrl+K adds, edits or removes the link on the selection or under the caret. Ctrl+click opens it.
+- **Markdown clipboard:** copy writes Markdown, including headings, nested lists with ticks, quotes, code fences, inline marks and links. Paste reads it back (`pulldown-cmark`). One paragraph pastes as rich text at the caret. Several blocks go between the halves of the line as one undo step. Ctrl+Shift+V pastes plain text.
+- **Remote carets:** each participant publishes its selection as encoded Loro cursors in an ephemeral store, in the TS shape (`{anchor, focus, user}` keyed by peer id). Other panes paint the selection, a caret and a name tag in that participant's color. The tag shows while they move. Carets stay on their characters while text changes on either side. Throttling (20 Hz), the 5 s heartbeat and the 15 s expiry follow spec 07. Closing a pane removes its caret. The TS core resolves a caret written by Rust (`ts_compat`).
+- **Long documents:**
+  - The bridge sends only blocks that changed, and the block order only when it changed: view 3.9 → 0.8 ms per keystroke on the 50-page document.
+  - The block list is virtualised (`super_sliver_list`). Frame build drops from 15.4 to 1.7 ms (p50) and raster from 16.7 to 6.8 ms on the same document.
+- **Polish:**
+  - Home/End go to the edges of the line on screen in a wrapped paragraph.
+  - Dragging a selection past the top or bottom of the list scrolls.
+
+Two fixes came out of the fuzz test (`random_edits.rs`, now with list commands and Markdown paste, 2000 seeds × 2 scenarios):
+- After a merge, `normalize` removes containers that concurrent deletes left empty.
+- When two participants move the same block at once, each leaves a copy with the same `blockId`. `normalize` now gives the later copy a fresh id, so lookups by id stay unambiguous.
+
+**Tests:** 9 widget tests (lists, links, clipboard, carets, Home/End, drag-scroll, among others), 8 bridge tests, 70 core tests, the seeded fuzz and the TS round trips.
+
+**Known limits:**
+- Moving blocks (list commands) copies them, as `loro-prosemirror` does. Someone else's concurrent typing inside a moved block can be lost.
+- Pasting Markdown blocks inside a list or quote inserts them as plain text.
+- Figures copy as their label.
+
 ## Measured against the GPUI build
 
 Same machine, release builds, Linux x86-64 without a GPU (Mesa software rendering under Xvfb). In both builds roughly 50–60 MB of the memory is the software graphics driver (`libLLVM`), which a machine with a GPU does not load.
@@ -51,7 +77,7 @@ Same machine, release builds, Linux x86-64 without a GPU (Mesa software renderin
 | What ships | **1 file**, 20 MB | **A folder**, 28 MB: executable, `lib/` (Flutter engine 17 MB, Rust core 4 MB, Dart AOT 3.5 MB, file-dialog plugin), `data/` (ICU, assets, fonts) |
 | Memory, empty document | 116 MB RSS | 236 MB RSS / 214 MB PSS |
 | Memory, 50-page document (526 blocks) | 150 MB RSS / 130 MB PSS | 293 MB RSS / 271 MB PSS (318 MB after typing) |
-| Per keystroke on that document, before drawing | 2.5 ms (core) | 3.0 ms (core) + 3.9 ms (whole view as JSON; JIT test VM) |
+| Per keystroke on that document, before drawing | 2.5 ms (core) | 3.0 ms (core) + 3.9 ms (whole view as JSON; JIT test VM); Phase 1: 0.8 ms (changed blocks only) |
 | Typing and keys | Same event loop; ordered | Keys reach Dart before typed text, which comes through the platform input method. A key pressed within a few ms of a character can overtake it. Handled: stale input is detected (`TextEditingDelta.oldText`) and lands at the caret, like Flutter's own text field; nothing is corrupted |
 | Text rendering | GPUI text runs | `RichText` + `RenderParagraph` (mature: shaping, bidi, hit testing, IME rects) |
 | Accessibility | Limited in GPUI | Flutter semantics; would need wiring for a custom editor |
@@ -67,10 +93,11 @@ Same machine, release builds, Linux x86-64 without a GPU (Mesa software renderin
 
 ## If Flutter goes further
 
-1. Send only changed blocks over the bridge (key + revision) instead of the whole view per keystroke.
-2. Virtualise the block list (`ListView.builder` + `SliverList`) for long documents.
-3. Set the IME candidate rect (`setEditableSizeAndTransform` / `setCaretRect`).
-4. Windows/macOS: build `collabdoc_ffi.dll` / `.dylib` from the runner build files, the way `linux/CMakeLists.txt` does now.
+Done in Phase 1: changed-blocks bridge, virtualised list. Next:
+1. Set the IME candidate rect (`setEditableSizeAndTransform` / `setCaretRect`).
+2. Windows/macOS: build `collabdoc_ffi.dll` / `.dylib` from the runner build files, the way `linux/CMakeLists.txt` does now.
+3. Keep concurrent edits inside a moved block. This needs Loro `MovableList` children or a move-aware merge, and the TS core would have to change in step.
+4. Identity and presence beyond panes (spec 07): a user profile, the participant list and claims, and presence over the P2P transport (`Hub` already relays the bytes).
 
 ## Open-source editors: adopt one, or keep our own? (evaluated 2026-10-24)
 
