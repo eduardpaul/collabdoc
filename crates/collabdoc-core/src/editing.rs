@@ -115,6 +115,11 @@ impl Editor {
         editor
     }
 
+    /// The document, done editing.
+    pub fn into_document(self) -> Document {
+        self.doc
+    }
+
     pub fn document(&self) -> &Document {
         &self.doc
     }

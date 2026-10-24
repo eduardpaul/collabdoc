@@ -13,6 +13,7 @@ pub mod model;
 pub mod persist;
 pub mod presence;
 pub mod schema;
+pub mod store;
 pub mod structure;
 pub mod sync;
 pub mod tree;

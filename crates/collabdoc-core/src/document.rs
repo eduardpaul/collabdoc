@@ -29,6 +29,14 @@ pub enum DocError {
 
 /// Milliseconds since the epoch. Loro calls these "seconds"; the TS app
 /// stamps milliseconds on purpose (see `commitTimestamp`) and so do we.
+/// A string in the document's `meta` map (`docId`, `title`…).
+pub fn meta_string(doc: &LoroDoc, key: &str) -> String {
+    match doc.get_map(META_KEY).get(key) {
+        Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => s.to_string(),
+        _ => String::new(),
+    }
+}
+
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -144,10 +152,25 @@ impl Document {
     }
 
     fn meta_string(&self, key: &str) -> String {
-        match self.doc.get_map(META_KEY).get(key) {
-            Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => s.to_string(),
-            _ => String::new(),
-        }
+        meta_string(&self.doc, key)
+    }
+
+    /// The same document carrying `assets`.
+    pub fn with_assets(mut self, assets: Vec<Asset>) -> Self {
+        self.assets = assets;
+        self
+    }
+
+    /// Images and other files the document carries (`asset:<sha256>`).
+    pub fn assets(&self) -> &[Asset] {
+        &self.assets
+    }
+
+    /// Forgets undo and redo, after loading content that is not an edit
+    /// (an import).
+    pub fn clear_history(&mut self) {
+        self.doc.commit();
+        self.undo.clear();
     }
 
     pub fn doc_id(&self) -> String {
