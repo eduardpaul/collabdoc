@@ -229,4 +229,56 @@ void main() {
       reason: '"f" goes in at the caret, nothing is lost',
     );
   });
+
+  testWidgets('copy writes Markdown, paste reads it back', (tester) async {
+    String? clipboard;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          clipboard = (call.arguments as Map)['text'] as String;
+        } else if (call.method == 'Clipboard.getData') {
+          return {'text': clipboard};
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    final ctrl = [LogicalKeyboardKey.controlLeft];
+    final ctrlShift = [
+      LogicalKeyboardKey.controlLeft,
+      LogicalKeyboardKey.shiftLeft,
+    ];
+
+    await launch(tester);
+    final pane = tester.state<EditorPaneState>(find.byType(EditorPane));
+    type(pane, 'Bold');
+    await chord(tester, [
+      LogicalKeyboardKey.shiftLeft,
+    ], LogicalKeyboardKey.home);
+    await chord(tester, ctrl, LogicalKeyboardKey.keyB);
+    await chord(tester, ctrl, LogicalKeyboardKey.keyC);
+    await tester.pumpAndSettle();
+    expect(clipboard, '**Bold**');
+
+    clipboard = '- one\n- two';
+    await tester.sendKeyEvent(LogicalKeyboardKey.end);
+    await chord(tester, ctrl, LogicalKeyboardKey.keyV);
+    await tester.pumpAndSettle();
+    expect(texts(pane), ['Bold', 'one', 'two']);
+    expect(pane.view.blocks[1].list, isNotNull);
+
+    // Ctrl+Shift+V types the Markdown as it is.
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    clipboard = '**raw**';
+    await chord(tester, ctrlShift, LogicalKeyboardKey.keyV);
+    await tester.pumpAndSettle();
+    expect(texts(pane).last, '**raw**');
+  });
 }

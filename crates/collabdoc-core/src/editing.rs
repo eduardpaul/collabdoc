@@ -13,9 +13,11 @@ use loro::cursor::{Cursor, Side};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::document::Document;
+use crate::markdown;
 use crate::model::{BlockKind, ListKind, TargetBlock, ViewBlock, masks, spans_from_masks};
 use crate::schema::{LINK_BIT, mark_bit};
 use crate::utf16;
+use loro::LoroValue;
 
 /// Marks that grow when typing at their end (`expand: after`).
 fn expand_after_mask() -> u32 {
@@ -367,12 +369,20 @@ impl Editor {
 
     /// Replaces `range` (global UTF-16) with `text`; the caret lands after it.
     pub fn replace(&mut self, range: Range<usize>, text: &str) -> bool {
+        self.replace_with(range, text, None)
+    }
+
+    fn replace_with(&mut self, range: Range<usize>, text: &str, rich: Option<&[Run]>) -> bool {
         let range = self.snap(range.start)..self.snap(range.end);
-        let Some(targets) = self.plan_replace(range.clone(), text) else {
+        let Some(targets) = self.plan_replace(range.clone(), text, rich) else {
             return false;
         };
         let changed = self.apply(&targets);
-        let caret = (range.start + utf16::len(text)).min(self.len());
+        let inserted = match rich {
+            Some(runs) => runs.iter().map(|(t, _, _)| utf16::len(t)).sum(),
+            None => utf16::len(text),
+        };
+        let caret = (range.start + inserted).min(self.len());
         self.anchor = caret;
         self.head = caret;
         self.stored_marks = None;
@@ -380,7 +390,12 @@ impl Editor {
         changed
     }
 
-    fn plan_replace(&self, range: Range<usize>, text: &str) -> Option<Vec<TargetBlock>> {
+    fn plan_replace(
+        &self,
+        range: Range<usize>,
+        text: &str,
+        rich: Option<&[Run]>,
+    ) -> Option<Vec<TargetBlock>> {
         let (mut bs, mut os) = self.locate(range.start);
         let (mut be, mut oe) = self.locate(range.end);
         // The newline next to a figure is not deletable: Backspace after it
@@ -419,11 +434,11 @@ impl Editor {
             None => (0, None),
         };
         let code = head_editable && first.kind == BlockKind::CodeBlock;
-        let lines: Vec<&str> = if code {
-            vec![text]
-        } else {
-            text.split('\n').collect()
+        let runs: Vec<Run> = match rich {
+            Some(runs) => runs.to_vec(),
+            None => vec![(text.to_owned(), marks, href.clone())],
         };
+        let lines: Vec<Vec<Run>> = if code { vec![runs] } else { split_lines(&runs) };
 
         let mut head = if head_editable {
             let mut p = first.slice(0..os);
@@ -449,7 +464,9 @@ impl Editor {
         }
 
         let mut pieces = Vec::new();
-        head.push_text(lines[0], marks, &href);
+        for (t, m, h) in &lines[0] {
+            head.push_text(t, *m, h);
+        }
         if lines.len() == 1 {
             head.append(&tail);
             pieces.push(head);
@@ -468,7 +485,9 @@ impl Editor {
                     marks: vec![],
                     hrefs: vec![],
                 };
-                p.push_text(line, marks, &href);
+                for (t, m, h) in line {
+                    p.push_text(t, *m, h);
+                }
                 if n == lines.len() - 2 {
                     p.append(&tail);
                 }
@@ -619,6 +638,88 @@ impl Editor {
         let changed = self.doc.reconcile_step(&targets);
         self.reload();
         changed
+    }
+
+    /// The selection as Markdown: what Ctrl+C puts on the clipboard, as the
+    /// Tiptap app's `ClipboardMarkdown` does.
+    pub fn selection_markdown(&self) -> String {
+        let range = self.selection();
+        if range.is_empty() {
+            return String::new();
+        }
+        let (bs, os) = self.locate(range.start);
+        let (be, oe) = self.locate(range.end);
+        let views: Vec<ViewBlock> = (bs..=be)
+            .map(|i| {
+                let mut view = self.blocks[i].clone();
+                if view.editable {
+                    let piece = Piece::of(&view);
+                    let start = if i == bs { os } else { 0 };
+                    let end = if i == be { oe } else { piece.units.len() };
+                    let part = piece.slice(start..end);
+                    view.text = String::from_utf16_lossy(&part.units);
+                    view.spans = spans_from_masks(&part.marks, &part.hrefs);
+                }
+                view
+            })
+            .collect();
+        markdown::render(&views)
+    }
+
+    /// Ctrl+V. Text that looks like Markdown (as the TS clipboard decides)
+    /// becomes formatted text or blocks; anything else is typed as is.
+    pub fn paste(&mut self, text: &str) -> bool {
+        if !markdown::looks_like_markdown(text) {
+            return self.insert_text(text);
+        }
+        let nodes = markdown::parse(text);
+        if let Some(runs) = markdown::single_paragraph(&nodes) {
+            let runs: Vec<Run> = runs
+                .iter()
+                .map(|(t, marks)| {
+                    let mut bits = 0;
+                    let mut href = None;
+                    for (name, value) in marks {
+                        bits |= mark_bit(name).unwrap_or(0);
+                        if name == "link"
+                            && let LoroValue::Map(m) = value
+                            && let Some(LoroValue::String(h)) = m.get("href")
+                        {
+                            href = Some(h.to_string());
+                        }
+                    }
+                    (t.clone(), bits, href)
+                })
+                .collect();
+            let range = self.selection();
+            return self.replace_with(range, "", Some(&runs));
+        }
+        if nodes.is_empty() {
+            return false;
+        }
+        let range = self.selection();
+        if !range.is_empty() {
+            self.replace(range, "");
+        }
+        let (index, local) = self.locate(self.head);
+        let block = &self.blocks[index];
+        // Blocks go in at the top level for now; inside a list or quote the
+        // Markdown is typed as text.
+        if !block.editable || block.list.is_some() || block.quote_depth > 0 {
+            return self.insert_text(text);
+        }
+        let id = stable_id(block);
+        match self.doc.paste_blocks(&id, local, &nodes) {
+            Some(last) => {
+                self.reload();
+                if let Some(i) = self.blocks.iter().position(|b| stable_id(b) == last) {
+                    let end = self.starts[i] + utf16::len(&self.blocks[i].text);
+                    self.move_to(end);
+                }
+                true
+            }
+            None => self.insert_text(text),
+        }
     }
 
     /// Bullet, numbered or task list on or off for the selected blocks.
@@ -787,6 +888,28 @@ struct Anchor {
 /// Characters (Unicode scalar values) in the first `utf16_offset` units of `text`.
 fn char_count(text: &str, utf16_offset: usize) -> usize {
     text[..utf16::to_utf8(text, utf16_offset)].chars().count()
+}
+
+/// Inserted text with its marks: `(text, mark bits, link href)`.
+type Run = (String, u32, Option<String>);
+
+/// Splits runs at `\n` into lines (each a list of runs).
+fn split_lines(runs: &[Run]) -> Vec<Vec<Run>> {
+    let mut lines: Vec<Vec<Run>> = vec![vec![]];
+    for (text, marks, href) in runs {
+        for (i, part) in text.split('\n').enumerate() {
+            if i > 0 {
+                lines.push(vec![]);
+            }
+            if !part.is_empty() {
+                lines
+                    .last_mut()
+                    .unwrap()
+                    .push((part.to_owned(), *marks, href.clone()));
+            }
+        }
+    }
+    lines
 }
 
 /// A block's `blockId`, or its view key in files that lack ids.

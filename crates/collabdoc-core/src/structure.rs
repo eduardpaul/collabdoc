@@ -52,7 +52,7 @@ pub fn snapshot(node: &LoroMap) -> NodeSnap {
     }
 }
 
-fn text_runs(text: &LoroText) -> Vec<(String, Vec<(String, LoroValue)>)> {
+pub(crate) fn text_runs(text: &LoroText) -> Vec<(String, Vec<(String, LoroValue)>)> {
     text.to_delta()
         .into_iter()
         .filter_map(|d| match d {
@@ -69,6 +69,25 @@ fn text_runs(text: &LoroText) -> Vec<(String, Vec<(String, LoroValue)>)> {
             _ => None,
         })
         .collect()
+}
+
+/// Inserts `runs` at char position `at`: all the text first, then the marks,
+/// so a mark that grows at its end (bold) does not spread over the text
+/// written after it.
+pub(crate) fn write_runs(text: &LoroText, at: usize, runs: &[(String, Vec<(String, LoroValue)>)]) {
+    let joined: String = runs.iter().map(|(t, _)| t.as_str()).collect();
+    if joined.is_empty() {
+        return;
+    }
+    text.insert(at, &joined).expect("insert text");
+    let mut pos = at;
+    for (insert, marks) in runs {
+        let len = insert.chars().count();
+        for (key, value) in marks {
+            text.mark(pos..pos + len, key, value.clone()).expect("mark");
+        }
+        pos += len;
+    }
 }
 
 /// Writes `snap` as child `index` of `parent`.
@@ -96,15 +115,7 @@ fn materialize_in(list: &LoroList, index: usize, snap: &NodeSnap) -> LoroMap {
                 let text = kids
                     .insert_container(kids.len(), LoroText::new())
                     .expect("text");
-                let mut at = 0;
-                for (insert, marks) in runs {
-                    let len = insert.chars().count();
-                    text.insert(at, insert).expect("insert text");
-                    for (key, value) in marks {
-                        text.mark(at..at + len, key, value.clone()).expect("mark");
-                    }
-                    at += len;
-                }
+                write_runs(&text, 0, runs);
             }
         }
     }
@@ -397,18 +408,7 @@ pub fn split_item_with_children(line: &Located, at: usize) -> Option<String> {
 
     let item_at = tree::index_in(&list, &item).map_or(0, |i| i + 1);
     let (new_item, paragraph) = tree::create_item(&list, item_at, &tree::node_name(&item));
-    let new_text = tree::ensure_text(&paragraph);
-    let mut pos = 0;
-    for (insert, marks) in &tail {
-        let n = insert.chars().count();
-        new_text.insert(pos, insert).expect("insert tail");
-        for (key, value) in marks {
-            new_text
-                .mark(pos..pos + n, key, value.clone())
-                .expect("mark tail");
-        }
-        pos += n;
-    }
+    write_runs(&tree::ensure_text(&paragraph), 0, &tail);
     for f in &following {
         let end = tree::children(&new_item).len();
         move_node(f, &item, &new_item, end);
@@ -417,7 +417,7 @@ pub fn split_item_with_children(line: &Located, at: usize) -> Option<String> {
 }
 
 /// The runs from UTF-16 offset `at` on.
-fn runs_after(
+pub(crate) fn runs_after(
     runs: &[(String, Vec<(String, LoroValue)>)],
     at: usize,
 ) -> Vec<(String, Vec<(String, LoroValue)>)> {
@@ -481,12 +481,29 @@ pub fn repair_headless_item(item: &LoroMap, list: &LoroMap) -> bool {
     true
 }
 
-/// Removes list containers and items left empty, and keeps at least one
-/// block. Concurrent edits can produce these (two people each delete a
-/// different last item of the same list); neither side's own edit could.
-/// Deleting an already-empty container is idempotent across peers, so both
-/// sides may run this at once. Returns whether anything changed.
+/// Removes list containers and items left empty, keeps at least one block,
+/// and gives a fresh `blockId` to the later of two blocks sharing one.
+/// Concurrent edits can produce these (two people each delete a different
+/// last item of the same list; both move the same block, each leaving a
+/// copy); neither side's own edit could. Both sides may run this at once:
+/// deleting an empty container is idempotent, and the two new ids for the
+/// same duplicate settle by last-writer-wins. Returns whether anything
+/// changed.
 pub fn normalize(doc: &loro::LoroDoc) -> bool {
+    fn dedupe(node: &LoroMap, seen: &mut std::collections::HashSet<String>) -> bool {
+        let mut changed = false;
+        for child in tree::child_maps(node) {
+            let id = tree::block_id(&child);
+            if !id.is_empty() && !seen.insert(id) {
+                tree::attrs(&child)
+                    .insert(BLOCK_ID_ATTR, new_block_id())
+                    .expect("fresh blockId");
+                changed = true;
+            }
+            changed |= dedupe(&child, seen);
+        }
+        changed
+    }
     fn sweep(node: &LoroMap) -> bool {
         let mut changed = false;
         for child in tree::child_maps(node) {
@@ -506,9 +523,56 @@ pub fn normalize(doc: &loro::LoroDoc) -> bool {
     }
     let root = tree::root(doc);
     let mut changed = sweep(&root);
+    changed |= dedupe(&root, &mut Default::default());
     if tree::flatten(doc).is_empty() {
         tree::create_textblock(&root, 0, BlockKind::Paragraph);
         changed = true;
     }
     changed
+}
+
+/// Pastes `nodes` into the line `line` at UTF-16 offset `at`: the line is
+/// split there and the nodes go between its halves; a half left empty is
+/// dropped. Returns the `blockId` of the last pasted line.
+pub fn paste_blocks(line: &Located, at: usize, nodes: &[NodeSnap]) -> Option<String> {
+    let parent = line.parent().clone();
+    // Only top-level lines take blocks (the caller types into the rest).
+    if tree::node_name(&parent) != "doc" {
+        return None;
+    }
+    let index = tree::index_in(&parent, &line.node)?;
+    let text = tree::ensure_text(&line.node);
+    let current = text.to_string();
+    let len = text.len_utf16();
+    let at = crate::utf16::from_utf8(&current, crate::utf16::to_utf8(&current, at.min(len)));
+    let tail = runs_after(&text_runs(&text), at);
+    if at < len {
+        text.delete_utf16(at, len - at).expect("cut tail");
+    }
+    let mut pos = index + 1;
+    let mut last = None;
+    for snap in nodes {
+        let node = materialize(&parent, pos, snap);
+        last = last_leaf(&node).map(|leaf| tree::block_id(&leaf));
+        pos += 1;
+    }
+    if !tail.is_empty() {
+        let rest = tree::create_textblock(&parent, pos, BlockKind::Paragraph);
+        write_runs(&tree::ensure_text(&rest), 0, &tail);
+    }
+    if text.len_utf16() == 0 && !nodes.is_empty() {
+        tree::children(&parent)
+            .delete(index, 1)
+            .expect("drop empty head");
+    }
+    last
+}
+
+/// The last leaf block inside `node` (or `node` itself).
+fn last_leaf(node: &LoroMap) -> Option<LoroMap> {
+    let name = tree::node_name(node);
+    if !is_container_type(&name) {
+        return Some(node.clone());
+    }
+    tree::child_maps(node).iter().rev().find_map(last_leaf)
 }

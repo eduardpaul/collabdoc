@@ -7,6 +7,7 @@ pub mod document;
 pub mod editing;
 pub mod file;
 pub mod ids;
+pub mod markdown;
 pub mod model;
 pub mod persist;
 pub mod schema;

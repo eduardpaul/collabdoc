@@ -146,20 +146,20 @@ class EditorPaneState extends State<EditorPane>
 
   Future<void> _copy({bool cut = false}) async {
     if (view.selectionStart == view.selectionEnd) return;
-    final reply = session.call({
-      'op': 'textIn',
-      'start': view.selectionStart,
-      'end': view.selectionEnd,
-    });
+    final reply = session.call({'op': 'copyMarkdown'});
     await Clipboard.setData(ClipboardData(text: reply['text'] as String));
     if (cut) run({'op': 'insert', 'text': ''});
   }
 
-  Future<void> _paste() async {
+  /// Ctrl+V reads Markdown into blocks and marks; Ctrl+Shift+V types it as is.
+  Future<void> _paste({bool plain = false}) async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text;
     if (text != null && mounted) {
-      run({'op': 'insert', 'text': text.replaceAll('\r\n', '\n')});
+      run({
+        'op': plain ? 'insert' : 'paste',
+        'text': text.replaceAll('\r\n', '\n'),
+      });
     }
   }
 
@@ -244,7 +244,7 @@ class EditorPaneState extends State<EditorPane>
         LogicalKeyboardKey.keyX: shift
             ? () => mark('strike')
             : () => _copy(cut: true),
-        LogicalKeyboardKey.keyV: _paste,
+        LogicalKeyboardKey.keyV: () => _paste(plain: shift),
         LogicalKeyboardKey.keyZ: () => op(shift ? 'redo' : 'undo'),
         LogicalKeyboardKey.keyY: () => op('redo'),
         LogicalKeyboardKey.keyB: () => mark('bold'),

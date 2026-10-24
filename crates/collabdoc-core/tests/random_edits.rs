@@ -20,12 +20,14 @@ impl Rng {
     }
 }
 
-/// `FUZZ_SEEDS=500 cargo test --release --test random_edits` for a long run.
-fn seeds(default: u64) -> u64 {
-    std::env::var("FUZZ_SEEDS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(default)
+/// `FUZZ_SEEDS=500 cargo test --release --test random_edits` for a long run,
+/// `FUZZ_SEED=42` (with `FUZZ_TRACE=1`) to replay one.
+fn seeds(default: u64) -> std::ops::RangeInclusive<u64> {
+    let var = |name| std::env::var(name).ok().and_then(|s| s.parse().ok());
+    match var("FUZZ_SEED") {
+        Some(seed) => seed..=seed,
+        None => 1..=var("FUZZ_SEEDS").unwrap_or(default),
+    }
 }
 
 fn fresh(doc: &Document) -> Vec<collabdoc_core::ViewBlock> {
@@ -36,10 +38,19 @@ fn fresh(doc: &Document) -> Vec<collabdoc_core::ViewBlock> {
 }
 
 /// The tree stays one Tiptap can load: lists hold only items, items are not
-/// empty and start with a paragraph, no container is left empty.
+/// empty and start with a paragraph, no container is left empty, no two
+/// blocks share a `blockId`.
 fn check_shape(doc: &Document) -> Result<(), String> {
-    fn walk(node: &loro::LoroMap, path: &str) -> Result<(), String> {
+    fn walk(
+        node: &loro::LoroMap,
+        path: &str,
+        ids: &mut std::collections::HashSet<String>,
+    ) -> Result<(), String> {
         let name = tree::node_name(node);
+        let id = tree::block_id(node);
+        if !id.is_empty() && !ids.insert(id.clone()) {
+            return Err(format!("{path}/{name}: duplicate blockId {id}"));
+        }
         let kids = tree::child_maps(node);
         let here = format!("{path}/{name}");
         if collabdoc_core::schema::is_list_type(&name) {
@@ -59,23 +70,28 @@ fn check_shape(doc: &Document) -> Result<(), String> {
             }
         }
         for k in &kids {
-            walk(k, &here)?;
+            walk(k, &here, ids)?;
         }
         Ok(())
     }
-    walk(&tree::root(doc.loro()), "")
+    walk(&tree::root(doc.loro()), "", &mut Default::default())
 }
 
 fn step(e: &mut Editor, rng: &mut Rng) {
     let len = e.len();
-    let op = rng.below(16);
+    let op = rng.below(18);
     if std::env::var("FUZZ_TRACE").is_ok() {
         eprintln!(
             "op {op} sel {:?} blocks {:?}",
             e.selection(),
             e.blocks()
                 .iter()
-                .map(|b| (b.text.clone(), b.spans.clone()))
+                .map(|b| (
+                    b.text.clone(),
+                    b.list.map(|l| (l, b.list_depth)),
+                    b.quote_depth,
+                    b.spans.len()
+                ))
                 .collect::<Vec<_>>()
         );
     }
@@ -129,16 +145,30 @@ fn step(e: &mut Editor, rng: &mut Rng) {
         14 => {
             e.outdent();
         }
-        _ => {
+        15 => {
             let block = rng.below(e.blocks().len());
             e.toggle_task(block);
+        }
+        16 => {
+            // Copy and paste back what is selected, as Markdown.
+            let md = e.selection_markdown();
+            e.paste(&md);
+        }
+        _ => {
+            let snippets = [
+                "**b** and [l](https://x.y)",
+                "# T\n\n- one\n  - two\n* [x] t",
+                "```\ncode\n```",
+                "> q\n\n1. a\n2. b",
+            ];
+            e.paste(snippets[rng.below(snippets.len())]);
         }
     }
 }
 
 #[test]
 fn the_cached_view_always_matches_the_tree() {
-    for seed in 1..=seeds(20) {
+    for seed in seeds(20) {
         let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         let mut e = Editor::new(Document::create("fuzz", "me"));
         for i in 0..150 {
@@ -161,16 +191,28 @@ fn the_cached_view_always_matches_the_tree() {
 
 #[test]
 fn two_random_participants_converge() {
-    for seed in 1..=seeds(10) {
+    for seed in seeds(10) {
         let mut rng = Rng(seed.wrapping_mul(0xD1B5_4A32_D192_ED03));
         let mut a = Editor::new(Document::create("fuzz", "a"));
         a.insert_text("start");
         let hub = Hub::new(a.document());
         let mut b = Editor::new(a.document().fork("b"));
         for i in 0..120 {
-            let who = if rng.below(2) == 0 { &mut a } else { &mut b };
+            let pick_a = rng.below(2) == 0;
+            if std::env::var("FUZZ_TRACE").is_ok() {
+                eprintln!("step {i} by {}", if pick_a { "a" } else { "b" });
+            }
+            let who = if pick_a { &mut a } else { &mut b };
             step(who, &mut rng);
+            if std::env::var("FUZZ_TRACE").is_ok()
+                && let Err(problem) = check_shape(who.document())
+            {
+                eprintln!("  local shape: {problem}");
+            }
             if rng.below(4) == 0 {
+                if std::env::var("FUZZ_TRACE").is_ok() {
+                    eprintln!("sync");
+                }
                 // Two rounds: tidying after a merge (normalize) is itself an
                 // edit the other side needs.
                 for _ in 0..2 {

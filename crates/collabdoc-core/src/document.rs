@@ -452,6 +452,23 @@ impl Document {
         created
     }
 
+    /// Pastes Markdown blocks into line `id` at `at`; one undo step. Returns
+    /// the last pasted line's id.
+    pub fn paste_blocks(
+        &mut self,
+        id: &str,
+        at: usize,
+        nodes: &[structure::NodeSnap],
+    ) -> Option<String> {
+        let mut last = None;
+        self.structural("paste", |doc| {
+            last =
+                structure::find(doc, id).and_then(|line| structure::paste_blocks(&line, at, nodes));
+            last.is_some()
+        });
+        last
+    }
+
     /// A command (bold, heading, …): its own history entry and undo step,
     /// never merged with typing before or after it.
     pub fn reconcile_step(&mut self, target: &[TargetBlock]) -> bool {

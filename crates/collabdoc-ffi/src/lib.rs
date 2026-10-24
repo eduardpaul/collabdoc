@@ -147,6 +147,7 @@ impl Session {
         let e = &mut self.editor;
         let changed = match s("op") {
             "insert" => e.insert_text(s("text")),
+            "paste" => e.paste(s("text")),
             "replace" => e.replace(n("start")..n("end"), s("text")),
             "newline" => e.newline(),
             "backspace" => e.backspace(),
@@ -213,6 +214,7 @@ impl Session {
                 self.sent_order.clear();
                 return json!({ "ok": true });
             }
+            "copyMarkdown" => return json!({ "ok": true, "text": e.selection_markdown() }),
             "textIn" => return json!({ "ok": true, "text": e.text_in(n("start")..n("end")) }),
             "push" => {
                 let shared = self.shared.borrow();
@@ -465,5 +467,17 @@ mod tests {
             call(&mut s, json!({"op": "toggleMark", "mark": "blink"}))["ok"],
             false
         );
+    }
+
+    #[test]
+    fn markdown_goes_through_the_clipboard_ops() {
+        let mut s = Session::open(None).unwrap();
+        call(
+            &mut s,
+            json!({"op": "paste", "text": "# Title\n\n- one\n- two"}),
+        );
+        call(&mut s, json!({"op": "selectAll"}));
+        let copied = call(&mut s, json!({"op": "copyMarkdown"}));
+        assert_eq!(copied["text"], "# Title\n\n- one\n- two");
     }
 }

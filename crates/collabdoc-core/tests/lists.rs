@@ -1,6 +1,7 @@
 //! Lists: toggling, indent/outdent, Enter and Backspace in list lines, tasks.
 
 use collabdoc_core::schema::mark_bit;
+use collabdoc_core::sync::Hub;
 use collabdoc_core::{BlockKind, Document, Editor, ListKind};
 
 fn editor_with(lines: &str) -> Editor {
@@ -235,4 +236,31 @@ fn each_list_command_is_one_undo_step() {
     assert_eq!(shape(&e), [s("one", None, 0), s("two", None, 0)]);
     assert!(e.redo());
     assert_eq!(shape(&e), [s("one", B, 1), s("two", B, 1)]);
+}
+
+#[test]
+fn a_block_both_sides_move_keeps_one_block_id() {
+    let mut a = editor_with("one\ntwo");
+    a.select_all();
+    a.toggle_list(ListKind::Bullet);
+    let hub = Hub::new(a.document());
+    let mut b = Editor::new(a.document().fork("b"));
+    // One indents "two" while the other outdents it: each move copies it,
+    // so the merge has two.
+    caret_in(&mut a, 1, 0);
+    a.indent();
+    caret_in(&mut b, 1, 0);
+    b.outdent();
+    for _ in 0..2 {
+        hub.push(a.document()).unwrap();
+        hub.push(b.document()).unwrap();
+        a.remote_change(|d| hub.pull(d)).unwrap();
+        b.remote_change(|d| hub.pull(d)).unwrap();
+    }
+    assert_eq!(a.blocks(), b.blocks());
+    let mut ids: Vec<&str> = a.blocks().iter().map(|b| b.block_id.as_str()).collect();
+    let all = ids.len();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), all, "{:?}", a.blocks());
 }
