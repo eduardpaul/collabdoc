@@ -178,6 +178,26 @@ void main() {
     );
   });
 
+  testWidgets('Ctrl+K links the selection', (tester) async {
+    await launch(tester);
+    final pane = tester.state<EditorPaneState>(find.byType(EditorPane));
+    type(pane, 'see the docs');
+    pane.run({'op': 'select', 'anchor': 8, 'head': 12});
+    await chord(tester, [
+      LogicalKeyboardKey.controlLeft,
+    ], LogicalKeyboardKey.keyK);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('link-url')),
+      'https://loro.dev',
+    );
+    await tester.tap(find.byKey(const ValueKey('link-save')));
+    await tester.pumpAndSettle();
+    final span = pane.view.blocks.single.spans.single;
+    expect((span.start, span.end, span.href), (8, 12, 'https://loro.dev'));
+    expect(pane.focus.hasFocus, isTrue, reason: 'typing goes on in the editor');
+  });
+
   testWidgets('input made against text we no longer show lands at the caret', (
     tester,
   ) async {

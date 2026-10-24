@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'model.dart';
 import 'native.dart';
@@ -162,6 +163,32 @@ class EditorPaneState extends State<EditorPane>
     }
   }
 
+  /// Ctrl+K: edit the link on the selection or under the caret.
+  Future<void> _editLink() async {
+    final found = session.call({'op': 'linkAt', 'offset': view.selectionStart});
+    final current = (found['link'] as Map?)?['href'] as String? ?? '';
+    final href = await showDialog<String>(
+      context: context,
+      builder: (context) => _LinkDialog(initial: current),
+    );
+    if (!mounted) return;
+    focus.requestFocus();
+    if (href != null) run({'op': 'setLink', 'href': href.trim()});
+  }
+
+  /// Ctrl+click on a link opens it in the browser.
+  Future<bool> _openLinkAt(int offset) async {
+    final found = session.call({'op': 'linkAt', 'offset': offset});
+    final href = (found['link'] as Map?)?['href'] as String?;
+    final uri = href == null ? null : Uri.tryParse(href);
+    if (uri == null ||
+        !const {'http', 'https', 'mailto'}.contains(uri.scheme)) {
+      return false;
+    }
+    await launchUrl(uri);
+    return true;
+  }
+
   Future<void> _open() async {
     final file = await openFile(
       acceptedTypeGroups: [
@@ -224,6 +251,7 @@ class EditorPaneState extends State<EditorPane>
         LogicalKeyboardKey.keyI: () => mark('italic'),
         LogicalKeyboardKey.keyU: () => mark('underline'),
         LogicalKeyboardKey.keyE: () => mark('code'),
+        LogicalKeyboardKey.keyK: _editLink,
         if (shift) LogicalKeyboardKey.keyH: () => mark('highlight'),
         LogicalKeyboardKey.keyS: () =>
             widget.workspace.save(widget.participant),
@@ -389,6 +417,9 @@ class EditorPaneState extends State<EditorPane>
     _lastClick = now;
     _lastClickAt = e.position;
     final shift = HardwareKeyboard.instance.isShiftPressed;
+    if (HardwareKeyboard.instance.isControlPressed && _clicks == 1) {
+      _openLinkAt(offset);
+    }
     if (shift) {
       _select(view.anchor, offset);
     } else if (_clicks >= 3) {
@@ -831,9 +862,12 @@ class EditorPaneState extends State<EditorPane>
   Widget _page(Widget child) => Center(
     child: ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 760),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 32),
-        child: child,
+      child: SizedBox(
+        width: double.infinity,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: child,
+        ),
       ),
     ),
   );
@@ -930,6 +964,7 @@ class EditorPaneState extends State<EditorPane>
                     on(Marks.highlight),
                     () => op('toggleMark', {'mark': 'highlight'}),
                   ),
+                  _tool('Link', on(Marks.link), _editLink),
                   sep,
                   _tool(
                     '• List',
@@ -1189,4 +1224,66 @@ class _SelectionPainter extends CustomPainter {
       old.end != end ||
       old.length != length ||
       old.caret != caret;
+}
+
+class _LinkDialog extends StatefulWidget {
+  const _LinkDialog({required this.initial});
+  final String initial;
+
+  @override
+  State<_LinkDialog> createState() => _LinkDialogState();
+}
+
+class _LinkDialogState extends State<_LinkDialog> {
+  late final TextEditingController url = TextEditingController(
+    text: widget.initial,
+  );
+
+  @override
+  void dispose() {
+    url.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: AppColors.panel,
+      title: Text(
+        widget.initial.isEmpty ? 'Add link' : 'Edit link',
+        style: const TextStyle(
+          fontFamily: uiFont,
+          fontSize: 15,
+          color: AppColors.text,
+        ),
+      ),
+      content: SizedBox(
+        width: 420,
+        child: TextField(
+          key: const ValueKey('link-url'),
+          controller: url,
+          autofocus: true,
+          style: const TextStyle(fontFamily: uiFont, color: AppColors.text),
+          decoration: const InputDecoration(hintText: 'https://…'),
+          onSubmitted: (value) => Navigator.of(context).pop(value),
+        ),
+      ),
+      actions: [
+        if (widget.initial.isNotEmpty)
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(''),
+            child: const Text('Remove'),
+          ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          key: const ValueKey('link-save'),
+          onPressed: () => Navigator.of(context).pop(url.text),
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
 }

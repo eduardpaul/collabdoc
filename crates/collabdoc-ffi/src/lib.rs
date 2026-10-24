@@ -165,6 +165,13 @@ impl Session {
                 };
                 e.set_kind(kind)
             }
+            "setLink" => e.set_link(s("href")),
+            "linkAt" => {
+                let link = e.link_at(n("offset")).map(
+                    |(range, href)| json!({ "start": range.start, "end": range.end, "href": href }),
+                );
+                return json!({ "ok": true, "link": link });
+            }
             "toggleList" => {
                 let kind = match s("kind") {
                     "ordered" => ListKind::Ordered,
@@ -431,6 +438,23 @@ mod tests {
         let split = s.view();
         assert_eq!(split["order"].as_array().unwrap().len(), 4);
         assert_eq!(split["changed"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn link_commands() {
+        let mut s = Session::open(None).unwrap();
+        call(&mut s, json!({"op": "insert", "text": "see docs"}));
+        call(&mut s, json!({"op": "select", "anchor": 4, "head": 8}));
+        assert_eq!(
+            call(&mut s, json!({"op": "setLink", "href": "https://loro.dev"}))["changed"],
+            true
+        );
+        let found = call(&mut s, json!({"op": "linkAt", "offset": 5}));
+        assert_eq!(
+            found["link"],
+            json!({"start": 4, "end": 8, "href": "https://loro.dev"})
+        );
+        assert!(call(&mut s, json!({"op": "linkAt", "offset": 1}))["link"].is_null());
     }
 
     #[test]

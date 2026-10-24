@@ -551,6 +551,76 @@ impl Editor {
         changed
     }
 
+    /// The link around global `offset` (the character after it, or before
+    /// it at a link's end): its global range and `href`.
+    pub fn link_at(&self, offset: usize) -> Option<(Range<usize>, String)> {
+        let (index, local) = self.locate(offset.min(self.len()));
+        let piece = Piece::of(&self.blocks[index]);
+        let has = |u: usize| piece.marks.get(u).is_some_and(|m| m & LINK_BIT != 0);
+        let at = if has(local) {
+            local
+        } else if local > 0 && has(local - 1) {
+            local - 1
+        } else {
+            return None;
+        };
+        let href = piece.hrefs[at].clone().unwrap_or_default();
+        let same = |u: usize| has(u) && piece.hrefs[u].as_deref() == Some(href.as_str());
+        let mut start = at;
+        while start > 0 && same(start - 1) {
+            start -= 1;
+        }
+        let mut end = at + 1;
+        while end < piece.units.len() && same(end) {
+            end += 1;
+        }
+        let base = self.starts[index];
+        Some((base + start..base + end, href))
+    }
+
+    /// Ctrl+K. Links the selection (or the link under the caret) to `href`;
+    /// an empty `href` removes the link. With nothing selected and no link
+    /// under the caret, inserts `href` itself as linked text.
+    pub fn set_link(&mut self, href: &str) -> bool {
+        let mut range = self.selection();
+        if range.is_empty() {
+            match self.link_at(range.start) {
+                Some((link, _)) => range = link,
+                None if href.is_empty() => return false,
+                None => {
+                    let start = range.start;
+                    if !self.insert_text(href) {
+                        return false;
+                    }
+                    range = start..start + utf16::len(href);
+                }
+            }
+        }
+        let (bs, os) = self.locate(range.start);
+        let (be, oe) = self.locate(range.end);
+        let mut pieces: Vec<Piece> = self.blocks.iter().map(Piece::of).collect();
+        for (i, piece) in pieces.iter_mut().enumerate().take(be + 1).skip(bs) {
+            if !self.blocks[i].editable {
+                continue;
+            }
+            let start = if i == bs { os } else { 0 };
+            let end = if i == be { oe } else { piece.units.len() };
+            for u in start..end {
+                if href.is_empty() {
+                    piece.marks[u] &= !LINK_BIT;
+                    piece.hrefs[u] = None;
+                } else {
+                    piece.marks[u] |= LINK_BIT;
+                    piece.hrefs[u] = Some(href.to_owned());
+                }
+            }
+        }
+        let targets: Vec<TargetBlock> = pieces.iter().map(Piece::target).collect();
+        let changed = self.doc.reconcile_step(&targets);
+        self.reload();
+        changed
+    }
+
     /// Bullet, numbered or task list on or off for the selected blocks.
     pub fn toggle_list(&mut self, kind: ListKind) -> bool {
         self.structural(|doc, ids| doc.toggle_list(ids, kind))

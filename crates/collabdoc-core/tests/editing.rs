@@ -230,3 +230,39 @@ fn formatting_commands_are_their_own_undo_steps() {
     assert_eq!(kinds(&e), [BlockKind::Paragraph]);
     assert_eq!(texts(&e), ["Title"]);
 }
+
+#[test]
+fn links_are_set_edited_found_and_removed() {
+    let mut e = editor();
+    e.insert_text("read the docs today");
+    e.set_selection(9, 13);
+    assert!(e.set_link("https://loro.dev"));
+    let link = bit("link");
+    let span = e.blocks()[0].spans[0].clone();
+    assert_eq!(
+        (span.start, span.end, span.marks, span.href.as_str()),
+        (9, 13, link, "https://loro.dev")
+    );
+
+    // The caret inside (or right after) the link finds all of it.
+    assert_eq!(e.link_at(11), Some((9..13, "https://loro.dev".to_owned())));
+    assert_eq!(e.link_at(13), Some((9..13, "https://loro.dev".to_owned())));
+    assert_eq!(e.link_at(3), None);
+
+    // Ctrl+K with the caret in it edits the whole link.
+    e.move_to(10);
+    assert!(e.set_link("https://loro.dev/docs"));
+    assert_eq!(e.link_at(10).unwrap().1, "https://loro.dev/docs");
+    assert_eq!(e.blocks()[0].spans.len(), 1);
+
+    // An empty href removes it.
+    e.move_to(10);
+    assert!(e.set_link(""));
+    assert!(e.blocks()[0].spans.is_empty());
+
+    // With nothing selected and no link, the URL goes in as linked text.
+    e.move_to(e.len());
+    assert!(e.set_link("https://example.com"));
+    assert_eq!(e.blocks()[0].text, "read the docs todayhttps://example.com");
+    assert_eq!(e.link_at(e.len()).unwrap().0, 19..38);
+}

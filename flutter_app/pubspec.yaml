@@ -12,6 +12,7 @@ dependencies:
   flutter:
     sdk: flutter
   super_sliver_list: ^0.4.1
+  url_launcher: ^6.3.3
 
 dev_dependencies:
   flutter_test:
