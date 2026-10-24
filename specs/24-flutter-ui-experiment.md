@@ -85,6 +85,69 @@ Same machine, release builds, Linux x86-64 without a GPU (Mesa software renderin
 | Build tooling | `cargo` only | Flutter SDK + `cargo` (CMake calls cargo) |
 | Hot reload while building UI | No | Yes |
 
+## Single file and lower memory with Flutter (measured 2026-10-24)
+
+Same container as above: Linux x86-64, no GPU (Mesa llvmpipe under Xvfb), release build, the 50-page document (526 blocks), 1400×760 window unless noted. RSS is read 8 s after start.
+
+### Memory
+
+| Setting | RSS | PSS | Raster per frame while typing (p50 / p95) |
+| --- | --- | --- | --- |
+| Default: Impeller over OpenGL | 259 MB | 236 MB | 9.5 / 23 ms |
+| Skia over OpenGL (`fl_dart_project_set_enable_impeller(project, FALSE)`) | 231 MB | 208 MB | 6.5 / 22 ms |
+| Skia, smaller resource cache (`Skia.setResourceCacheMaxBytes` 16 MB) | 226 MB | 203 MB | — |
+| **Skia software rasterizer** (Impeller off + `FLUTTER_LINUX_RENDERER=software`) | **161 MB** | **139 MB** | **3.2 / 5.5 ms** |
+| Same, empty document | 147 MB | 124 MB | — |
+| Same, 4K screen (3840×2100) | — | — | 20 / 30 ms |
+| glibc tuning (`MALLOC_ARENA_MAX`, trim threshold, periodic `malloc_trim`) | −0 to −7 MB | | — |
+
+**Where the software build's 161 MB goes:**
+- malloc heap: 39 MB (engine, Skia, GTK, fontconfig).
+- Mesa's LLVM and gallium driver: 38 MB.
+- Engine library: 11 MB.
+- Other anonymous memory, mostly the Dart heap and thread stacks: 18 MB.
+- Other system libraries: 9 MB.
+- Dart AOT code: 5 MB.
+- Rust core: 4 MB.
+- GTK: 4 MB.
+
+**The renderer is the big lever.**
+- Impeller is the default and needs software rendering turned off together with it: the engine aborts with "Impeller DlText cannot be drawn to a Skia canvas".
+- Software rendering is also the fastest option on a machine without a GPU. The cost grows with pixel count, though; at 4K it is still about 50 fps while typing.
+- On a machine with a GPU, the GL path would rasterize faster. The memory gap would be different from this container's: the GPU driver's own memory replaces llvmpipe's.
+
+**What the stock embedder cannot avoid:**
+- The GTK embedder always creates an EGL display, so the GL driver (38 MB here) is loaded even in software mode. With no EGL vendor available the app exits ("No provider of eglGetPlatformDisplayEXT").
+- Release builds accept no engine switches, so Dart heap limits (`--old_gen_heap_size`) cannot be set.
+- Both need a custom embedder, below.
+
+### One file
+
+| Option | Result | Platforms |
+| --- | --- | --- |
+| **Self-extracting launcher.** A small Rust executable with the bundle appended as a zstd tar. First run unpacks into the user cache under a content hash, then every run `exec`s the app. Prototype: about 80 lines, using the `tar` and `zstd` crates. | **11.0 MB single file** (10.7 MB with `--split-debug-info --obfuscate`, which shrinks `libapp.so` from 5.1 to 4.1 MB). First run unpacks in 454 ms; later starts add 6 ms. RSS is identical to the folder build, because `exec` replaces the launcher. | Linux and macOS as is. Windows has no `exec`: spawn the app and exit. Unpack into `%LOCALAPPDATA%`; sign it so SmartScreen and antivirus trust it. |
+| **AppImage** (`appimagetool`). | **12.6 MB single file**, same memory. Mounts itself with FUSE. Without `fusermount` it needs `APPIMAGE_EXTRACT_AND_RUN=1` (tested). | Linux only; the standard there. |
+| Fewer files inside the bundle. Link the Rust core into the runner and load it with `DynamicLibrary.process()`. Replace the `file_selector` and `url_launcher` plugins with Rust (`rfd`, `open`). | The engine `.so`, `libapp.so`, `icudtl.dat` and `flutter_assets/` remain. Tidier, but still a folder. | All |
+| Truly one ELF with nothing unpacked. | Not possible with released Flutter. The engine ships only as a shared library, and the embedder takes the assets folder and ICU data as file paths. It needs a custom engine build plus an in-memory loader. | — |
+| macOS | A `.app` is a folder by design and users expect it, distributed as a `.dmg`. | macOS |
+
+### Custom embedder (larger effort)
+
+A Rust or C embedder on the Flutter embedder API (`FlutterEngineRun`) instead of the GTK one would:
+- drop GTK, about 10 MB with its libraries;
+- not create EGL in software mode, so the 38 MB GL driver is gone;
+- accept engine and Dart switches, including heap limits.
+
+Expect it to sit around 110–120 MB with the 50-page document; that figure is an estimate. The cost is everything GTK provides today, owned by us: windows, input, IME, clipboard, accessibility bridge, dialogs. It also means keeping up with embedder API changes.
+
+### Recommendation
+
+1. **Ship one file** with the self-extracting launcher on Linux and Windows (one tool for both; AppImage is a fine alternative on Linux), and a `.dmg` on macOS.
+2. **Turn Impeller off and use the software renderer** when there is no GPU, or as a user setting; measure on real GPUs before making it the default everywhere. Software rendering takes the 50-page document from 259 to 161 MB: still above GPUI's 150 MB, but in the same range instead of twice as much.
+3. Add `--split-debug-info --obfuscate` to release builds.
+4. Skip glibc tuning; it didn't pay off.
+5. Consider a custom embedder only if the last ~40–50 MB matters more than the maintenance.
+
 ## Conclusion for the decision
 
 - **The goal was a single binary and the lowest resource use.** GPUI meets both: one 20 MB file and about half of Flutter's memory. Flutter can't ship as one file (the engine, AOT code and assets are separate files) and uses roughly twice the memory in this setup.
