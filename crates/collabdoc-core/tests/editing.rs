@@ -302,3 +302,37 @@ fn ctrl_arrows_move_by_word_and_ctrl_backspace_deletes_one() {
     assert!(e.delete_word_forward());
     assert_eq!(e.blocks()[0].text, ", wörld 👍 ");
 }
+
+#[test]
+fn typing_on_a_figure_starts_a_line_beside_it() {
+    let mut e = Editor::new(Document::create("t", "me"));
+    e.insert_text("before");
+    assert!(e.insert_mermaid("graph TD; A-->B"));
+    let figure = e.blocks().len() - 1;
+    assert_eq!(
+        e.blocks()[figure].kind,
+        BlockKind::Atom,
+        "the figure ends the document"
+    );
+    // From its end: Enter opens a paragraph after it, and typing goes there.
+    let end = e.len();
+    e.move_to(end);
+    assert!(e.newline());
+    e.insert_text("after");
+    let texts: Vec<_> = e
+        .blocks()
+        .iter()
+        .map(|b| (b.kind, b.text.clone()))
+        .collect();
+    assert_eq!(texts.len(), 3);
+    assert_eq!(texts[2], (BlockKind::Paragraph, "after".into()));
+    // From its start: typing goes into a new line before it.
+    let start = e.block_start(1);
+    e.move_to(start);
+    e.insert_text("x");
+    assert_eq!(e.blocks()[1].text, "x");
+    assert_eq!(e.blocks()[2].kind, BlockKind::Atom);
+    // One undo step each.
+    assert!(e.undo());
+    assert_eq!(e.blocks().len(), 3);
+}

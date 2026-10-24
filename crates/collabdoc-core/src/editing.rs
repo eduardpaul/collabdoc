@@ -465,6 +465,13 @@ impl Editor {
 
     fn replace_with(&mut self, range: Range<usize>, text: &str, rich: Option<&[Run]>) -> bool {
         let range = self.snap(range.start)..self.snap(range.end);
+        if range.is_empty() {
+            let (index, local) = self.locate(range.start);
+            let something = !text.is_empty() || rich.is_some_and(|r| !r.is_empty());
+            if !self.blocks[index].editable && something {
+                return self.insert_beside_figure(index, local > 0, text, rich);
+            }
+        }
         let Some(targets) = self.plan_replace(range.clone(), text, rich) else {
             return false;
         };
@@ -474,6 +481,59 @@ impl Editor {
             None => utf16::len(text),
         };
         let caret = (range.start + inserted).min(self.len());
+        self.anchor = caret;
+        self.head = caret;
+        self.stored_marks = None;
+        self.note_caret();
+        changed
+    }
+
+    /// Typing, Enter or a paste with the caret on a figure (which holds no
+    /// text) starts new lines beside it: after it from its end, before it from
+    /// its start, as ProseMirror lets you continue past a block node.
+    fn insert_beside_figure(
+        &mut self,
+        index: usize,
+        after: bool,
+        text: &str,
+        rich: Option<&[Run]>,
+    ) -> bool {
+        let runs: Vec<Run> = match rich {
+            Some(runs) => runs.to_vec(),
+            None => vec![(text.to_owned(), 0, None)],
+        };
+        let mut lines = split_lines(&runs);
+        // The break between the figure and the new line is implied.
+        if after && lines.len() > 1 && lines[0].is_empty() {
+            lines.remove(0);
+        } else if !after && lines.len() > 1 && lines.last().is_some_and(Vec::is_empty) {
+            lines.pop();
+        }
+        let pieces: Vec<TargetBlock> = lines
+            .iter()
+            .map(|line| {
+                let mut p = Piece {
+                    key: None,
+                    kind: BlockKind::Paragraph,
+                    units: vec![],
+                    marks: vec![],
+                    hrefs: vec![],
+                };
+                for (t, m, h) in line {
+                    p.push_text(t, *m, h);
+                }
+                p.target()
+            })
+            .collect();
+        let n = pieces.len();
+        let at = if after { index + 1 } else { index };
+        let mut targets: Vec<TargetBlock> =
+            self.blocks[..at].iter().map(TargetBlock::from).collect();
+        targets.extend(pieces);
+        targets.extend(self.blocks[at..].iter().map(TargetBlock::from));
+        let changed = self.apply(&targets);
+        let last = (at + n).saturating_sub(1).min(self.blocks.len() - 1);
+        let caret = self.starts[last] + self.block_len(last);
         self.anchor = caret;
         self.head = caret;
         self.stored_marks = None;

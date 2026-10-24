@@ -3,6 +3,11 @@
 //! `fixtures/from-ts.collabdoc` was written by `src/core` through
 //! `fixtures/ts-compat.ts write`. The reverse check needs Bun or Node with
 //! `loro-crdt` installed, so it runs only with `COLLABDOC_TS_COMPAT=1`.
+//!
+//! `fixtures/from-rust.collabdoc` is the other direction for the editor: a
+//! document with every block, list, quote and mark the Rust editor makes,
+//! which the TS test `editor/rust-parity.test.ts` loads into the real Tiptap
+//! schema. `COLLABDOC_WRITE_FIXTURES=1` rewrites it when the editor changes.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -207,4 +212,88 @@ fn typescript_reads_a_caret_rust_publishes() {
     assert_eq!(caret["anchor"]["offset"].as_u64(), Some(0));
     std::fs::remove_file(doc_file).ok();
     std::fs::remove_file(presence_file).ok();
+}
+
+/// Everything the Rust editor can make, made the ways a person would:
+/// pasted Markdown and HTML, toolbar commands, typing.
+fn every_kind() -> Editor {
+    let mut e = Editor::new(Document::create("Made by the Rust editor", "rust"));
+    e.paste(
+        "# Heading one\n\n## Heading two\n\n### Heading three\n\n#### Heading four\n\n\
+         Marks: **bold** *italic* <u>underline</u> ~~strike~~ `code` ==highlight== ^sup^ ~sub~ \
+         and [a link](https://loro.dev).\n\n\
+         - bullet one\n  1. ordered inside\n- bullet two\n\n\
+         * [x] done task\n* [ ] open task\n\n\
+         > quoted line\n>\n> - list in a quote\n\n\
+         ```rust\nfn main() {}\n```\n\nafter the code",
+    );
+    let end = e.len();
+    e.move_to(end);
+    e.newline();
+    e.insert_mermaid("flowchart LR\n  A --> B");
+    let end = e.len();
+    e.move_to(end);
+    e.newline();
+    e.paste_html("<p>from <b>HTML</b></p><hr><p>after the rule</p>", "");
+    // Lists, tasks and quotes made with commands rather than pasted.
+    let end = e.len();
+    e.move_to(end);
+    e.newline();
+    e.insert_text("made task\nnested task\nquoted by command");
+    let first = e.blocks().len() - 3;
+    let start = e.block_start(first);
+    let second_end = e.block_start(first + 1) + "nested task".len();
+    e.set_selection(start, second_end);
+    e.toggle_list(ListKind::Task);
+    e.toggle_task(first);
+    let nested = e.block_start(first + 1);
+    e.move_to(nested);
+    e.indent();
+    let quoted = e.block_start(first + 2);
+    e.move_to(quoted);
+    e.toggle_quote();
+    // And a find-and-replace.
+    let hits = e.find("command", false);
+    e.replace_matches(&hits, "Ctrl+Shift+B");
+    e
+}
+
+/// What a document says, without ids or keys (which differ per run).
+fn summary(doc: &Document) -> Vec<String> {
+    doc.blocks()
+        .iter()
+        .map(|b| {
+            format!(
+                "{} {:?} {:?}@{} q{} {} {:?} {:?}",
+                b.node_name,
+                b.kind,
+                b.list,
+                b.list_depth,
+                b.quote_depth,
+                b.checked,
+                b.text,
+                b.spans
+                    .iter()
+                    .map(|s| (s.start, s.end, s.marks, s.href.clone()))
+                    .collect::<Vec<_>>()
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_rust_fixture_is_what_the_editor_makes_today() {
+    let made = every_kind();
+    let path = fixtures().join("from-rust.collabdoc");
+    if std::env::var("COLLABDOC_WRITE_FIXTURES").as_deref() == Ok("1") {
+        std::fs::write(&path, made.document().to_collabdoc()).unwrap();
+    }
+    let bytes = std::fs::read(&path)
+        .expect("fixtures/from-rust.collabdoc: run with COLLABDOC_WRITE_FIXTURES=1");
+    let fixture = Document::from_collabdoc(&bytes, "reader").unwrap();
+    assert_eq!(
+        summary(&fixture),
+        summary(made.document()),
+        "the editor changed: COLLABDOC_WRITE_FIXTURES=1 rewrites the fixture"
+    );
 }
