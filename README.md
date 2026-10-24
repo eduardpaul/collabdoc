@@ -160,7 +160,7 @@ flutter run -d linux -a notes.collabdoc            # CMake builds crates/collabd
 cargo build -p collabdoc-ffi && COLLABDOC_FFI_LIB=$PWD/../target/debug/libcollabdoc_ffi.so flutter test
 ```
 
-`scripts/flutter-smoke.sh` drives the built app on a virtual display and saves screenshots. `scripts/flutter-onefile.sh` builds the release app as one executable (`dist/collabdoc-linux-x86_64`, about 11 MB) with `crates/collabdoc-launcher`.
+`scripts/flutter-smoke.sh` drives the built app on a virtual display and saves screenshots; `scripts/flutter-crash.sh` kills it in the middle of typing and checks nothing is lost. `scripts/flutter-onefile.sh` builds the release app as one executable (`dist/collabdoc-linux-x86_64`, about 11 MB) with `crates/collabdoc-launcher`.
 
 ## Layout
 

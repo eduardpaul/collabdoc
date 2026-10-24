@@ -124,6 +124,53 @@ Same machine, release builds, Linux x86-64 without a GPU (Mesa software renderin
 | Build tooling | `cargo` only | Flutter SDK + `cargo` (CMake calls cargo) |
 | Hot reload while building UI | No | Yes |
 
+## Phase 2 result: persistence
+
+Spec 23's Phase 2, on the same core, so every front end gets it (`collabdoc_core::store`, ported from `src/main/persist`):
+- **Drafts:** a new document lives in `<user data>/drafts/<docId>.collabdoc` from the moment it exists, until it is saved somewhere. User data is `$XDG_DATA_HOME/collabdoc` on Linux, Application Support on macOS, `%APPDATA%` on Windows.
+- **Autosave:** 2 s after the last edit, and never more than 30 s after the first unsaved one. The write is atomic (temporary file, fsync, rename, directory fsync).
+- **Recents:** `recents.json`, in the TS app's shape: the 50 newest entries, each under 1 KB, with a 120-character preview.
+- **Recovery:** the start screen offers drafts that are newer than their recents entry.
+- **Markdown:** opening `.md`, `.markdown` or `.txt` imports it into a new draft.
+  - The first `# ` line becomes the title.
+  - The source file is never written; Save As suggests the `.collabdoc` next to it.
+  - The import is not an undo step.
+- **Export:** "Export .md" writes the title first, as `serializeDocument` does.
+- **Errors:** a newer schema is refused without touching the file, and a truncated asset section opens with a warning.
+
+**Journal.** The TS design alone cannot meet spec 23's bar ("a crash in the middle of typing loses ≤ 1 s"): while someone types continuously, the 2 s idle point never comes, so up to 30 s are only in memory. So every change is also appended to `<user data>/journal/<docId>.updates`, and each full save empties the journal.
+- Each record holds the Loro update bytes, framed with a length and an FNV hash. The first record names the file the updates belong to.
+- The appends reach the OS at once, so a killed process loses nothing. They are fsynced at least every second, so a machine crash loses about a second.
+- Opening the file, or recovering the draft, replays the journal on top of it.
+- A copy of the file elsewhere does not take the original's journal, and a torn last record is ignored.
+
+**In the app:**
+- **Start screen:** New (Ctrl+N), Open… (Ctrl+O, `.collabdoc` or Markdown), Recover / Discard, and the recents. A draft in the recents reopens from its draft; a moved file shows "Moved or deleted" with Locate… and Remove.
+- **Status bar:** Unsaved / Draft · saved automatically / Saved · path.
+- **Saving:** Ctrl+S saves now (a draft asks where), Ctrl+Shift+S saves as. An untitled document takes the file's name.
+- **Leaving:** leaving a draft with content asks "Save as… / Don't save / Cancel", as the TS app does (AC-04.11). Saved files never ask.
+- **Quitting:** closing the window writes what is unsaved.
+- **Where the logic lives:** the store is in the core. The bridge (`cd_store`, `cd_open_with`, session ops) and the GTK app only drive it.
+
+**Measured** (`scripts/flutter-crash.sh`, release build): typing continuously at 40 ms a key, killed with SIGKILL after 8 s, then started again on the same file:
+
+| | Characters |
+| --- | --- |
+| Typed (logged per word) | 327 |
+| In the file when killed: what autosave alone keeps | 0 |
+| After starting again (file + journal) | 331, everything logged plus part of the word in flight |
+| Lost | 0 |
+
+**Tests:**
+- Core, 22 store tests: the TS `atomic`, `autosave`, `recents` and `store` tests, and journal crash cases (draft, saved file, copy, torn tail).
+- Bridge, 2 tests.
+- Flutter, 4 widget tests: start screen and autosave, the leave prompt, recovery after a crash, Markdown in and out, a moved file.
+
+**Not yet:**
+- Images in the asset section wait for image figures (Phase 3); the store already keeps and garbage-collects referenced assets.
+- The window title does not show the unsaved state.
+- The TS app's one-time migration of `localStorage` recents (AC-04.12) has no counterpart here: this app never had them.
+
 ## Single file and lower memory with Flutter (measured 2026-10-24)
 
 Same container as above: Linux x86-64, no GPU (Mesa llvmpipe under Xvfb), release build, the 50-page document (526 blocks), 1400×760 window unless noted. RSS is read 8 s after start.

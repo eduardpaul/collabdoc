@@ -1,6 +1,6 @@
 # 23 · Migrate to Rust: Loro core + GPUI desktop editor
 
-**Phase:** platform · **Depends on:** 01–22 as they stand · **Status:** Phase 0 done on `rust` (GPUI). The phases continue on the Flutter front end over the same core (spec 24, branch `flutter`), where Phase 1 is done.
+**Phase:** platform · **Depends on:** 01–22 as they stand · **Status:** Phase 0 done on `rust` (GPUI). The phases continue on the Flutter front end over the same core (spec 24, branch `flutter`), where Phases 1 and 2 are done.
 
 Written 2026-10-24 against `collabdoc` `main` at `dbc0328`.
 
@@ -97,7 +97,7 @@ Each phase ends with `cargo test` green, the Electron app untouched, and files s
 | # | Feature (spec) | Port from | Done when |
 | --- | --- | --- | --- |
 | 1 | **Editor completeness (01, 06)**: list toggle/indent/outdent, PM-style list split, quotes, task toggle, links (insert/edit/open), rich paste (Markdown/HTML → blocks), visual-line Home/End, drag auto-scroll, word-wise moves, find/replace | `editor/schema.ts`, `clipboard.ts`, `markdown.ts`, `SearchReplace.tsx` | Typing-latency check under 16 ms per keystroke on a 50-page doc; parity cases from `core-parity.test.ts` pass. **Done** on `flutter` (spec 24, Phase 1 result) |
-| 2 | **Persistence (04)**: autosave + drafts, recovery, recents, Markdown import/export, `Documents/CollabDoc` defaults, start screen | `src/main/persist/*`, `core/markdown.ts`, `StartScreen.tsx` | Ports of `store/recents/atomic/autosave` tests; a crash in the middle of typing loses ≤ 1 s |
+| 2 | **Persistence (04)**: autosave + drafts, recovery, recents, Markdown import/export, `Documents/CollabDoc` defaults, start screen | `src/main/persist/*`, `core/markdown.ts`, `StartScreen.tsx` | Ports of `store/recents/atomic/autosave` tests; a crash in the middle of typing loses ≤ 1 s. **Done** on `flutter` (spec 24, Phase 2 result) |
 | 3 | **Inline nodes and figures (01)**: mentions and hard breaks editable, images (assets), Mermaid rendered natively (`merman` or `mermaid-rs-renderer` → SVG → GPUI), infographic as a placeholder | `editor/figures/*`, `persist/assets.ts` | Figures from the TS fixtures render; images round-trip |
 | 4 | **History and attribution (05)**: per-actor history list, diffs, checkpoints, restore | `core/history*.ts`, `checkpoints.ts`, `authors.ts`, `HistoryPanel.tsx` | Ports of `history*.test.ts` |
 | 5 | **Identity and presence (07)**: profile, participant list, remote carets and selections (an ephemeral store; the Rust crate has none, so a small LWW map with timeouts) | `core/participants.ts`, `sync/presence-store.ts` | Two windows show each other's caret; ≤ 2 KB/s per peer |
