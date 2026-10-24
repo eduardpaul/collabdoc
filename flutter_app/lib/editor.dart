@@ -56,6 +56,9 @@ class EditorPaneState extends State<EditorPane>
   /// Column kept across consecutive Up/Down presses.
   double? _goalX;
   bool _selecting = false;
+  Offset? _dragAt;
+  Timer? _autoscroll;
+  final GlobalKey _viewportKey = GlobalKey(debugLabel: 'viewport');
   int _clicks = 0;
   Duration _lastClick = Duration.zero;
   Offset _lastClickAt = Offset.zero;
@@ -67,6 +70,9 @@ class EditorPaneState extends State<EditorPane>
   bool _presencePending = false;
   Timer? _heartbeat;
 
+  /// Per peer: the last caret position seen, and how long its name shows.
+  final Map<String, (String, Timer)> _flags = {};
+
   Session get session => widget.participant.session;
 
   @visibleForTesting
@@ -76,7 +82,7 @@ class EditorPaneState extends State<EditorPane>
   void initState() {
     super.initState();
     view = session.view();
-    _carets = session.carets();
+    _readCarets();
     focus.addListener(_focusChanged);
     widget.participant.remoteVersion.addListener(_remoteChanged);
     widget.participant.presenceVersion.addListener(_caretsChanged);
@@ -109,7 +115,7 @@ class EditorPaneState extends State<EditorPane>
       widget.participant.remoteVersion.addListener(_remoteChanged);
       widget.participant.presenceVersion.addListener(_caretsChanged);
       view = session.view();
-      _carets = session.carets();
+      _readCarets();
       _published = null;
     }
   }
@@ -119,6 +125,10 @@ class EditorPaneState extends State<EditorPane>
     widget.participant.remoteVersion.removeListener(_remoteChanged);
     widget.participant.presenceVersion.removeListener(_caretsChanged);
     _heartbeat?.cancel();
+    for (final (_, timer) in _flags.values) {
+      timer.cancel();
+    }
+    _autoscroll?.cancel();
     _presenceCooldown?.cancel();
     _input?.close();
     focus.dispose();
@@ -145,7 +155,7 @@ class EditorPaneState extends State<EditorPane>
     setState(() {
       view = session.view();
       // Text moved under the others' cursors: where they point now.
-      _carets = session.carets();
+      _readCarets();
     });
     _syncInput();
     if (_published != (view.anchor, view.head)) _schedulePresence();
@@ -154,8 +164,24 @@ class EditorPaneState extends State<EditorPane>
     }
   }
 
+  /// Re-reads the others' carets; a caret that moved shows its name for 2 s.
+  void _readCarets() {
+    _carets = session.carets();
+    for (final c in _carets) {
+      final seen = _flags[c.peer];
+      if (seen != null && seen.$1 == c.moved) continue;
+      seen?.$2.cancel();
+      _flags[c.peer] = (
+        c.moved,
+        Timer(const Duration(seconds: 2), () {
+          if (mounted) setState(() {});
+        }),
+      );
+    }
+  }
+
   void _caretsChanged() {
-    if (mounted) setState(() => _carets = session.carets());
+    if (mounted) setState(_readCarets);
   }
 
   static const _presenceGapMs = 50; // ≤ 20 updates a second, as in TS
@@ -333,8 +359,8 @@ class EditorPaneState extends State<EditorPane>
         LogicalKeyboardKey.numpadEnter: () => op('newline'),
         LogicalKeyboardKey.arrowLeft: () => op('left', {'extend': shift}),
         LogicalKeyboardKey.arrowRight: () => op('right', {'extend': shift}),
-        LogicalKeyboardKey.home: () => op('home', {'extend': shift}),
-        LogicalKeyboardKey.end: () => op('end', {'extend': shift}),
+        LogicalKeyboardKey.home: () => _lineEdge(false, shift),
+        LogicalKeyboardKey.end: () => _lineEdge(true, shift),
         LogicalKeyboardKey.arrowUp: () => _vertical(false, shift),
         LogicalKeyboardKey.arrowDown: () => _vertical(true, shift),
       };
@@ -465,6 +491,38 @@ class EditorPaneState extends State<EditorPane>
     _goalX = x;
   }
 
+  /// Home/End: to the start or end of the line on screen, as in a browser,
+  /// not of the whole (wrapped) block.
+  void _lineEdge(bool end, bool extend) {
+    final i = view.blockAt(view.head);
+    final p = _paragraph(i);
+    if (p == null || !p.hasSize) {
+      run({'op': end ? 'end' : 'home', 'extend': extend});
+      return;
+    }
+    final text = view.blocks[i].text;
+    final caret = TextPosition(offset: view.head - view.starts[i]);
+    // The caret's line on screen: hit-test its far left and right.
+    final y =
+        p.getOffsetForCaret(caret, Rect.zero).dy +
+        p.getFullHeightForCaret(caret) / 2;
+    final start = p.getPositionForOffset(Offset(0, y)).offset;
+    var local = end
+        ? p.getPositionForOffset(Offset(p.size.width, y)).offset
+        : start;
+    // At a soft wrap the line ends after its trailing space, which is where
+    // the next line starts; stop before the space to stay on this line.
+    if (end &&
+        local < text.length &&
+        local > start &&
+        text.codeUnitAt(local - 1) == 0x20) {
+      local--;
+    }
+    final to = view.starts[i] + local;
+    _select(extend ? view.anchor : to, to);
+    _goalX = null;
+  }
+
   // ── Mouse ────────────────────────────────────────────────────────────
 
   void _pointerDown(PointerDownEvent e) {
@@ -498,8 +556,72 @@ class EditorPaneState extends State<EditorPane>
 
   void _pointerMove(PointerMoveEvent e) {
     if (_selecting && e.buttons == kPrimaryButton) {
-      _select(view.anchor, _offsetAt(e.position));
+      _dragAt = e.position;
+      _select(view.anchor, _offsetAt(_insideViewport(e.position)));
+      if (_overshoot(e.position) != 0) {
+        _autoscroll ??= Timer.periodic(
+          const Duration(milliseconds: 16),
+          (_) => _autoscrollTick(),
+        );
+      }
     }
+  }
+
+  void _pointerUp() {
+    _selecting = false;
+    _dragAt = null;
+    _autoscroll?.cancel();
+    _autoscroll = null;
+  }
+
+  Rect? get _viewport {
+    final box = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
+    return box != null && box.hasSize
+        ? box.localToGlobal(Offset.zero) & box.size
+        : null;
+  }
+
+  /// How far `global` is above (negative) or below the visible list.
+  double _overshoot(Offset global) {
+    final r = _viewport;
+    if (r == null) return 0;
+    if (global.dy < r.top) return global.dy - r.top;
+    if (global.dy > r.bottom) return global.dy - r.bottom;
+    return 0;
+  }
+
+  /// `global` moved onto the visible list, so it hits a block on screen.
+  Offset _insideViewport(Offset global) {
+    final r = _viewport;
+    if (r == null) return global;
+    return Offset(global.dx, global.dy.clamp(r.top + 1, r.bottom - 1));
+  }
+
+  /// Dragging a selection past the top or bottom scrolls, faster the further
+  /// out the pointer is, and the selection follows.
+  void _autoscrollTick() {
+    final at = _dragAt;
+    final over = at == null ? 0.0 : _overshoot(at);
+    if (!_selecting || over == 0 || !scroll.hasClients || !mounted) {
+      _autoscroll?.cancel();
+      _autoscroll = null;
+      return;
+    }
+    final position = scroll.position;
+    final target = (position.pixels + (over / 2).clamp(-40.0, 40.0)).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    if (target == position.pixels) return;
+    scroll.jumpTo(target);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_selecting || _dragAt == null) return;
+      final head = _offsetAt(_insideViewport(_dragAt!));
+      if (head != view.head) {
+        session.call({'op': 'select', 'anchor': view.anchor, 'head': head});
+        _refresh();
+      }
+    });
   }
 
   void _selectWord(int offset) {
@@ -834,7 +956,8 @@ class EditorPaneState extends State<EditorPane>
                 end: c.end - start,
                 caret: view.blockAt(c.head) == i ? c.head - start : null,
                 color: c.color,
-                name: c.name,
+                // The name tag shows while the caret is moving.
+                name: _flags[c.peer]?.$2.isActive == true ? c.name : null,
               ),
         ],
       ),
@@ -1149,10 +1272,12 @@ class EditorPaneState extends State<EditorPane>
               child: MouseRegion(
                 cursor: SystemMouseCursors.text,
                 child: Listener(
+                  key: _viewportKey,
                   behavior: HitTestBehavior.opaque,
                   onPointerDown: _pointerDown,
                   onPointerMove: _pointerMove,
-                  onPointerUp: (_) => _selecting = false,
+                  onPointerUp: (_) => _pointerUp(),
+                  onPointerCancel: (_) => _pointerUp(),
                   // Only blocks near the viewport are built and laid out:
                   // item 0 is the title, then one item per block, then room
                   // to scroll past the end.
@@ -1275,7 +1400,7 @@ class _SelectionPainter extends CustomPainter {
       final c = r.caret;
       if (c != null) {
         final caretRect = _caret(canvas, p, c, color);
-        _flag(canvas, caretRect, r.name, color);
+        if (r.name case final name?) _flag(canvas, caretRect, name, color);
       }
     }
     _range(canvas, p, start, end, Paint()..color = AppColors.selection);
@@ -1367,7 +1492,13 @@ class _SelectionPainter extends CustomPainter {
 
 /// A remote selection relative to one block; `caret` only in the block that
 /// holds its head.
-typedef RemoteMark = ({int start, int end, int? caret, int color, String name});
+typedef RemoteMark = ({
+  int start,
+  int end,
+  int? caret,
+  int color,
+  String? name,
+});
 
 class _LinkDialog extends StatefulWidget {
   const _LinkDialog({required this.initial});

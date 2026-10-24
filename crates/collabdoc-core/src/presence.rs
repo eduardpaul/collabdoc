@@ -33,6 +33,9 @@ pub struct Caret {
     pub user: Option<User>,
     pub anchor: usize,
     pub head: usize,
+    /// Changes when the participant moves their caret, not when text moves
+    /// under it or they merely re-send it (a heartbeat).
+    pub moved: u64,
 }
 
 pub struct Presence {
@@ -130,11 +133,18 @@ impl Presence {
                 };
                 let head = at("focus")?;
                 let anchor = at("anchor").unwrap_or(head);
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                for key in ["anchor", "focus"] {
+                    if let Some(LoroValue::Binary(bytes)) = state.get(key) {
+                        std::hash::Hash::hash(&bytes[..], &mut hasher);
+                    }
+                }
                 Some(Caret {
                     peer,
                     user: state.get("user").and_then(user_of),
                     anchor,
                     head,
+                    moved: std::hash::Hasher::finish(&hasher),
                 })
             })
             .collect();

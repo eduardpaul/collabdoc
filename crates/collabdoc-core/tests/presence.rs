@@ -44,11 +44,21 @@ fn a_caret_shows_up_where_the_other_participant_is_and_rides_edits() {
         "our own entry is not a remote caret"
     );
 
-    // Bo types in front of it: the selection still covers "world".
+    // Bo types in front of it: the selection still covers "world", and it
+    // does not count as Ana moving.
+    let moved = carets[0].moved;
     b.move_to(0);
     b.insert_text(">> ");
     let caret = &pb.carets(&b)[0];
     assert_eq!(b.text_in(caret.anchor..caret.head), "world");
+    assert_eq!(caret.moved, moved);
+    // Re-sending the same caret is not a move either; selecting less is.
+    pb.apply(&pa.publish(&a, &user("Ana"))).unwrap();
+    assert_eq!(pb.carets(&b)[0].moved, moved);
+    a.set_selection(6, 9);
+    pb.apply(&pa.publish(&a, &user("Ana"))).unwrap();
+    assert_ne!(pb.carets(&b)[0].moved, moved);
+    a.set_selection(6, 11);
 
     // And after a sync, Ana's view agrees.
     sync(&hub, &mut [&mut a, &mut b]);

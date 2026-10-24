@@ -8,6 +8,7 @@ import 'package:collabdoc/editor.dart';
 import 'package:collabdoc/main.dart';
 import 'package:collabdoc/workspace.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -325,5 +326,74 @@ void main() {
     ws.removePeer(ws.participants.last);
     await tester.pump();
     expect(mine.carets, isEmpty);
+  });
+
+  testWidgets('Home and End go to the edges of the line on screen', (
+    tester,
+  ) async {
+    await launch(tester);
+    final pane = tester.state<EditorPaneState>(find.byType(EditorPane));
+    final text = List.filled(60, 'word').join(' ');
+    type(pane, text);
+    await tester.pump();
+    expect(pane.view.head, text.length);
+
+    // Home: the start of the last wrapped line, not of the paragraph.
+    await tester.sendKeyEvent(LogicalKeyboardKey.home);
+    final lastLine = pane.view.head;
+    expect(lastLine, greaterThan(0));
+    expect(text[lastLine - 1], ' ', reason: 'a line starts after a space');
+
+    // End on the line above stops before its trailing space.
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.sendKeyEvent(LogicalKeyboardKey.end);
+    final lineEnd = pane.view.head;
+    expect(lineEnd, lessThan(lastLine));
+    expect(text[lineEnd], ' ');
+
+    // Shift+Home selects back to that line's start.
+    await chord(tester, [
+      LogicalKeyboardKey.shiftLeft,
+    ], LogicalKeyboardKey.home);
+    expect(pane.view.anchor, lineEnd);
+    expect(pane.view.head, lessThan(lineEnd));
+    expect(pane.view.head == 0 || text[pane.view.head - 1] == ' ', isTrue);
+  });
+
+  testWidgets('dragging a selection past the bottom scrolls', (tester) async {
+    await launch(tester);
+    final pane = tester.state<EditorPaneState>(find.byType(EditorPane));
+    pane.run({
+      'op': 'insert',
+      'text': List.generate(120, (i) => 'Line $i').join('\n'),
+    });
+    await chord(tester, [
+      LogicalKeyboardKey.controlLeft,
+    ], LogicalKeyboardKey.home);
+    await tester.pump();
+    expect(pane.scroll.offset, 0);
+
+    final first = tester.getCenter(find.text('Line 0', findRichText: true));
+    final drag = await tester.startGesture(first, buttons: kPrimaryButton);
+    await tester.pump();
+    // Into the status bar, under the list.
+    await drag.moveTo(Offset(first.dx, 895));
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    final scrolled = pane.scroll.offset;
+    final head = pane.view.head;
+    expect(scrolled, greaterThan(100));
+    expect(
+      pane.view.blockAt(pane.view.anchor),
+      0,
+      reason: "anchored where pressed",
+    );
+    expect(head, greaterThan(pane.view.starts[20]));
+
+    // Letting go stops it.
+    await drag.up();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(pane.scroll.offset, scrolled);
   });
 }

@@ -142,13 +142,17 @@ class RemoteCaret {
       name = j['name'] as String? ?? 'Someone',
       color = parseHexColor(j['color'] as String?),
       anchor = j['anchor'] as int,
-      head = j['head'] as int;
+      head = j['head'] as int,
+      moved = j['moved'] as String? ?? '';
 
   final String peer;
   final String name;
   final int color;
   final int anchor;
   final int head;
+
+  /// Changes only when the participant moves their caret.
+  final String moved;
 
   int get start => anchor < head ? anchor : head;
   int get end => anchor < head ? head : anchor;

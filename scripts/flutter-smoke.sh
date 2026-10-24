@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drives the Flutter build on a virtual display and takes screenshots:
-# typing, a heading, a second participant pane syncing live, per-participant
-# undo, save. Needs Xvfb, xdotool, ImageMagick (`import`) and Mesa GL.
+# typing, a heading, a second participant pane syncing live with each other's
+# carets, per-participant undo, save, a remote selection. Needs Xvfb, xdotool, ImageMagick (`import`) and Mesa GL.
 #
 #   scripts/flutter-smoke.sh [bundle/collabdoc] [out-dir]
 set -euo pipefail
@@ -54,6 +54,11 @@ import -window root -crop 1400x760+0+0 +repage "$OUT/2-undo-is-per-participant.p
 xdotool key ctrl+s
 sleep 1
 import -window root -crop 1400x760+0+0 +repage "$OUT/3-saved.png"
+# Pane two selects its line with Shift+Home; pane one shows it in Peer 2's color.
+xdotool mousemove 1000 600 click 1; sleep 0.3
+xdotool key ctrl+End shift+Home
+sleep 1
+import -window root -crop 1400x760+0+0 +repage "$OUT/4-remote-selection.png"
 kill "$APP" 2>/dev/null || true
 
 echo "screenshots and demo.collabdoc in $OUT"

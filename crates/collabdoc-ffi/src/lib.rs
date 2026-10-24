@@ -257,6 +257,8 @@ impl Session {
                         json!({
                             "peer": c.peer, "name": name, "color": color,
                             "anchor": c.anchor, "head": c.head,
+                            // A string: a u64 does not fit a Dart int.
+                            "moved": c.moved.to_string(),
                         })
                     })
                     .collect();
