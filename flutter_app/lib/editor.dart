@@ -5,9 +5,11 @@
 // global UTF-16 offsets; typing, Enter/Backspace, marks, block kinds, undo
 // and sync are decided in Rust.
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -58,14 +60,38 @@ class EditorPaneState extends State<EditorPane>
   Duration _lastClick = Duration.zero;
   Offset _lastClickAt = Offset.zero;
 
+  /// Other participants' carets, and what we last told them about ours.
+  List<RemoteCaret> _carets = const [];
+  (int, int)? _published;
+  Timer? _presenceCooldown;
+  bool _presencePending = false;
+  Timer? _heartbeat;
+
   Session get session => widget.participant.session;
+
+  @visibleForTesting
+  List<RemoteCaret> get carets => _carets;
 
   @override
   void initState() {
     super.initState();
     view = session.view();
+    _carets = session.carets();
     focus.addListener(_focusChanged);
     widget.participant.remoteVersion.addListener(_remoteChanged);
+    widget.participant.presenceVersion.addListener(_caretsChanged);
+    // Presence expires unless refreshed; this also drops carets of peers
+    // that went quiet.
+    _heartbeat = Timer.periodic(const Duration(milliseconds: _heartbeatMs), (
+      _,
+    ) {
+      _published = null;
+      _schedulePresence();
+      _caretsChanged();
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _schedulePresence();
+    });
     // A new pane (a peer just added) takes the keyboard, like a new window.
     if (widget.autofocus) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -79,14 +105,21 @@ class EditorPaneState extends State<EditorPane>
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.participant, widget.participant)) {
       oldWidget.participant.remoteVersion.removeListener(_remoteChanged);
+      oldWidget.participant.presenceVersion.removeListener(_caretsChanged);
       widget.participant.remoteVersion.addListener(_remoteChanged);
+      widget.participant.presenceVersion.addListener(_caretsChanged);
       view = session.view();
+      _carets = session.carets();
+      _published = null;
     }
   }
 
   @override
   void dispose() {
     widget.participant.remoteVersion.removeListener(_remoteChanged);
+    widget.participant.presenceVersion.removeListener(_caretsChanged);
+    _heartbeat?.cancel();
+    _presenceCooldown?.cancel();
     _input?.close();
     focus.dispose();
     scroll.dispose();
@@ -109,11 +142,40 @@ class EditorPaneState extends State<EditorPane>
   }
 
   void _refresh({bool reveal = false}) {
-    setState(() => view = session.view());
+    setState(() {
+      view = session.view();
+      // Text moved under the others' cursors: where they point now.
+      _carets = session.carets();
+    });
     _syncInput();
+    if (_published != (view.anchor, view.head)) _schedulePresence();
     if (reveal) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _revealCaret());
     }
+  }
+
+  void _caretsChanged() {
+    if (mounted) setState(() => _carets = session.carets());
+  }
+
+  static const _presenceGapMs = 50; // ≤ 20 updates a second, as in TS
+  static const _heartbeatMs = 5000;
+
+  /// Tells the others where our caret is, at most every [_presenceGapMs].
+  void _schedulePresence() {
+    if (_presenceCooldown != null) {
+      _presencePending = true;
+      return;
+    }
+    _published = (view.anchor, view.head);
+    widget.workspace.publishPresence(widget.participant);
+    _presenceCooldown = Timer(const Duration(milliseconds: _presenceGapMs), () {
+      _presenceCooldown = null;
+      if (_presencePending && mounted) {
+        _presencePending = false;
+        _schedulePresence();
+      }
+    });
   }
 
   void _select(int anchor, int head) {
@@ -754,6 +816,7 @@ class EditorPaneState extends State<EditorPane>
       text: _spans(b, base, start),
       textScaler: TextScaler.noScaling,
     );
+    final end = start + b.text.length;
     final painted = CustomPaint(
       foregroundPainter: _SelectionPainter(
         paragraph: _keys[i],
@@ -763,6 +826,17 @@ class EditorPaneState extends State<EditorPane>
         caret: focus.hasFocus && view.blockAt(view.head) == i
             ? view.head - start
             : null,
+        remote: [
+          for (final c in _carets)
+            if (c.end >= start && c.start <= end)
+              (
+                start: c.start - start,
+                end: c.end - start,
+                caret: view.blockAt(c.head) == i ? c.head - start : null,
+                color: c.color,
+                name: c.name,
+              ),
+        ],
       ),
       child: paragraph,
     );
@@ -1023,7 +1097,9 @@ class EditorPaneState extends State<EditorPane>
           children: [
             Text(
               '● ${widget.participant.name}',
-              style: const TextStyle(color: AppColors.accent),
+              style: TextStyle(
+                color: Color(parseHexColor(widget.participant.color)),
+              ),
             ),
             const SizedBox(width: 16),
             Text(n == 1 ? '1 participant' : '$n participants'),
@@ -1175,6 +1251,7 @@ class _SelectionPainter extends CustomPainter {
     required this.end,
     required this.length,
     required this.caret,
+    this.remote = const [],
   });
 
   final GlobalKey paragraph;
@@ -1185,11 +1262,34 @@ class _SelectionPainter extends CustomPainter {
   final int length;
   final int? caret;
 
+  /// Other participants' selections over this block (relative, like ours).
+  final List<RemoteMark> remote;
+
   @override
   void paint(Canvas canvas, Size size) {
     final p = paragraph.currentContext?.findRenderObject() as RenderParagraph?;
     if (p == null || !p.hasSize) return;
-    final selection = Paint()..color = AppColors.selection;
+    for (final r in remote) {
+      final color = Color(r.color);
+      _range(canvas, p, r.start, r.end, Paint()..color = color.withAlpha(0x40));
+      final c = r.caret;
+      if (c != null) {
+        final caretRect = _caret(canvas, p, c, color);
+        _flag(canvas, caretRect, r.name, color);
+      }
+    }
+    _range(canvas, p, start, end, Paint()..color = AppColors.selection);
+    final c = caret;
+    if (c != null) _caret(canvas, p, c, AppColors.accent);
+  }
+
+  void _range(
+    Canvas canvas,
+    RenderParagraph p,
+    int start,
+    int end,
+    Paint paint,
+  ) {
     final from = start.clamp(0, length);
     final to = end.clamp(0, length);
     // The newline after this block is selected too.
@@ -1199,23 +1299,61 @@ class _SelectionPainter extends CustomPainter {
         TextSelection(baseOffset: from, extentOffset: to),
       );
       for (final b in boxes) {
-        canvas.drawRect(b.toRect(), selection);
+        canvas.drawRect(b.toRect(), paint);
       }
       if (coversBreak) {
         final at = p.getOffsetForCaret(TextPosition(offset: length), Rect.zero);
         final h = p.getFullHeightForCaret(TextPosition(offset: length));
-        canvas.drawRect(Rect.fromLTWH(at.dx, at.dy, 6, h), selection);
+        canvas.drawRect(Rect.fromLTWH(at.dx, at.dy, 6, h), paint);
       }
     }
-    final c = caret;
-    if (c != null) {
-      final at = p.getOffsetForCaret(TextPosition(offset: c), Rect.zero);
-      final h = p.getFullHeightForCaret(TextPosition(offset: c));
-      canvas.drawRect(
-        Rect.fromLTWH(at.dx, at.dy, 2, h),
-        Paint()..color = AppColors.accent,
-      );
-    }
+  }
+
+  Rect _caret(Canvas canvas, RenderParagraph p, int offset, Color color) {
+    final position = TextPosition(offset: offset.clamp(0, length));
+    final at = p.getOffsetForCaret(position, Rect.zero);
+    final rect = Rect.fromLTWH(
+      at.dx,
+      at.dy,
+      2,
+      p.getFullHeightForCaret(position),
+    );
+    canvas.drawRect(rect, Paint()..color = color);
+    return rect;
+  }
+
+  /// The participant's name in a small tag above their caret.
+  void _flag(Canvas canvas, Rect caret, String name, Color color) {
+    final label = TextPainter(
+      text: TextSpan(
+        text: name,
+        style: const TextStyle(
+          fontFamily: uiFont,
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: Color(0xFFFFFFFF),
+          height: 1.2,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final box = Rect.fromLTWH(
+      caret.left,
+      caret.top - label.height - 2,
+      label.width + 8,
+      label.height + 2,
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndCorners(
+        box,
+        topLeft: const Radius.circular(3),
+        topRight: const Radius.circular(3),
+        bottomRight: const Radius.circular(3),
+      ),
+      Paint()..color = color,
+    );
+    label.paint(canvas, Offset(box.left + 4, box.top + 1));
+    label.dispose();
   }
 
   @override
@@ -1223,8 +1361,13 @@ class _SelectionPainter extends CustomPainter {
       old.start != start ||
       old.end != end ||
       old.length != length ||
-      old.caret != caret;
+      old.caret != caret ||
+      !listEquals(old.remote, remote);
 }
+
+/// A remote selection relative to one block; `caret` only in the block that
+/// holds its head.
+typedef RemoteMark = ({int start, int end, int? caret, int color, String name});
 
 class _LinkDialog extends StatefulWidget {
   const _LinkDialog({required this.initial});

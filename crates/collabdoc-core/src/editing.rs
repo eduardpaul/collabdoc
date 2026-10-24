@@ -853,6 +853,26 @@ impl Editor {
         }
     }
 
+    /// A Loro cursor at `offset`, encoded the way presence carries it
+    /// (`None` in a block without text, which only old files have).
+    pub fn cursor_bytes(&self, offset: usize) -> Option<Vec<u8>> {
+        self.point_at(self.snap(offset.min(self.len())))
+            .cursor
+            .map(|c| c.encode())
+    }
+
+    /// Where a collaborator's encoded cursor points in our text now, if its
+    /// block is still there.
+    pub fn offset_of_cursor(&self, bytes: &[u8]) -> Option<usize> {
+        let cursor = Cursor::decode(bytes).ok()?;
+        let found = self.doc.loro().get_cursor_pos(&cursor).ok()?;
+        let container = found.update.as_ref().unwrap_or(&cursor).container.clone();
+        let index = self.doc.block_with_text(&container)?;
+        let text = &self.blocks[index].text;
+        let local = utf16::len(&text.chars().take(found.current.pos).collect::<String>());
+        Some(self.snap(self.starts[index] + local))
+    }
+
     fn resolve(&self, point: &Anchor, fallback: usize) -> usize {
         let Some(index) = self.blocks.iter().position(|b| b.key == point.key) else {
             return fallback;

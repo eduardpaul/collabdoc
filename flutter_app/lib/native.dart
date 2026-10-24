@@ -111,6 +111,15 @@ class Session {
     return reply['changed'] == true;
   }
 
+  /// Everyone else's caret, as of the hub's latest presence.
+  List<RemoteCaret> carets() {
+    final reply = call({'op': 'carets'});
+    return [
+      for (final c in (reply['carets'] as List? ?? const []))
+        RemoteCaret.fromJson(c as Map<String, dynamic>),
+    ];
+  }
+
   ViewState? _view;
 
   /// The current view, built from the previous one plus what changed.

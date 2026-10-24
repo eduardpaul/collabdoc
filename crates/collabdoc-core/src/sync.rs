@@ -2,12 +2,16 @@
 //! from, the way the TS `SyncHub` sits between the renderer and agents. Over a
 //! network the same update bytes travel through the peer transport instead.
 
+use loro::awareness::EphemeralStore;
 use loro::{ExportMode, LoroDoc};
 
 use crate::document::{DocError, Document, configure};
+use crate::presence::PRESENCE_TIMEOUT_MS;
 
 pub struct Hub {
     doc: LoroDoc,
+    /// Everyone's presence entries, relayed like document updates.
+    presence: EphemeralStore,
 }
 
 impl Hub {
@@ -17,7 +21,10 @@ impl Hub {
         configure(&doc);
         doc.import(&document.export_since(&Default::default()))
             .expect("seed hub");
-        Self { doc }
+        Self {
+            doc,
+            presence: EphemeralStore::new(PRESENCE_TIMEOUT_MS),
+        }
     }
 
     /// Sends what `document` has that the hub does not.
@@ -38,5 +45,20 @@ impl Hub {
             .export(ExportMode::updates(&document.version()))
             .expect("export");
         document.import(&bytes)
+    }
+
+    /// Takes a participant's presence update.
+    pub fn push_presence(&self, bytes: &[u8]) -> Result<(), DocError> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        self.presence
+            .apply(bytes)
+            .map_err(|e| DocError::Loro(e.to_string()))
+    }
+
+    /// Everyone's current presence, for a participant to apply.
+    pub fn presence(&self) -> Vec<u8> {
+        self.presence.encode_all()
     }
 }

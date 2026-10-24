@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use collabdoc_core::presence::{Presence, User};
 use collabdoc_core::schema::mark_bit;
 use collabdoc_core::{BlockKind, Document, Editor, ListKind};
 
@@ -119,20 +120,16 @@ fn rust_edits_survive_a_round_trip() {
     assert_eq!(doc.blocks()[8].spans[0].marks, mark_bit("bold").unwrap());
 }
 
-#[test]
-fn typescript_reads_what_rust_writes() {
+/// Runs `ts-compat.ts` with `args`; `None` unless `COLLABDOC_TS_COMPAT=1`.
+fn run_ts(args: &[&Path]) -> Option<serde_json::Value> {
     if std::env::var("COLLABDOC_TS_COMPAT").as_deref() != Ok("1") {
         eprintln!("skipped: set COLLABDOC_TS_COMPAT=1 (needs bun and loro-crdt)");
-        return;
+        return None;
     }
-    let doc = edited_by_rust();
-    let out = std::env::temp_dir().join(format!("collabdoc-rust-{}.collabdoc", std::process::id()));
-    std::fs::write(&out, doc.to_collabdoc()).unwrap();
     let runner = std::env::var("COLLABDOC_TS_RUNNER").unwrap_or_else(|_| "bun".into());
     let output = Command::new(runner)
         .arg(fixtures().join("ts-compat.ts"))
-        .arg("read")
-        .arg(&out)
+        .args(args)
         .output()
         .expect("bun runs");
     assert!(
@@ -140,7 +137,21 @@ fn typescript_reads_what_rust_writes() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    Some(serde_json::from_slice(&output.stdout).unwrap())
+}
+
+fn temp(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("collabdoc-rust-{}-{name}", std::process::id()))
+}
+
+#[test]
+fn typescript_reads_what_rust_writes() {
+    let doc = edited_by_rust();
+    let out = temp("doc.collabdoc");
+    std::fs::write(&out, doc.to_collabdoc()).unwrap();
+    let Some(json) = run_ts(&[Path::new("read"), &out]) else {
+        return;
+    };
     let ts_blocks = json["blocks"].as_array().unwrap();
     let rust_blocks = doc.blocks();
     assert_eq!(ts_blocks.len(), rust_blocks.len());
@@ -162,4 +173,38 @@ fn typescript_reads_what_rust_writes() {
         (Some(0), Some(7))
     );
     std::fs::remove_file(out).ok();
+}
+
+#[test]
+fn typescript_reads_a_caret_rust_publishes() {
+    let mut e = Editor::new(edited_by_rust());
+    // After the emoji, which UTF-16 and Unicode count differently.
+    let block = 8;
+    let local = "Unicode: café 👍🏽!".encode_utf16().count();
+    let at = e.block_start(block) + local;
+    e.set_selection(e.block_start(block), at);
+    let presence = Presence::new(&e);
+    let user = User {
+        name: "Rust".into(),
+        color: "#30a46c".into(),
+        actor_id: "rust".into(),
+        role: Some("human".into()),
+    };
+    let doc_file = temp("caret.collabdoc");
+    let presence_file = temp("presence.bin");
+    std::fs::write(&doc_file, e.document().to_collabdoc()).unwrap();
+    std::fs::write(&presence_file, presence.publish(&e, &user)).unwrap();
+    let Some(json) = run_ts(&[Path::new("presence"), &doc_file, &presence_file]) else {
+        return;
+    };
+    let caret = &json[0];
+    assert_eq!(caret["peer"], presence.peer());
+    assert_eq!(caret["user"]["name"], "Rust");
+    assert_eq!(caret["user"]["role"], "human");
+    let block_id = e.blocks()[block].block_id.as_str();
+    assert_eq!(caret["focus"]["blockId"], block_id);
+    assert_eq!(caret["focus"]["offset"].as_u64(), Some(local as u64));
+    assert_eq!(caret["anchor"]["offset"].as_u64(), Some(0));
+    std::fs::remove_file(doc_file).ok();
+    std::fs::remove_file(presence_file).ok();
 }

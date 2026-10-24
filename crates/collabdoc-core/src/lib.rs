@@ -10,6 +10,7 @@ pub mod ids;
 pub mod markdown;
 pub mod model;
 pub mod persist;
+pub mod presence;
 pub mod schema;
 pub mod structure;
 pub mod sync;

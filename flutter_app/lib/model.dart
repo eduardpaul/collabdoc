@@ -134,3 +134,31 @@ class ViewState {
     return lo;
   }
 }
+
+/// Another participant's selection, in this pane's offsets.
+class RemoteCaret {
+  RemoteCaret.fromJson(Map<String, dynamic> j)
+    : peer = j['peer'] as String,
+      name = j['name'] as String? ?? 'Someone',
+      color = parseHexColor(j['color'] as String?),
+      anchor = j['anchor'] as int,
+      head = j['head'] as int;
+
+  final String peer;
+  final String name;
+  final int color;
+  final int anchor;
+  final int head;
+
+  int get start => anchor < head ? anchor : head;
+  int get end => anchor < head ? head : anchor;
+}
+
+/// `#rrggbb` as an opaque ARGB value; grey when missing or malformed.
+int parseHexColor(String? hex) {
+  final digits = hex?.replaceFirst('#', '');
+  final rgb = digits != null && digits.length == 6
+      ? int.tryParse(digits, radix: 16)
+      : null;
+  return 0xFF000000 | (rgb ?? 0x8B8B93);
+}

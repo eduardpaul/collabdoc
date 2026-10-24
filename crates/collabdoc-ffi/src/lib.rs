@@ -18,6 +18,7 @@ use std::rc::Rc;
 use collabdoc_core::ids::new_actor_id;
 use collabdoc_core::model::ListKind;
 use collabdoc_core::persist;
+use collabdoc_core::presence::{Presence, User};
 use collabdoc_core::schema::mark_bit;
 use collabdoc_core::sync::Hub;
 use collabdoc_core::{BlockKind, Document, Editor, ViewBlock};
@@ -34,6 +35,8 @@ pub struct Session {
     /// What the UI was last sent, so `view` only sends what changed.
     sent_order: Vec<String>,
     sent: HashMap<String, ViewBlock>,
+    presence: Presence,
+    user: User,
 }
 
 impl Session {
@@ -60,7 +63,15 @@ impl Session {
     }
 
     fn with(editor: Editor, shared: Rc<RefCell<Shared>>) -> Self {
+        let user = User {
+            name: "You".into(),
+            color: "#3b82f6".into(),
+            actor_id: editor.document().actor().to_owned(),
+            role: Some("human".into()),
+        };
         Self {
+            presence: Presence::new(&editor),
+            user,
             editor,
             shared,
             sent_order: Vec::new(),
@@ -215,6 +226,42 @@ impl Session {
                 return json!({ "ok": true });
             }
             "copyMarkdown" => return json!({ "ok": true, "text": e.selection_markdown() }),
+            "setUser" => {
+                self.user.name = s("name").to_owned();
+                if let Some(color) = cmd["color"].as_str() {
+                    self.user.color = color.to_owned();
+                }
+                return json!({ "ok": true });
+            }
+            "presence" => {
+                // Our caret and name, to everyone through the hub.
+                let update = self.presence.publish(&self.editor, &self.user);
+                return match self.shared.borrow().hub.push_presence(&update) {
+                    Ok(()) => json!({ "ok": true }),
+                    Err(err) => json!({ "ok": false, "error": err.to_string() }),
+                };
+            }
+            "carets" => {
+                if let Err(err) = self.presence.apply(&self.shared.borrow().hub.presence()) {
+                    return json!({ "ok": false, "error": err });
+                }
+                let carets: Vec<Value> = self
+                    .presence
+                    .carets(&self.editor)
+                    .into_iter()
+                    .map(|c| {
+                        let (name, color) = c
+                            .user
+                            .map(|u| (Some(u.name), Some(u.color)))
+                            .unwrap_or_default();
+                        json!({
+                            "peer": c.peer, "name": name, "color": color,
+                            "anchor": c.anchor, "head": c.head,
+                        })
+                    })
+                    .collect();
+                return json!({ "ok": true, "carets": carets });
+            }
             "textIn" => return json!({ "ok": true, "text": e.text_in(n("start")..n("end")) }),
             "push" => {
                 let shared = self.shared.borrow();
@@ -337,6 +384,17 @@ pub unsafe extern "C" fn cd_view(session: *mut Session) -> *mut c_char {
 pub unsafe extern "C" fn cd_string_free(s: *mut c_char) {
     if !s.is_null() {
         drop(unsafe { CString::from_raw(s) });
+    }
+}
+
+impl Drop for Session {
+    /// A closed pane's caret goes away at once rather than timing out.
+    fn drop(&mut self) {
+        let _ = self
+            .shared
+            .borrow()
+            .hub
+            .push_presence(&self.presence.leave());
     }
 }
 
@@ -479,5 +537,42 @@ mod tests {
         call(&mut s, json!({"op": "selectAll"}));
         let copied = call(&mut s, json!({"op": "copyMarkdown"}));
         assert_eq!(copied["text"], "# Title\n\n- one\n- two");
+    }
+
+    #[test]
+    fn carets_go_through_the_hub() {
+        let mut me = Session::open(None).unwrap();
+        let mut peer = me.fork();
+        call(&mut me, json!({"op": "insert", "text": "hello"}));
+        call(&mut me, json!({"op": "push"}));
+        call(&mut peer, json!({"op": "pull"}));
+        call(
+            &mut me,
+            json!({"op": "setUser", "name": "Ana", "color": "#ff0000"}),
+        );
+        call(&mut me, json!({"op": "select", "anchor": 1, "head": 4}));
+        call(&mut me, json!({"op": "presence"}));
+        call(&mut peer, json!({"op": "presence"}));
+        let carets = call(&mut peer, json!({"op": "carets"}))["carets"].clone();
+        assert_eq!(carets.as_array().unwrap().len(), 1);
+        assert_eq!(carets[0]["name"], "Ana");
+        assert_eq!(carets[0]["color"], "#ff0000");
+        assert_eq!(
+            (carets[0]["anchor"].clone(), carets[0]["head"].clone()),
+            (json!(1), json!(4))
+        );
+        assert_eq!(
+            call(&mut me, json!({"op": "carets"}))["carets"][0]["name"],
+            "You"
+        );
+
+        // Closing a session takes its caret away.
+        drop(me);
+        assert!(
+            call(&mut peer, json!({"op": "carets"}))["carets"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
 }

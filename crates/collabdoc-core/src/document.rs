@@ -171,6 +171,16 @@ impl Document {
             .and_then(|(located, _)| tree::sole_text(&located.node).flatten())
     }
 
+    /// The index of the block whose text is `text`.
+    pub fn block_with_text(&self, text: &loro::ContainerID) -> Option<usize> {
+        self.flat().iter().position(|(located, view)| {
+            view.editable
+                && tree::sole_text(&located.node)
+                    .flatten()
+                    .is_some_and(|t| &t.id() == text)
+        })
+    }
+
     pub fn blocks(&self) -> Vec<ViewBlock> {
         self.flat().iter().map(|(_, view)| view.clone()).collect()
     }

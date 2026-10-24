@@ -281,4 +281,49 @@ void main() {
     await tester.pumpAndSettle();
     expect(texts(pane).last, '**raw**');
   });
+
+  testWidgets('each pane shows the other participants\' carets', (
+    tester,
+  ) async {
+    final ws = await launch(tester);
+    final mine = tester.state<EditorPaneState>(find.byType(EditorPane));
+    type(mine, 'Hello world');
+    ws.addPeer();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 60));
+    final theirs = tester
+        .stateList<EditorPaneState>(find.byType(EditorPane))
+        .last;
+
+    (String, int, int) seen(EditorPaneState pane) {
+      expect(pane.carets, hasLength(1));
+      final c = pane.carets.single;
+      return (c.name, c.anchor, c.head);
+    }
+
+    expect(seen(theirs), ('You', 11, 11));
+    expect(seen(mine), ('Peer 2', 0, 0));
+    expect(mine.carets.single.color, 0xFFE5484D);
+
+    // The peer types at the start: my caret, as they see it, rides along.
+    type(theirs, '>> ');
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(seen(theirs), ('You', 14, 14));
+    expect(seen(mine), ('Peer 2', 3, 3));
+
+    // I select a word; the throttle lets the last move through.
+    mine.focus.requestFocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    await chord(tester, [
+      LogicalKeyboardKey.shiftLeft,
+    ], LogicalKeyboardKey.home);
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(seen(theirs), ('You', 13, 0));
+
+    // A peer that leaves takes its caret along.
+    ws.removePeer(ws.participants.last);
+    await tester.pump();
+    expect(mine.carets, isEmpty);
+  });
 }

@@ -3,11 +3,13 @@
  *
  *   bun ts-compat.ts write <out.collabdoc>   a document made by the TS core
  *   bun ts-compat.ts read <in.collabdoc>     the TS core's reading, as JSON
+ *   bun ts-compat.ts presence <in.collabdoc> <presence.bin>
+ *                                            where each presence entry's caret is
  *
  * Needs `loro-crdt` resolvable (repo `npm install`, or NODE_PATH).
  */
 import { readFileSync, writeFileSync } from 'fs'
-import { LoroText } from 'loro-crdt'
+import { Cursor, EphemeralStore, LoroText } from 'loro-crdt'
 import { decodeCollabdoc, encodeCollabdoc } from '../../../../src/core/collabdoc-file'
 import { commitBoundary, createDocument, openDocument, readMeta } from '../../../../src/core/document'
 import {
@@ -16,8 +18,10 @@ import {
   createBlock,
   getChildren,
   getRoot,
-  nodeName
+  nodeName,
+  blockIdFromCursor
 } from '../../../../src/core/tree'
+import type { EphemeralPayload } from '../../../../src/core/tools/presence'
 
 const [mode, file] = process.argv.slice(2)
 
@@ -65,7 +69,19 @@ if (mode === 'write') {
       return { type: nodeName(node), text, marks: blockMarks(node) }
     })
   console.log(JSON.stringify({ title: readMeta(doc).title, blocks }))
+} else if (mode === 'presence') {
+  const doc = openDocument(decodeCollabdoc(new Uint8Array(readFileSync(file))).snapshot)
+  const store = new EphemeralStore(15_000)
+  store.apply(new Uint8Array(readFileSync(process.argv[4])))
+  const states = store.getAllStates() as Record<string, EphemeralPayload>
+  const carets = Object.entries(states).map(([peer, state]) => ({
+    peer,
+    user: state.user,
+    focus: state.focus ? blockIdFromCursor(doc, Cursor.decode(state.focus)) : null,
+    anchor: state.anchor ? blockIdFromCursor(doc, Cursor.decode(state.anchor)) : null
+  }))
+  console.log(JSON.stringify(carets))
 } else {
-  console.error('usage: ts-compat.ts write|read <file>')
+  console.error('usage: ts-compat.ts write|read|presence <file> [presence.bin]')
   process.exit(2)
 }
