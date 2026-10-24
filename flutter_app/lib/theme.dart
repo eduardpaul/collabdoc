@@ -16,6 +16,8 @@ class AppColors {
   static const selection = Color(0x55C45C26);
   static const highlight = Color(0x40E5C07B);
   static const link = Color(0xFF7AA2F7);
+  static const findHit = Color(0x40E5C07B);
+  static const findCurrent = Color(0x99E5C07B);
 }
 
 const uiFont = 'Inter';

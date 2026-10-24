@@ -17,6 +17,7 @@ import 'package:flutter/services.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'find_bar.dart';
 import 'model.dart';
 import 'native.dart';
 import 'settings.dart';
@@ -70,6 +71,20 @@ class EditorPaneState extends State<EditorPane>
   Timer? _presenceCooldown;
   bool _presencePending = false;
   Timer? _heartbeat;
+
+  /// Find bar: open or not, matches (global ranges) and the current one.
+  bool _findOpen = false;
+  final GlobalKey<FindBarState> _findBar = GlobalKey();
+  String _query = '';
+  bool _caseSensitive = false;
+  List<(int, int)> _matches = const [];
+  int _matchIndex = 0;
+
+  @visibleForTesting
+  List<(int, int)> get matches => _matches;
+
+  @visibleForTesting
+  int get matchIndex => _matchIndex;
 
   /// Per peer: the last caret position seen, and how long its name shows.
   final Map<String, (String, Timer)> _flags = {};
@@ -155,6 +170,8 @@ class EditorPaneState extends State<EditorPane>
   void _refresh({bool reveal = false}) {
     setState(() {
       view = session.view();
+      // The text changed under the matches: find them again.
+      if (_findOpen) _findMatches();
       // Text moved under the others' cursors: where they point now.
       _readCarets();
     });
@@ -163,6 +180,86 @@ class EditorPaneState extends State<EditorPane>
     if (reveal) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _revealCaret());
     }
+  }
+
+  // ── Find and replace ─────────────────────────────────────────────────
+
+  void _openFind({bool replace = false}) {
+    setState(() => _findOpen = true);
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _findBar.currentState?.focusField(replace: replace),
+    );
+  }
+
+  void _closeFind() {
+    setState(() {
+      _findOpen = false;
+      _matches = const [];
+    });
+    focus.requestFocus();
+  }
+
+  void _findMatches() {
+    if (_query.isEmpty) {
+      _matches = const [];
+      return;
+    }
+    final reply = session.call({
+      'op': 'find',
+      'query': _query,
+      'caseSensitive': _caseSensitive,
+    });
+    _matches = [
+      for (final m in reply['matches'] as List)
+        ((m as List)[0] as int, m[1] as int),
+    ];
+    if (_matchIndex >= _matches.length) _matchIndex = 0;
+  }
+
+  /// The first match at or after `offset` (wrapping round).
+  int _matchFrom(int offset) {
+    final i = _matches.indexWhere((m) => m.$1 >= offset);
+    return i < 0 ? 0 : i;
+  }
+
+  /// Selects the current match and scrolls to it.
+  void _showMatch() {
+    if (_matches.isEmpty) return;
+    final (start, end) = _matches[_matchIndex];
+    _select(start, end);
+  }
+
+  void _search(String query, bool caseSensitive) {
+    _query = query;
+    _caseSensitive = caseSensitive;
+    setState(() {
+      _findMatches();
+      _matchIndex = _matchFrom(view.selectionStart);
+    });
+    _showMatch();
+  }
+
+  void _step(int delta) {
+    if (_matches.isEmpty) return;
+    setState(() {
+      _matchIndex = (_matchIndex + delta) % _matches.length;
+    });
+    _showMatch();
+  }
+
+  void _replace(String text, {required bool all}) {
+    if (_matches.isEmpty) return;
+    final ranges = all ? _matches : [_matches[_matchIndex]];
+    run({
+      'op': 'replaceMatches',
+      'ranges': [
+        for (final (s, e) in ranges) [s, e],
+      ],
+      'text': text,
+    });
+    // Go on from the caret, which is after the replacement.
+    setState(() => _matchIndex = _matchFrom(view.head));
+    if (!all) _showMatch();
   }
 
   /// Re-reads the others' carets; a caret that moved shows its name for 2 s.
@@ -291,6 +388,9 @@ class EditorPaneState extends State<EditorPane>
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is KeyUpEvent) return KeyEventResult.ignored;
+    // Keys a field inside the pane (the find bar) left unhandled bubble up
+    // here; they are not for the document.
+    if (!focus.hasPrimaryFocus) return KeyEventResult.ignored;
     final keys = HardwareKeyboard.instance;
     final ctrl = keys.isControlPressed || keys.isMetaPressed;
     final shift = keys.isShiftPressed;
@@ -346,6 +446,8 @@ class EditorPaneState extends State<EditorPane>
         LogicalKeyboardKey.keyU: () => mark('underline'),
         LogicalKeyboardKey.keyE: () => mark('code'),
         LogicalKeyboardKey.keyK: _editLink,
+        LogicalKeyboardKey.keyF: _openFind,
+        if (!shift) LogicalKeyboardKey.keyH: () => _openFind(replace: true),
         if (shift) LogicalKeyboardKey.keyH: () => mark('highlight'),
         LogicalKeyboardKey.keyS: () =>
             widget.workspace.save(widget.participant),
@@ -613,6 +715,8 @@ class EditorPaneState extends State<EditorPane>
 
   void _focusChanged() {
     if (focus.hasFocus) {
+      // Another field (the find bar) may have taken the platform input.
+      if (_input?.attached != true) _input = null;
       _input ??= TextInput.attach(
         this,
         const TextInputConfiguration(
@@ -918,6 +1022,15 @@ class EditorPaneState extends State<EditorPane>
         caret: focus.hasFocus && view.blockAt(view.head) == i
             ? view.head - start
             : null,
+        hits: [
+          for (var m = 0; m < _matches.length; m++)
+            if (_matches[m].$2 >= start && _matches[m].$1 <= end)
+              (
+                start: _matches[m].$1 - start,
+                end: _matches[m].$2 - start,
+                current: m == _matchIndex,
+              ),
+        ],
         remote: [
           for (final c in _carets)
             if (c.end >= start && c.start <= end)
@@ -1279,6 +1392,17 @@ class EditorPaneState extends State<EditorPane>
         child: Column(
           children: [
             _toolbar(),
+            if (_findOpen)
+              FindBar(
+                key: _findBar,
+                count: _matches.length,
+                index: _matchIndex,
+                onQuery: _search,
+                onStep: _step,
+                onReplace: (text) => _replace(text, all: false),
+                onReplaceAll: (text) => _replace(text, all: true),
+                onClose: _closeFind,
+              ),
             Expanded(
               child: MouseRegion(
                 cursor: SystemMouseCursors.text,
@@ -1388,6 +1512,7 @@ class _SelectionPainter extends CustomPainter {
     required this.length,
     required this.caret,
     this.remote = const [],
+    this.hits = const [],
   });
 
   final GlobalKey paragraph;
@@ -1401,10 +1526,17 @@ class _SelectionPainter extends CustomPainter {
   /// Other participants' selections over this block (relative, like ours).
   final List<RemoteMark> remote;
 
+  /// Find matches in this block (relative).
+  final List<({int start, int end, bool current})> hits;
+
   @override
   void paint(Canvas canvas, Size size) {
     final p = paragraph.currentContext?.findRenderObject() as RenderParagraph?;
     if (p == null || !p.hasSize) return;
+    for (final h in hits) {
+      final color = h.current ? AppColors.findCurrent : AppColors.findHit;
+      _range(canvas, p, h.start, h.end, Paint()..color = color);
+    }
     for (final r in remote) {
       final color = Color(r.color);
       _range(canvas, p, r.start, r.end, Paint()..color = color.withAlpha(0x40));
@@ -1498,7 +1630,8 @@ class _SelectionPainter extends CustomPainter {
       old.end != end ||
       old.length != length ||
       old.caret != caret ||
-      !listEquals(old.remote, remote);
+      !listEquals(old.remote, remote) ||
+      !listEquals(old.hits, hits);
 }
 
 /// A remote selection relative to one block; `caret` only in the block that

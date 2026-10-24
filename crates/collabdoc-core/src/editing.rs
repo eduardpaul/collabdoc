@@ -591,6 +591,108 @@ impl Editor {
         Some(targets)
     }
 
+    /// Where `query` occurs, as global UTF-16 ranges in reading order: within
+    /// blocks, not overlapping, figures skipped, ignoring case unless
+    /// `case_sensitive` (the TS find bar's rules).
+    pub fn find(&self, query: &str, case_sensitive: bool) -> Vec<Range<usize>> {
+        let fold = |c: char| -> char {
+            if case_sensitive {
+                return c;
+            }
+            let mut lower = c.to_lowercase();
+            match (lower.next(), lower.next()) {
+                (Some(l), None) => l,
+                _ => c,
+            }
+        };
+        let needle: Vec<char> = query.chars().map(fold).collect();
+        if needle.is_empty() {
+            return vec![];
+        }
+        let mut found = vec![];
+        for (i, block) in self.blocks.iter().enumerate() {
+            if !block.editable {
+                continue;
+            }
+            let hay: Vec<char> = block.text.chars().map(fold).collect();
+            // UTF-16 offset of each char, plus the end.
+            let mut offsets = Vec::with_capacity(hay.len() + 1);
+            let mut at = 0;
+            for c in block.text.chars() {
+                offsets.push(at);
+                at += c.len_utf16();
+            }
+            offsets.push(at);
+            let mut c = 0;
+            while c + needle.len() <= hay.len() {
+                if hay[c..c + needle.len()] == needle[..] {
+                    found.push(
+                        self.starts[i] + offsets[c]..self.starts[i] + offsets[c + needle.len()],
+                    );
+                    c += needle.len();
+                } else {
+                    c += 1;
+                }
+            }
+        }
+        found
+    }
+
+    /// Replaces each of `ranges` (from [`Editor::find`]: inside one block
+    /// each, in order) with `text`, as one undo step. The new text keeps the
+    /// marks the replaced text had throughout; line breaks become spaces.
+    /// The caret lands after the last replacement.
+    pub fn replace_matches(&mut self, ranges: &[Range<usize>], text: &str) -> bool {
+        let text = text.replace(['\r', '\n'], " ");
+        let mut targets = Vec::with_capacity(self.blocks.len());
+        let mut caret = None;
+        let mut next = ranges.iter().peekable();
+        for (i, block) in self.blocks.iter().enumerate() {
+            let start = self.starts[i];
+            let end = start + utf16::len(&block.text);
+            let mut mine = vec![];
+            while let Some(r) = next.peek() {
+                if r.start < start || r.end > end || !block.editable {
+                    break;
+                }
+                mine.push((r.start - start)..(r.end - start));
+                next.next();
+            }
+            if mine.is_empty() {
+                targets.push(TargetBlock::from(block));
+                continue;
+            }
+            let piece = Piece::of(block);
+            let mut out = piece.slice(0..0);
+            out.key = piece.key.clone();
+            let mut from = 0;
+            for r in &mine {
+                if r.start < from || r.end > piece.units.len() {
+                    return false;
+                }
+                out.append(&piece.slice(from..r.start));
+                let shared = piece.marks[r.clone()].iter().fold(u32::MAX, |a, m| a & m);
+                let shared = if r.is_empty() { 0 } else { shared };
+                let href = piece.hrefs.get(r.start).cloned().flatten();
+                out.push_text(&text, shared, &href);
+                from = r.end;
+                caret = Some((i, out.units.len()));
+            }
+            out.append(&piece.slice(from..piece.units.len()));
+            targets.push(out.target());
+        }
+        if next.peek().is_some() {
+            return false;
+        }
+        let changed = self.doc.reconcile_step(&targets);
+        self.reload();
+        if let Some((block, local)) = caret {
+            let at = self.starts[block] + local.min(self.block_len(block));
+            self.move_to(at);
+        }
+        changed
+    }
+
     fn without_block(&self, index: usize) -> Vec<TargetBlock> {
         self.blocks
             .iter()

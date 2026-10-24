@@ -236,6 +236,25 @@ impl Session {
                 self.sent_order.clear();
                 return json!({ "ok": true });
             }
+            "find" => {
+                let matches: Vec<Value> = e
+                    .find(s("query"), cmd["caseSensitive"].as_bool().unwrap_or(false))
+                    .into_iter()
+                    .map(|r| json!([r.start, r.end]))
+                    .collect();
+                return json!({ "ok": true, "matches": matches });
+            }
+            "replaceMatches" => {
+                let ranges: Vec<std::ops::Range<usize>> = cmd["ranges"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|r| Some(r[0].as_u64()? as usize..r[1].as_u64()? as usize))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                e.replace_matches(&ranges, s("text"))
+            }
             "copyMarkdown" => return json!({ "ok": true, "text": e.selection_markdown() }),
             "setUser" => {
                 self.user.name = s("name").to_owned();

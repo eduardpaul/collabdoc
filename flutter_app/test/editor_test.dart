@@ -7,12 +7,13 @@
 import 'dart:io';
 
 import 'package:collabdoc/editor.dart';
+import 'package:collabdoc/find_bar.dart';
 import 'package:collabdoc/main.dart';
 import 'package:collabdoc/model.dart';
 import 'package:collabdoc/settings.dart';
 import 'package:collabdoc/workspace.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -485,5 +486,61 @@ void main() {
     await chord(tester, ctrl, LogicalKeyboardKey.home);
     await chord(tester, ctrl, LogicalKeyboardKey.delete);
     expect(texts(pane), [' beta ']);
+  });
+
+  testWidgets('Ctrl+F finds, Enter steps, replace one and all', (tester) async {
+    await launch(tester);
+    final pane = tester.state<EditorPaneState>(find.byType(EditorPane));
+    type(pane, 'one two one');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    type(pane, 'three One');
+    await tester.pump();
+    final ctrl = [LogicalKeyboardKey.controlLeft];
+
+    await chord(tester, ctrl, LogicalKeyboardKey.keyF);
+    await tester.pump();
+    await tester.enterText(find.byKey(const ValueKey('find-field')), 'one');
+    await tester.pump();
+    expect(pane.matches, [(0, 3), (8, 11), (18, 21)]);
+    String count() =>
+        tester.widget<Text>(find.byKey(const ValueKey('find-count'))).data!;
+    expect(count(), '1/3', reason: 'from the caret, wrapping round');
+    expect((pane.view.selectionStart, pane.view.selectionEnd), (0, 3));
+
+    // A real Enter key in the field is not for the document.
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(texts(pane), ['one two one', 'three One']);
+    expect(count(), '1/3');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+    expect(count(), '2/3');
+    expect((pane.view.selectionStart, pane.view.selectionEnd), (8, 11));
+
+    // Match case: "One" drops out.
+    await tester.tap(find.byKey(const ValueKey('find-case')));
+    await tester.pump();
+    expect(pane.matches, [(0, 3), (8, 11)]);
+    await tester.tap(find.byKey(const ValueKey('find-case')));
+    await tester.pump();
+
+    await tester.enterText(find.byKey(const ValueKey('replace-field')), '1');
+    await tester.tap(find.byKey(const ValueKey('replace-one')));
+    await tester.pump();
+    expect(texts(pane), ['one two 1', 'three One']);
+    expect(count(), '2/2', reason: 'on to the next one');
+
+    await tester.tap(find.byKey(const ValueKey('replace-all')));
+    await tester.pump();
+    expect(texts(pane), ['1 two 1', 'three 1']);
+    expect(count(), '0');
+
+    // Esc closes and gives the keyboard back; one undo takes "All" back.
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(find.byType(FindBar), findsNothing);
+    expect(pane.focus.hasFocus, isTrue);
+    await chord(tester, ctrl, LogicalKeyboardKey.keyZ);
+    expect(texts(pane), ['one two 1', 'three One']);
   });
 }
