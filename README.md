@@ -162,6 +162,18 @@ cargo build -p collabdoc-ffi && COLLABDOC_FFI_LIB=$PWD/../target/debug/libcollab
 
 `scripts/flutter-smoke.sh` drives the built app on a virtual display and saves screenshots; `scripts/flutter-crash.sh` kills it in the middle of typing and checks nothing is lost. `scripts/flutter-onefile.sh` builds the release app as one executable (`dist/collabdoc-linux-x86_64`, about 11 MB) with `crates/collabdoc-launcher`.
 
+On Windows (Flutter 3.47+, Rust with the MSVC toolchain, Visual Studio 2022 C++ tools, Developer Mode on), from a terminal in the repo:
+
+```bat
+scripts\flutter-windows.cmd doctor            :: checks the tools
+scripts\flutter-windows.cmd run notes.collabdoc
+scripts\flutter-windows.cmd test              :: Rust tests, then the Flutter tests
+scripts\flutter-windows.cmd build             :: flutter_app\build\windows\x64\runner\Release\
+scripts\flutter-windows.cmd onefile           :: dist\collabdoc-windows-x86_64.exe
+```
+
+The Windows build compiles `collabdoc_ffi.dll` with cargo and puts it next to `collabdoc.exe`. Copy and paste there are plain text for now (rich HTML clipboard is Linux-only), and the renderer setting is Linux-only. The Rust bridge cross-compiles for Windows here, but the Flutter build has not been run on a Windows machine yet.
+
 ## Layout
 
 ```

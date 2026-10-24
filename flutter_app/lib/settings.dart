@@ -34,11 +34,11 @@ class Settings {
   /// The user's settings file, and the renderer this process started with.
   factory Settings.forUser() {
     final env = Platform.environment;
-    final config =
-        env['XDG_CONFIG_HOME'] ??
-        '${env['HOME'] ?? Directory.systemTemp.path}/.config';
+    final file = Platform.isWindows
+        ? '${env['APPDATA'] ?? Directory.systemTemp.path}\\CollabDoc\\settings.ini'
+        : '${env['XDG_CONFIG_HOME'] ?? '${env['HOME'] ?? Directory.systemTemp.path}/.config'}/collabdoc/settings.ini';
     return Settings(
-      File('$config/collabdoc/settings.ini'),
+      File(file),
       activeRenderer: env['COLLABDOC_RENDERER_ACTIVE'],
     );
   }

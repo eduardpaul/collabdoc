@@ -466,7 +466,7 @@ void main() {
     );
     expect(find.text('Renderer: Software'), findsOneWidget);
     expect(ws.status, 'Renderer: Software from the next start');
-  });
+  }, skip: !Platform.isLinux);
 
   testWidgets('Ctrl+Shift+B quotes; Enter on an empty quoted line leaves', (
     tester,

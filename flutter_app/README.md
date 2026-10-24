@@ -10,6 +10,8 @@ COLLABDOC_FFI_LIB=$PWD/../target/debug/libcollabdoc_ffi.so flutter test
 
 `lib/editor.dart` draws blocks and maps keys, mouse and platform text input to core commands; every editing rule is in Rust.
 
+**Windows:** `..\scripts\flutter-windows.cmd doctor|run|test|build|onefile` (see the main README). `windows\CMakeLists.txt` builds `collabdoc_ffi.dll` with cargo and installs it next to `collabdoc.exe`; data goes to `%APPDATA%\CollabDoc`. The rich clipboard and the renderer setting are Linux-only for now.
+
 **One file:** `../scripts/flutter-onefile.sh` writes `dist/collabdoc-linux-x86_64`. It unpacks itself into `~/.cache/collabdoc/app/` on first run.
 
 **Renderer:** the status bar shows which renderer is running and offers Automatic, GPU or Software for the next start. Software is Skia's CPU rasterizer, about 100 MB lighter. Automatic picks it when the machine has no GPU. The choice lives in `~/.config/collabdoc/settings.ini` (`[display] renderer=…`); `COLLABDOC_RENDERER=gpu|software` overrides it for one run.

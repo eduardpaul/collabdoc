@@ -1353,8 +1353,10 @@ class EditorPaneState extends State<EditorPane>
             ),
             const Spacer(),
             Flexible(child: Text(ws.status, overflow: TextOverflow.ellipsis)),
-            // The renderer is the app's, not a participant's: shown once.
-            if (identical(widget.participant, ws.participants.first)) ...[
+            // The renderer is the app's, not a participant's: shown once,
+            // where the runner applies it (the GTK one).
+            if (Platform.isLinux &&
+                identical(widget.participant, ws.participants.first)) ...[
               const SizedBox(width: 16),
               _rendererMenu(ws),
             ],
