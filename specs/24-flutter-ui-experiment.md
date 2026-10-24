@@ -71,3 +71,38 @@ Same machine, release builds, Linux x86-64 without a GPU (Mesa software renderin
 2. Virtualise the block list (`ListView.builder` + `SliverList`) for long documents.
 3. Set the IME candidate rect (`setEditableSizeAndTransform` / `setCaretRect`).
 4. Windows/macOS: build `collabdoc_ffi.dll` / `.dylib` from the runner build files, the way `linux/CMakeLists.txt` does now.
+
+## Open-source editors: adopt one, or keep our own? (evaluated 2026-10-24)
+
+The four maintained Flutter rich-text editors were read at source level against what CollabDoc needs: a nested block tree with stable block ids, local edits turned into Loro ops, remote ops applied without breaking the local selection, IME composition or undo, per-participant Loro undo, and long documents.
+
+| | super_editor 0.3.0-dev.52 | appflowy_editor 6.2.0 | flutter_quill 11.6.0 | fleather 1.28.0 |
+| --- | --- | --- | --- | --- |
+| License | MIT | MPL-2.0 / AGPL-3.0 | MIT | MIT / BSD |
+| Last release | Jun 2026 (dev series since Jun 2024; last stable 2023) | Dec 2025 | Sep 2026 | Aug 2026 |
+| Document model | Flat node list, any string id, int `indent` for lists | Node tree, but ids regenerated on copy/move; lists = children of items | Flat lines, block style on `\n`, `indent` ≤ 5 | Flat lines, closed attribute set |
+| Our nested tree + stable ids | Flatten; editing makes uuid ids | Ids not stable (deep copies, `fromJson` drops ids) | Ids duplicated on Enter, overwritten on merge | No ids; merge keeps the *later* line |
+| Local change events | Fine-grained but inconsistent (bare `NodeChangeEvent`, inserts without marks) | Text edits = "replace whole delta"; indent = delete + re-create | Positional Deltas; several per keystroke, async | Positional Deltas; several per keystroke |
+| Remote apply | None: no selection transform, stale node id crashes, IME not resynced | `isRemote` flag, but selection fix-up is wrong, dropped when read-only | `compose(remote)` transforms caret; enters undo; IME diff can delete remote text | `compose(remote)` transforms caret; enters undo; IME composing not transformed |
+| Undo | Replay-based; can be disabled | Fixed `UndoManager`, reverts others' edits; can't be removed cleanly | `History` records remote edits; flag juggling | Private snapshot history, always running |
+| IME | Delta model; no preedit underline on Linux | Non-delta; preedit written into the doc as real edits | Non-delta, whole document sent to the IME | Delta model, whole document sent |
+| Virtualisation | No | Top-level blocks only | No | No |
+| Remote carets | Overlay hooks (build it) | `RemoteSelection` widget (path-based, untransformed) | Build from render boxes | Build from render boxes |
+| Adapter estimate (MVP) | 8–12 engineer-weeks + fork | 8–12 weeks + 4–6 hardening + MPL fork | 2–3 engineer-months + fork | 2–3 engineer-months + forks of 2 packages |
+
+**Finding: none of them knows about concurrent edits.** Every one would need a translation layer from its model to our tree, a replacement for its undo, and patches to its input client so remote edits don't corrupt selection or IME composition. Those are the hard parts, and `collabdoc-core` + `editor.dart` already do them (stale-delta detection, Loro-cursor carets, per-participant undo, stable block ids, tested). Adopting an editor would trade a ~1,100-line view we control for a 45–97k-line dependency we must fork.
+
+**Decision: keep the model-driven editor; take building blocks, not an editor.**
+
+| Use directly | For | License |
+| --- | --- | --- |
+| `super_sliver_list` or `scrollable_positioned_list` | Virtualised block list with jump-to-index (Phase 1) | MIT / BSD |
+| `mermaid_flutter` (native Mermaid renderer, 28 diagram types) | Figures (Phase 3); young, pin and test against the TS fixtures | MIT |
+| `flutter_svg` | SVG figures and icons | MIT |
+| `super_clipboard` | Rich copy/paste (HTML) on desktop | MIT |
+
+**Borrow designs, not code:**
+- super_editor: keyboard action catalogue (word moves, Ctrl+Backspace), delta-IME mapping and its known pitfalls, overlay layers.
+- appflowy_editor: `RemoteSelection` rendering (remote carets with name flags), drag auto-scroll, triple-click handling.
+
+The Markdown/HTML conversion for paste and export should live in the Rust core (shared with agents and the MCP server), not in a Dart editor package.
