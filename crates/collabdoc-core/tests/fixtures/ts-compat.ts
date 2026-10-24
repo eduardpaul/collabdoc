@@ -9,12 +9,19 @@
  * Needs `loro-crdt` resolvable (repo `npm install`, or NODE_PATH).
  */
 import { readFileSync, writeFileSync } from 'fs'
-import { Cursor, EphemeralStore, LoroText } from 'loro-crdt'
+import { createHash } from 'crypto'
+import { Cursor, EphemeralStore, LoroList, LoroMap, LoroText } from 'loro-crdt'
 import { decodeCollabdoc, encodeCollabdoc } from '../../../../src/core/collabdoc-file'
-import { commitBoundary, createDocument, openDocument, readMeta } from '../../../../src/core/document'
+import {
+  commitBoundary,
+  createDocument,
+  openDocument,
+  readMeta
+} from '../../../../src/core/document'
 import {
   allBlocks,
   blockMarks,
+  blockPlainText,
   createBlock,
   getChildren,
   getRoot,
@@ -49,13 +56,46 @@ if (mode === 'write') {
   const second = createBlock(list, 1, { type: 'listItem' })
   createBlock(second, 0, { type: 'paragraph', text: 'Second item' })
   createBlock(root, 3, { type: 'codeBlock', text: 'fn main() {\n    println!("hi");\n}' })
-  createBlock(root, 4, { type: 'mermaidFigure', attrs: { source: 'graph TD; A-->B', caption: 'Flow' } })
+  createBlock(root, 4, {
+    type: 'mermaidFigure',
+    attrs: { source: 'graph TD; A-->B', caption: 'Flow' }
+  })
   createBlock(root, 5, { type: 'paragraph', text: 'Unicode: café 👍🏽 你好' })
+  // Inline nodes as loro-prosemirror stores them: text runs and node maps.
+  const line = createBlock(root, 6, { type: 'paragraph', text: 'ping ' })
+  const inline = (index: number, name: string, attrs: Record<string, string>): void => {
+    const node = getChildren(line).insertContainer(index, new LoroMap())
+    node.set('nodeName', name)
+    const a = node.setContainer('attributes', new LoroMap())
+    for (const [k, v] of Object.entries(attrs)) a.set(k, v)
+    node.setContainer('children', new LoroList())
+  }
+  inline(1, 'mention', { kind: 'person', id: 'p-1', handle: 'ana', label: 'Ana' })
+  getChildren(line).insertContainer(2, new LoroText()).insert(0, ' please')
+  inline(3, 'hardBreak', {})
+  getChildren(line).insertContainer(4, new LoroText()).insert(0, 'next line')
+  // An image figure whose bytes are in the file (a 1×1 PNG).
+  const png = Uint8Array.from(
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64'
+    )
+  )
+  const hash = createHash('sha256').update(png).digest('hex')
+  createBlock(root, 7, {
+    type: 'imageFigure',
+    attrs: { src: `asset:${hash}`, alt: 'dot', width: 75, align: 'left', caption: 'A dot' }
+  })
   commitBoundary(doc, { origin: 'actor:ts-fixture', message: 'fixture' })
   const meta = readMeta(doc)
   writeFileSync(
     file,
-    encodeCollabdoc({ docId: meta.docId, title: meta.title, snapshot: doc.export({ mode: 'snapshot' }) })
+    encodeCollabdoc({
+      docId: meta.docId,
+      title: meta.title,
+      snapshot: doc.export({ mode: 'snapshot' }),
+      assets: [{ hash, type: 'image/png', bytes: png }]
+    })
   )
 } else if (mode === 'read') {
   const decoded = decodeCollabdoc(new Uint8Array(readFileSync(file)))
@@ -66,7 +106,7 @@ if (mode === 'write') {
     .map(({ node }) => {
       const first = getChildren(node).get(0)
       const text = first instanceof LoroText ? first.toString() : ''
-      return { type: nodeName(node), text, marks: blockMarks(node) }
+      return { type: nodeName(node), text, plain: blockPlainText(node), marks: blockMarks(node) }
     })
   console.log(JSON.stringify({ title: readMeta(doc).title, blocks }))
 } else if (mode === 'presence') {

@@ -20,7 +20,31 @@ loro = "1.17.1"
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+# Unwind, not abort: the core catches a panic in third-party parsers (the
+# Mermaid renderer) and reports the diagram as unreadable instead of taking
+# the app down.
+panic = "unwind"
+
+# Figure drawing runs once per diagram or SVG and takes milliseconds either
+# way: built for size, it keeps the Rust core small.
+[profile.release.package.mermaid-rs-renderer]
+opt-level = "s"
+[profile.release.package.resvg]
+opt-level = "s"
+[profile.release.package.usvg]
+opt-level = "s"
+[profile.release.package.tiny-skia]
+opt-level = "s"
+[profile.release.package.rustybuzz]
+opt-level = "s"
+[profile.release.package.fontdb]
+opt-level = "s"
+[profile.release.package.regex-automata]
+opt-level = "s"
+[profile.release.package.regex-syntax]
+opt-level = "s"
+[profile.release.package.json5]
+opt-level = "s"
 
 # The launcher is part of every packed file: build it and its (launcher-only)
 # dependencies for size.

@@ -72,6 +72,8 @@ fn reads_a_file_written_by_the_typescript_core() {
             ),
             (BlockKind::Atom, None, 0, "[Mermaid diagram: Flow]"),
             (BlockKind::Paragraph, None, 0, "Unicode: café 👍🏽 你好"),
+            (BlockKind::Paragraph, None, 0, "ping @ana please\nnext line"),
+            (BlockKind::Atom, None, 0, "[Image: A dot]"),
         ]
     );
     let marks: Vec<_> = blocks[1]
@@ -164,9 +166,29 @@ fn typescript_reads_what_rust_writes() {
     assert_eq!(ts_blocks.len(), rust_blocks.len());
     for (ts, rust) in ts_blocks.iter().zip(&rust_blocks) {
         if rust.kind != BlockKind::Atom {
+            // `blockPlainText` spells a mention `@handle` and a hard break
+            // as nothing.
+            let breaks: Vec<_> = rust
+                .inlines
+                .iter()
+                .filter(|n| n.name == "hardBreak")
+                .map(|n| n.at)
+                .collect();
+            let mut at = 0u32;
+            let mut plain = String::new();
+            for c in rust.text.chars() {
+                match rust.inline_at(at as usize) {
+                    Some(n) if c == '\u{FFFC}' && !breaks.contains(&at) => {
+                        plain.push_str(&n.plain_text())
+                    }
+                    Some(_) if c == '\u{FFFC}' => {}
+                    _ => plain.push(c),
+                }
+                at += c.len_utf16() as u32;
+            }
             assert_eq!(
-                ts["text"].as_str().unwrap(),
-                rust.text,
+                ts["plain"].as_str().unwrap(),
+                plain,
                 "text of {:?}",
                 rust.kind
             );
@@ -257,8 +279,50 @@ fn every_kind() -> Editor {
     // And a find-and-replace.
     let hits = e.find("command", false);
     e.replace_matches(&hits, "Ctrl+Shift+B");
+    // Inline nodes: a mention chip and a hard break.
+    let end = e.len();
+    e.move_to(end);
+    e.newline();
+    // Out of the quote the line above is in.
+    e.toggle_quote();
+    e.insert_text("ask ");
+    let mut attrs = serde_json::Map::new();
+    for (k, v) in [
+        ("kind", "agent"),
+        ("id", "agent-1"),
+        ("handle", "writer"),
+        ("label", "Writer"),
+    ] {
+        attrs.insert(k.into(), v.into());
+    }
+    e.insert_mention(attrs);
+    e.insert_text("now");
+    e.hard_break();
+    e.insert_text("second line");
+    // Figures: an image with its bytes, a caption, width and alignment; an
+    // infographic; and a caption on the diagram.
+    let png = collabdoc_core::figures::parse_data_uri(PNG_URI).unwrap().1;
+    e.insert_image(png, "a dot").unwrap();
+    let image = e
+        .blocks()
+        .iter()
+        .position(|b| b.node_name == "imageFigure")
+        .unwrap();
+    e.set_caption(image, "One pixel");
+    e.set_figure_attr(image, "width", &serde_json::json!(50));
+    e.set_figure_attr(image, "align", &serde_json::json!("right"));
+    e.insert_figure("infographicFigure");
+    let diagram = e
+        .blocks()
+        .iter()
+        .position(|b| b.node_name == "mermaidFigure")
+        .unwrap();
+    e.set_caption(diagram, "Flow");
     e
 }
+
+/// A 1×1 PNG.
+const PNG_URI: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 /// What a document says, without ids or keys (which differ per run).
 fn summary(doc: &Document) -> Vec<String> {
@@ -266,7 +330,7 @@ fn summary(doc: &Document) -> Vec<String> {
         .iter()
         .map(|b| {
             format!(
-                "{} {:?} {:?}@{} q{} {} {:?} {:?}",
+                "{} {:?} {:?}@{} q{} {} {:?} {:?} {:?} {:?} {:?}",
                 b.node_name,
                 b.kind,
                 b.list,
@@ -277,7 +341,10 @@ fn summary(doc: &Document) -> Vec<String> {
                 b.spans
                     .iter()
                     .map(|s| (s.start, s.end, s.marks, s.href.clone()))
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>(),
+                b.inlines,
+                b.attrs,
+                b.caption
             )
         })
         .collect()
@@ -298,4 +365,7 @@ fn the_rust_fixture_is_what_the_editor_makes_today() {
         summary(made.document()),
         "the editor changed: COLLABDOC_WRITE_FIXTURES=1 rewrites the fixture"
     );
+    // The image's bytes travel in the file.
+    assert_eq!(fixture.assets(), made.document().assets());
+    assert_eq!(fixture.assets().len(), 1);
 }

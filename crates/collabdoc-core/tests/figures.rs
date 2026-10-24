@@ -259,4 +259,30 @@ fn the_typescript_fixtures_figure_has_its_source_and_caption() {
     assert_eq!(figure.caption, "Flow");
     #[cfg(feature = "render")]
     assert!(collabdoc_core::render::mermaid_png("graph TD; A-->B", 1.0).is_ok());
+
+    // Its image, with the bytes the TS core packed.
+    let image = blocks
+        .iter()
+        .find(|b| b.node_name == "imageFigure")
+        .unwrap();
+    assert_eq!(image.attrs["width"], json!(75));
+    assert_eq!(image.caption, "A dot");
+    let src = image.attrs["src"].as_str().unwrap();
+    let asset = doc.asset(src.strip_prefix("asset:").unwrap()).unwrap();
+    assert_eq!(asset.bytes, png());
+
+    // Its mention and hard break are editable here: typing around them keeps them.
+    let mut e = Editor::new(doc);
+    let line = e
+        .blocks()
+        .iter()
+        .position(|b| !b.inlines.is_empty())
+        .unwrap();
+    let at = e.block_start(line) + "ping \u{FFFC}".encode_utf16().count();
+    e.move_to(at);
+    e.insert_text(",");
+    let b = &e.blocks()[line];
+    assert_eq!(b.plain_text(), "ping @ana, please\nnext line");
+    assert_eq!(b.inlines[0].attr("id"), "p-1");
+    assert_eq!(b.inlines[1].name, "hardBreak");
 }

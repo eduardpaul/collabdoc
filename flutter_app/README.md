@@ -12,6 +12,8 @@ COLLABDOC_FFI_LIB=$PWD/../target/debug/libcollabdoc_ffi.so flutter test
 
 **Windows:** `..\scripts\flutter-windows.cmd doctor|run|test|build|onefile` (see the main README). `windows\CMakeLists.txt` builds `collabdoc_ffi.dll` with cargo and installs it next to `collabdoc.exe`; data goes to `%APPDATA%\CollabDoc`. The rich clipboard and the renderer setting are Linux-only for now.
 
+**Figures:** images live in the document (`asset:<sha256>`, up to 2 MB each). Mermaid diagrams and SVG images are drawn by the Rust core (`mermaid-rs-renderer`, `resvg`) on a background isolate; infographics show their source.
+
 **One file:** `../scripts/flutter-onefile.sh` writes `dist/collabdoc-linux-x86_64`. It unpacks itself into `~/.cache/collabdoc/app/` on first run.
 
 **Renderer:** the status bar shows which renderer is running and offers Automatic, GPU or Software for the next start. Software is Skia's CPU rasterizer, about 100 MB lighter. Automatic picks it when the machine has no GPU. The choice lives in `~/.config/collabdoc/settings.ini` (`[display] renderer=…`); `COLLABDOC_RENDERER=gpu|software` overrides it for one run.
@@ -22,10 +24,13 @@ COLLABDOC_FFI_LIB=$PWD/../target/debug/libcollabdoc_ffi.so flutter test
 | Ctrl+Alt+0 / 1 / 2 / 3 / C | Paragraph, heading 1–3, code block |
 | Ctrl+Shift+8 / 7 / 9, Tab, Shift+Tab | Bullet, numbered, task list; nest, lift |
 | Ctrl+Shift+B | Quote on or off |
+| Shift+Enter, @ | Line break inside the paragraph; mention someone (a chip) |
+| Ctrl+Alt+M / I / P | Insert a Mermaid diagram, an infographic, an image (or the toolbar: Image, Diagram, @) |
+| Click a figure | Its bar: Caption…, Source… (diagrams), width Auto/50/75/100 %, Left/Center/Right |
 | Ctrl+←/→ (with Shift), Ctrl+Backspace/Delete | Move or select by word; delete a word |
 | Ctrl+K, Ctrl+click | Edit link, open link |
 | Ctrl+F, Ctrl+H | Find, replace (Enter / Shift+Enter: next / previous; Esc closes) |
-| Ctrl+C / X / V, Ctrl+Shift+V | Copy and cut as Markdown text plus HTML; paste HTML, Markdown or text (Mermaid source asks); paste plain text |
+| Ctrl+C / X / V, Ctrl+Shift+V | Copy and cut as Markdown text plus HTML (images inline); paste HTML, Markdown, text or an image (Mermaid source asks); paste plain text |
 | Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z | Undo, redo (per participant) |
 | Ctrl+Shift+N | Add a participant pane |
 | Ctrl+N, Ctrl+O | New document, open a `.collabdoc` or Markdown file |

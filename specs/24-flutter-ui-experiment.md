@@ -1,6 +1,6 @@
 # 24 · Flutter UI experiment: same Rust core, Flutter front end
 
-**Phase:** platform (experiment) · **Depends on:** 23 Phase 0 · **Status:** Phase 1 reached on branch `flutter`
+**Phase:** platform (experiment) · **Depends on:** 23 Phase 0 · **Status:** Phases 1–3 of spec 23 done on branch `flutter`
 
 Written 2026-10-24. Flutter 3.47.8 (Dart 3.13.7), Linux desktop.
 
@@ -167,9 +167,81 @@ Spec 23's Phase 2, on the same core, so every front end gets it (`collabdoc_core
 - Flutter, 4 widget tests: start screen and autosave, the leave prompt, recovery after a crash, Markdown in and out, a moved file.
 
 **Not yet:**
-- Images in the asset section wait for image figures (Phase 3); the store already keeps and garbage-collects referenced assets.
 - The window title does not show the unsaved state.
 - The TS app's one-time migration of `localStorage` recents (AC-04.12) has no counterpart here: this app never had them.
+
+## Phase 3 result: inline nodes and figures
+
+Spec 23's Phase 3, again in the core so every front end gets it.
+
+**Inline nodes.** Mentions and hard breaks were read-only before: a line holding one could not be edited.
+- A textblock's children are text runs and inline node maps, as `loro-prosemirror` stores them. The view shows each node as one U+FFFC character plus an `inlines` list (name, attributes).
+- Edits write mixed children back: a new node splits the run it lands in; deleting one joins the runs beside it. Marks stay on text, and carets map through the runs.
+- Shift+Enter adds a hard break. Typing `@` opens a picker of the people on the document, and the pick becomes a chip with a space after it. Markdown writes `@handle` and `"  \n"`; HTML copies and pastes Tiptap's mention spans and `<br>`. A `<br>` at the end of a block is dropped, as ProseMirror does.
+
+**Figures.**
+- **In the view:** a figure is one U+FFFC too, so the caret sits before or after it, and its attributes and caption come with it. It can be inserted (Ctrl+Alt+M Mermaid, Ctrl+Alt+I infographic, Ctrl+Alt+P or the toolbar for an image, a pasted screenshot) and edited (caption, source, width 50/75/100, align) as single undo steps. Values the TS schema does not allow are refused.
+- **Images are assets**, as in `assets.ts`:
+  - Bytes are sniffed: PNG, JPEG, GIF, WebP or SVG.
+  - Named `asset:<sha256>`, and held to 2 MB an image and 25 MB a document.
+  - The store writes new bytes to disk before the journal points at them, so a crash never loses an image. Unreferenced bytes drop out at the next save.
+- **Markdown and HTML:**
+  - Markdown writes and reads figures as the Tiptap app does: fences with `caption="…"`, and `![alt](src "caption")`.
+  - Export inlines images as data URIs. Import picks up `assets/<hash>.<ext>` beside the file.
+  - HTML copy writes Tiptap's figure markup with the bytes inline. Paste reads it back, plus bare `data:` images from other apps.
+- **Drawing:** in Flutter each figure is a `WidgetSpan` holding a card.
+  - Images come from the document's bytes.
+  - SVG images and Mermaid diagrams are drawn by the core on a background isolate and cached by content and scale.
+  - Infographics show their source: AntV's runtime is JavaScript, so a native renderer is still to come.
+  - A selected figure shows a bar for caption, source, width and align.
+
+**Mermaid renderer, chosen by trial.** Ten diagram types, each rendered to SVG and then to PNG with `resvg`:
+
+| | `mermaid-rs-renderer` 0.3.1 | `merman` 0.9.2 |
+| --- | --- | --- |
+| Legible through `resvg` | all 10 (flowchart, graph, sequence, class, state, ER, gantt, pie, mindmap, timeline) | labels missing by default (HTML `foreignObject` labels). With `htmlLabels: false` most show, but mindmap text is still missing and state labels are misplaced. |
+| Faithful to mermaid.js | close; drops a labelled chained edge (`A -->|No| B --> A`) | closer (edges and ER cardinalities right) |
+| Time per diagram | 0.2–6 ms (28 ms the first, fonts loading) | 0.4–5 ms |
+| SVG size | 3–6 KB | 4–36 KB |
+| Binary cost (LTO, opt-level s) | +3.5 MB | +18 MB |
+
+`mermaid-rs-renderer` it is, behind the core's default `render` feature. Its light theme stands in for the TS app's `neutral`.
+
+**Cost:**
+
+| | Before Phase 3 | After |
+| --- | --- | --- |
+| Rust core (`libcollabdoc_ffi.so`) | 5.4 MB | 12.7 MB: Mermaid ≈ 3 MB; `resvg` text, raster and image decoding ≈ 2.5 MB; unwind tables 0.6 MB |
+| Single file (`scripts/flutter-onefile.sh`) | 10.9 MB | 13.5 MB |
+| Memory, 50-page text document (software renderer) | 139 MB PSS | 141 MB PSS |
+| Memory, the figures demo (two diagrams, PNG, SVG, infographic) | — | 140 MB PSS |
+
+The release profile now unwinds panics instead of aborting, so a panic in the Mermaid parser reports the diagram as unreadable instead of closing the app.
+
+**Fixed along the way:**
+- An image alone on its Markdown line left an empty paragraph before it.
+- A figure inserted while the caret was on another figure did nothing; it now goes after it.
+- The fuzzer found that pasting an empty quoted line (a quote with no line in it) changed the tree without refreshing the view. Leafless containers are no longer pasted, and the HTML and Markdown readers prune them.
+
+**Parity, both ways (spec 23's bar: "figures from the TS fixtures render; images round-trip"):**
+- `from-ts.collabdoc`, written by the TS core (`ts-compat.ts write`), now also holds a mention, a hard break and an image figure with its bytes. The Rust core reads them, draws the diagram, finds the image bytes, and edits around the chip.
+- `from-rust.collabdoc`, made by Rust editor commands, now also holds a mention, a hard break, an image at 50 % right-aligned with a caption and its bytes, an infographic, and a captioned diagram.
+  - `rust-parity.test.ts` loads it into the real Tiptap schema (with the mention node) and checks each one. The TS file reader decodes the image bytes.
+- With `COLLABDOC_TS_COMPAT=1`, the TS core reads what Rust wrote and its plain text (`blockPlainText`) matches.
+
+**Tests:**
+- Core: 138 tests, including 7 inline and 10 figure tests. The fuzzer now also inserts hard breaks, chips, figures and images, and copies HTML (1000 seeds).
+- Bridge: 12. Launcher: 5.
+- Flutter: 27 widget tests, 4 of them new: Shift+Enter and the `@` picker; a natively drawn diagram edited from its bar; Insert image and a refused file; a pasted screenshot.
+- Vitest parity: 7.
+- `scripts/flutter-figures.sh` drives all of it in the real app and dumps the saved draft.
+
+**Not yet:**
+- **Infographics** are shown as source.
+- **Images inside lists and quotes:** inserting or pasting figures there types the text instead (blocks go in at the top level only, as before).
+- **Mentions** pick from the people in this window; the roster with agents comes with spec 23's Phase 6.
+- **Clipboard on other platforms:** the image and HTML clipboard is the GTK runner's; Windows and macOS paste plain text.
+- **GPUI** (`collabdoc-gpui`, this branch) still paints a block's text, so a figure shows as the U+FFFC glyph there.
 
 ## Single file and lower memory with Flutter (measured 2026-10-24)
 
