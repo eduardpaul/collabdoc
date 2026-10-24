@@ -8,6 +8,7 @@ import 'dart:io';
 
 import 'package:collabdoc/editor.dart';
 import 'package:collabdoc/main.dart';
+import 'package:collabdoc/model.dart';
 import 'package:collabdoc/settings.dart';
 import 'package:collabdoc/workspace.dart';
 import 'package:flutter/foundation.dart';
@@ -430,5 +431,36 @@ void main() {
     );
     expect(find.text('Renderer: Software'), findsOneWidget);
     expect(ws.status, 'Renderer: Software from the next start');
+  });
+
+  testWidgets('Ctrl+Shift+B quotes; Enter on an empty quoted line leaves', (
+    tester,
+  ) async {
+    await launch(tester);
+    final pane = tester.state<EditorPaneState>(find.byType(EditorPane));
+    type(pane, 'one');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    type(pane, 'two');
+    await tester.pump();
+    await chord(tester, [
+      LogicalKeyboardKey.controlLeft,
+    ], LogicalKeyboardKey.keyA);
+    await chord(tester, [
+      LogicalKeyboardKey.controlLeft,
+      LogicalKeyboardKey.shiftLeft,
+    ], LogicalKeyboardKey.keyB);
+    List<int> depths() => [for (final b in pane.view.blocks) b.quoteDepth];
+    expect(depths(), [1, 1]);
+    expect(pane.view.marks & Marks.bold, 0, reason: 'not bold');
+
+    await chord(tester, [
+      LogicalKeyboardKey.controlLeft,
+    ], LogicalKeyboardKey.end);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    type(pane, 'after');
+    await tester.pump();
+    expect(texts(pane), ['one', 'two', 'after']);
+    expect(depths(), [1, 1, 0]);
   });
 }

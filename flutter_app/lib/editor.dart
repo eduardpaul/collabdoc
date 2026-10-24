@@ -315,6 +315,11 @@ class EditorPaneState extends State<EditorPane>
         op('toggleList', {'kind': list});
         return KeyEventResult.handled;
       }
+      // Ctrl+Shift+B: quote (Tiptap's shortcut).
+      if (event.logicalKey == LogicalKeyboardKey.keyB) {
+        op('toggleQuote');
+        return KeyEventResult.handled;
+      }
     }
 
     final Map<LogicalKeyboardKey, void Function()> table;
@@ -1083,7 +1088,9 @@ class EditorPaneState extends State<EditorPane>
 
   Widget _toolbar() {
     bool on(int bit) => view.marks & bit != 0;
-    final listHere = view.blocks[view.blockAt(view.head)].list;
+    final here = view.blocks[view.blockAt(view.head)];
+    final listHere = here.list;
+    final quoteHere = here.quoteDepth > 0;
     void op(String name, [Map<String, Object?> args = const {}]) =>
         run({'op': name, ...args});
     final sep = Container(
@@ -1179,6 +1186,7 @@ class EditorPaneState extends State<EditorPane>
                     listHere == 'task',
                     () => op('toggleList', {'kind': 'task'}),
                   ),
+                  _tool('Quote', quoteHere, () => op('toggleQuote')),
                   sep,
                   _tool('Undo', false, () => op('undo')),
                   _tool('Redo', false, () => op('redo')),

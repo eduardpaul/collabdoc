@@ -194,6 +194,7 @@ impl Session {
             }
             "indent" => e.indent(),
             "outdent" => e.outdent(),
+            "toggleQuote" => e.toggle_quote(),
             "toggleTask" => e.toggle_task(n("block")),
             "select" => {
                 e.set_selection(n("anchor"), n("head"));

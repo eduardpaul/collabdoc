@@ -327,6 +327,15 @@ impl Editor {
         if self.anchor == self.head {
             let (index, local) = self.locate(self.head);
             let block = &self.blocks[index];
+            // An empty quoted line leaves the quote (lists decide first).
+            if block.list.is_none()
+                && block.quote_depth > 0
+                && block.text.is_empty()
+                && block.kind != BlockKind::Atom
+            {
+                let id = stable_id(block);
+                return self.structural(|doc, _| doc.lift_quote(&id, false));
+            }
             if block.list.is_some() && block.editable {
                 if block.text.is_empty() {
                     return self.outdent();
@@ -346,13 +355,22 @@ impl Editor {
     }
 
     /// Backspace. At the very start of a list line it lifts the line out one
-    /// level instead of joining it to the line above.
+    /// level instead of joining it to the line above; at the start of a quote
+    /// it takes the line out of the quote.
     pub fn backspace(&mut self) -> bool {
         let mut range = self.selection();
         if range.is_empty() {
             let (index, local) = self.locate(range.start);
-            if local == 0 && self.blocks[index].list.is_some() && self.blocks[index].editable {
+            let block = &self.blocks[index];
+            if local == 0 && block.list.is_some() && block.editable {
                 return self.outdent();
+            }
+            // At the start of a quote, Backspace lifts the line out of it.
+            if local == 0 && block.list.is_none() && block.quote_depth > 0 && block.editable {
+                let id = stable_id(block);
+                if self.structural(|doc, _| doc.lift_quote(&id, true)) {
+                    return true;
+                }
             }
             range.start = self.previous_boundary(range.start);
         }
@@ -725,6 +743,11 @@ impl Editor {
     /// Bullet, numbered or task list on or off for the selected blocks.
     pub fn toggle_list(&mut self, kind: ListKind) -> bool {
         self.structural(|doc, ids| doc.toggle_list(ids, kind))
+    }
+
+    /// Quote on or off for the selected blocks (Ctrl+Shift+B).
+    pub fn toggle_quote(&mut self) -> bool {
+        self.structural(|doc, ids| doc.toggle_quote(ids))
     }
 
     /// Tab in a list: the selected items become children of the item above.

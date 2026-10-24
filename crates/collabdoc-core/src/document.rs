@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use loro::{
-    CommitOptions, ContainerTrait, ExportMode, Frontiers, LoroDoc, LoroText, LoroValue,
+    CommitOptions, ContainerTrait, ExportMode, Frontiers, LoroDoc, LoroMap, LoroText, LoroValue,
     UndoManager, VersionVector,
 };
 
@@ -416,6 +416,82 @@ impl Document {
         })
     }
 
+    /// Quote on or off for the blocks `ids`, like Tiptap's
+    /// `toggleBlockquote`: if they are all quoted they leave their innermost
+    /// quote, otherwise the unquoted ones are wrapped (a block in a list
+    /// brings the whole list, since an item cannot start with a quote).
+    pub fn toggle_quote(&mut self, ids: &[String]) -> bool {
+        let flat = tree::flatten(&self.doc);
+        let chosen: Vec<(String, u8)> = ids
+            .iter()
+            .filter_map(|id| flat.iter().find(|(_, v)| v.block_id == *id || v.key == *id))
+            .map(|(_, v)| (stable_view_id(v), v.quote_depth))
+            .collect();
+        if chosen.is_empty() {
+            return false;
+        }
+        if chosen.iter().all(|(_, depth)| *depth > 0) {
+            return self.structural("leave quote", |doc| {
+                let mut changed = false;
+                for (id, depth) in &chosen {
+                    // A list lifted with an earlier line already took this one.
+                    if let Some(located) = structure::find(doc, id)
+                        && tree::located_view(&located).quote_depth == *depth
+                    {
+                        changed |= structure::lift_out_of_quote(&located);
+                    }
+                }
+                changed
+            });
+        }
+        self.structural("quote", |doc| {
+            // What to wrap for each block, deduplicated, in reading order.
+            let mut units: Vec<(LoroMap, LoroMap)> = Vec::new();
+            for (id, depth) in &chosen {
+                if *depth > 0 {
+                    continue;
+                }
+                let Some(located) = structure::find(doc, id) else {
+                    continue;
+                };
+                let unit = quote_unit(&located);
+                if !units.iter().any(|(node, _)| node.id() == unit.0.id()) {
+                    units.push(unit);
+                }
+            }
+            // Runs of neighbouring siblings become one quote each.
+            let mut changed = false;
+            let mut i = 0;
+            while i < units.len() {
+                let parent = units[i].1.clone();
+                let mut run = vec![units[i].0.clone()];
+                while let Some((next, next_parent)) = units.get(i + run.len()) {
+                    let adjacent = tree::index_in(&parent, run.last().unwrap())
+                        .zip(tree::index_in(&parent, next))
+                        .is_some_and(|(a, b)| b == a + 1);
+                    if next_parent.id() != parent.id() || !adjacent {
+                        break;
+                    }
+                    run.push(next.clone());
+                }
+                i += run.len();
+                changed |= structure::wrap_in_quote(&parent, &run);
+            }
+            changed
+        })
+    }
+
+    /// Takes line `id` out of its innermost quote (Enter on an empty quoted
+    /// line; Backspace at the start of a quote, with `only_first`).
+    pub fn lift_quote(&mut self, id: &str, only_first: bool) -> bool {
+        self.structural("leave quote", |doc| {
+            structure::find(doc, id).is_some_and(|located| {
+                (!only_first || structure::starts_quote(&located))
+                    && structure::lift_out_of_quote(&located)
+            })
+        })
+    }
+
     pub fn indent(&mut self, ids: &[String]) -> bool {
         let ids = ids.to_vec();
         self.structural("indent", |doc| {
@@ -520,6 +596,7 @@ impl Document {
         self.last_edit = None;
         let done = self.undo.undo().unwrap_or(false);
         self.doc.commit();
+        self.tidy();
         done
     }
 
@@ -528,6 +605,7 @@ impl Document {
         self.last_edit = None;
         let done = self.undo.redo().unwrap_or(false);
         self.doc.commit();
+        self.tidy();
         done
     }
 
@@ -558,8 +636,14 @@ impl Document {
         self.doc
             .import(bytes)
             .map_err(|e| DocError::Loro(e.to_string()))?;
-        // Merged concurrent edits can leave empty containers; tidy them as
-        // bookkeeping (never an undo step).
+        self.tidy();
+        Ok(self.doc.oplog_vv() != before)
+    }
+
+    /// Merged concurrent edits, and undoing one's own edit after them, can
+    /// leave empty containers, duplicate ids or no block at all; tidy them as
+    /// bookkeeping (never an undo step).
+    fn tidy(&mut self) {
         if structure::normalize(&self.doc) {
             self.doc.commit_with(
                 CommitOptions::new()
@@ -567,7 +651,6 @@ impl Document {
                     .timestamp(now_ms()),
             );
         }
-        Ok(self.doc.oplog_vv() != before)
     }
 }
 
@@ -872,4 +955,30 @@ fn insert_after(doc: &LoroDoc, prev: Option<&Located>, kind: BlockKind) -> Locat
     let mut ancestors = prev.ancestors[..prev.ancestors.len() - 1].to_vec();
     ancestors.push(item);
     Located { node, ancestors }
+}
+
+/// A block's `blockId`, or its view key in files that lack ids.
+fn stable_view_id(view: &ViewBlock) -> String {
+    if view.block_id.is_empty() {
+        view.key.clone()
+    } else {
+        view.block_id.clone()
+    }
+}
+
+/// `(node, parent)` to wrap in a quote for `located`: the block, or the
+/// outermost list around it.
+fn quote_unit(located: &Located) -> (LoroMap, LoroMap) {
+    let a = &located.ancestors;
+    let mut unit = (located.node.clone(), located.parent().clone());
+    for i in (1..a.len()).rev() {
+        let name = tree::node_name(&a[i]);
+        if !is_list_type(&name) && !is_item_type(&name) {
+            break;
+        }
+        if is_list_type(&name) {
+            unit = (a[i].clone(), a[i - 1].clone());
+        }
+    }
+    unit
 }

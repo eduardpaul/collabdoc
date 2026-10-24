@@ -79,7 +79,7 @@ fn check_shape(doc: &Document) -> Result<(), String> {
 
 fn step(e: &mut Editor, rng: &mut Rng) {
     let len = e.len();
-    let op = rng.below(18);
+    let op = rng.below(19);
     if std::env::var("FUZZ_TRACE").is_ok() {
         eprintln!(
             "op {op} sel {:?} blocks {:?}",
@@ -148,6 +148,9 @@ fn step(e: &mut Editor, rng: &mut Rng) {
         15 => {
             let block = rng.below(e.blocks().len());
             e.toggle_task(block);
+        }
+        17 => {
+            e.toggle_quote();
         }
         16 => {
             // Copy and paste back what is selected, as Markdown.

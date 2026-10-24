@@ -7,7 +7,7 @@
 //! does for the same ProseMirror commands. Blocks are found again by
 //! `blockId`, which survives the copy; their view keys do not.
 
-use loro::{LoroList, LoroMap, LoroText, LoroValue, TextDelta, ValueOrContainer};
+use loro::{ContainerTrait, LoroList, LoroMap, LoroText, LoroValue, TextDelta, ValueOrContainer};
 
 use crate::ids::new_block_id;
 use crate::model::{BlockKind, ListKind};
@@ -359,6 +359,77 @@ pub fn wrap_in_list(blocks: &[Located], kind: ListKind) -> bool {
         tree::set_kind(&moved, BlockKind::Paragraph);
     }
     true
+}
+
+/// The innermost blockquote around `located`: `(quote, its parent, the
+/// quote's child that holds the block)`.
+fn quote_context(located: &Located) -> Option<(LoroMap, LoroMap, LoroMap)> {
+    let a = &located.ancestors;
+    let i = a.iter().rposition(|n| tree::node_name(n) == "blockquote")?;
+    let child = a.get(i + 1).unwrap_or(&located.node).clone();
+    Some((a[i].clone(), a[i - 1].clone(), child))
+}
+
+/// Whether `located` is the first thing in its innermost blockquote.
+pub fn starts_quote(located: &Located) -> bool {
+    quote_context(located).is_some_and(|(quote, _, child)| {
+        tree::index_in(&quote, &child) == Some(0)
+            && (child.id() == located.node.id() || !is_list_type(&tree::node_name(&child)))
+    })
+}
+
+/// Lifts the part of the innermost blockquote that holds `located` out of it,
+/// like ProseMirror's `lift`: what came before stays quoted, what came after
+/// goes into a new blockquote after it, so reading order never changes.
+pub fn lift_out_of_quote(located: &Located) -> bool {
+    let Some((quote, parent, child)) = quote_context(located) else {
+        return false;
+    };
+    let (Some(index), Some(at)) = (
+        tree::index_in(&quote, &child),
+        tree::index_in(&parent, &quote),
+    ) else {
+        return false;
+    };
+    let trailing: Vec<LoroMap> = (index + 1..tree::children(&quote).len())
+        .filter_map(|i| child_at(&quote, i))
+        .collect();
+    move_node(&child, &quote, &parent, at + 1);
+    if !trailing.is_empty() {
+        let rest = new_quote(&parent, at + 2);
+        for t in &trailing {
+            let end = tree::children(&rest).len();
+            move_node(t, &quote, &rest, end);
+        }
+    }
+    remove_if_empty(&quote, &parent);
+    true
+}
+
+/// Wraps sibling nodes (in order, one parent, adjacent) in a new blockquote.
+pub fn wrap_in_quote(parent: &LoroMap, nodes: &[LoroMap]) -> bool {
+    let Some(first) = nodes.first().and_then(|n| tree::index_in(parent, n)) else {
+        return false;
+    };
+    let quote = new_quote(parent, first);
+    for node in nodes {
+        let end = tree::children(&quote).len();
+        move_node(node, parent, &quote, end);
+    }
+    true
+}
+
+/// An empty blockquote with a `blockId` (lists have none, as in TS).
+fn new_quote(parent: &LoroMap, index: usize) -> LoroMap {
+    let node = tree::children(parent)
+        .insert_container(index, LoroMap::new())
+        .expect("blockquote");
+    node.insert(NODE_NAME_KEY, "blockquote").expect("nodeName");
+    tree::attrs(&node)
+        .insert(BLOCK_ID_ATTR, new_block_id())
+        .expect("blockId");
+    tree::children(&node);
+    node
 }
 
 /// Ticks or unticks the task item holding `located`.
