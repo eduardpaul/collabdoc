@@ -12,6 +12,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:super_sliver_list/super_sliver_list.dart';
 
 import 'model.dart';
 import 'native.dart';
@@ -39,6 +40,7 @@ class EditorPaneState extends State<EditorPane>
   late ViewState view;
   final FocusNode focus = FocusNode(debugLabel: 'editor');
   final ScrollController scroll = ScrollController();
+  final ListController list = ListController();
   List<GlobalKey> _keys = [];
 
   TextInputConnection? _input;
@@ -87,6 +89,7 @@ class EditorPaneState extends State<EditorPane>
     _input?.close();
     focus.dispose();
     scroll.dispose();
+    list.dispose();
     super.dispose();
   }
 
@@ -121,7 +124,13 @@ class EditorPaneState extends State<EditorPane>
     final i = view.blockAt(view.head);
     if (i >= _keys.length) return;
     final context = _keys[i].currentContext;
-    if (context == null) return;
+    if (context == null) {
+      // Not built (far off screen): bring its item into view first.
+      if (list.isAttached) {
+        list.jumpToItem(index: i + 1, scrollController: scroll, alignment: 0.5);
+      }
+      return;
+    }
     Scrollable.ensureVisible(
       context,
       duration: Duration.zero,
@@ -353,7 +362,16 @@ class EditorPaneState extends State<EditorPane>
     } else {
       target = _offsetAt(Offset(x, y), up: !down);
     }
-    _select(extend ? view.anchor : target, target);
+    // The next line may be in a block that is not built (off screen): step
+    // to that block's edge instead of standing still.
+    final i = view.blockAt(view.head);
+    var to = target;
+    if (down && to <= view.head && i + 1 < view.blocks.length) {
+      to = view.starts[i + 1];
+    } else if (!down && to >= view.head && i > 0) {
+      to = view.starts[i - 1] + view.blocks[i - 1].text.length;
+    }
+    _select(extend ? view.anchor : to, to);
     _goalX = x;
   }
 
@@ -809,6 +827,17 @@ class EditorPaneState extends State<EditorPane>
     };
   }
 
+  /// Centres page content at reading width.
+  Widget _page(Widget child) => Center(
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 760),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: child,
+      ),
+    ),
+  );
+
   Widget _tool(String label, bool active, VoidCallback onTap) {
     return _ToolButton(
       label: label,
@@ -985,16 +1014,15 @@ class EditorPaneState extends State<EditorPane>
     }
     // Ordered-list numbering per depth, restarting after other content.
     final counters = <int>[];
-    final rows = <Widget>[];
-    for (var i = 0; i < view.blocks.length; i++) {
-      final b = view.blocks[i];
+    final numbers = <int?>[];
+    for (final b in view.blocks) {
       final depth = b.listDepth;
       if (counters.length > depth) counters.removeRange(depth, counters.length);
       while (counters.length < depth) {
         counters.add(0);
       }
       if (depth > 0) counters[depth - 1]++;
-      rows.add(_block(i, b, depth > 0 ? counters[depth - 1] : null));
+      numbers.add(depth > 0 ? counters[depth - 1] : null);
     }
     final title = view.title.isEmpty ? 'Untitled' : view.title;
     return Focus(
@@ -1014,33 +1042,36 @@ class EditorPaneState extends State<EditorPane>
                   onPointerDown: _pointerDown,
                   onPointerMove: _pointerMove,
                   onPointerUp: (_) => _selecting = false,
-                  child: SingleChildScrollView(
+                  // Only blocks near the viewport are built and laid out:
+                  // item 0 is the title, then one item per block, then room
+                  // to scroll past the end.
+                  child: SuperListView.builder(
                     controller: scroll,
-                    child: Center(
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 760),
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(32, 24, 32, 240),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 8),
-                                child: Text(
-                                  title,
-                                  style: const TextStyle(
-                                    fontFamily: uiFont,
-                                    fontSize: 12,
-                                    color: AppColors.muted,
-                                  ),
-                                ),
+                    listController: list,
+                    cacheExtent: 800,
+                    itemCount: view.blocks.length + 2,
+                    itemBuilder: (context, index) {
+                      if (index == 0) {
+                        return _page(
+                          Padding(
+                            padding: const EdgeInsets.only(top: 24, bottom: 8),
+                            child: Text(
+                              title,
+                              style: const TextStyle(
+                                fontFamily: uiFont,
+                                fontSize: 12,
+                                color: AppColors.muted,
                               ),
-                              ...rows,
-                            ],
+                            ),
                           ),
-                        ),
-                      ),
-                    ),
+                        );
+                      }
+                      if (index > view.blocks.length) {
+                        return const SizedBox(height: 240);
+                      }
+                      final i = index - 1;
+                      return _page(_block(i, view.blocks[i], numbers[i]));
+                    },
                   ),
                 ),
               ),
