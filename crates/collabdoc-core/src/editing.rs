@@ -263,8 +263,8 @@ impl Editor {
         let local8 = utf16::to_utf8(text, local);
         let start8 = text
             .split_word_bound_indices()
-            .filter(|(i, w)| *i < local8 && is_word(w))
-            .last()
+            .rev()
+            .find(|(i, w)| *i < local8 && is_word(w))
             .map_or(0, |(i, _)| i);
         self.starts[index] + utf16::from_utf8(text, start8)
     }
