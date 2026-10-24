@@ -109,7 +109,9 @@ fn a_replacement_keeps_a_link_and_drops_partial_marks() {
 #[test]
 fn ranges_that_do_not_fit_change_nothing() {
     let mut e = editor_with("abc\ndef");
-    assert!(!e.replace_matches(&[2..5], "x"), "across a block break");
-    assert!(!e.replace_matches(&[10..12], "x"), "past the end");
+    let across_a_break = 2..5;
+    let past_the_end = 10..12;
+    assert!(!e.replace_matches(&[across_a_break], "x"));
+    assert!(!e.replace_matches(&[past_the_end], "x"));
     assert_eq!(texts(&e), ["abc", "def"]);
 }
