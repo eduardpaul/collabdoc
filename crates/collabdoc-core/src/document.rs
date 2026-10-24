@@ -7,16 +7,19 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use loro::{
-    CommitOptions, ContainerTrait, ExportMode, Frontiers, LoroDoc, LoroMap, LoroText, LoroValue,
-    UndoManager, VersionVector,
+    CommitOptions, ContainerTrait, ExportMode, Frontiers, LoroDoc, LoroList, LoroMap, LoroText,
+    LoroValue, UndoManager, VersionVector,
 };
 
 use crate::file::{self, Asset, FileError};
 use crate::ids::new_doc_id;
-use crate::model::{BlockKind, ListKind, Span, TargetBlock, ViewBlock, masks};
+use crate::model::{
+    BlockKind, INLINE_UNIT, InlineNode, ListKind, Span, TargetBlock, ViewBlock, masks,
+    spans_from_masks,
+};
 use crate::schema::*;
 use crate::structure;
-use crate::tree::{self, Located};
+use crate::tree::{self, Located, Segment};
 use crate::utf16;
 
 #[derive(Debug, thiserror::Error)]
@@ -186,21 +189,49 @@ impl Document {
         self.commit_boundary(&format!("rename to “{title}”"));
     }
 
-    /// The editable text of the block with view key `key`.
-    pub fn text_of(&self, key: &str) -> Option<LoroText> {
-        self.flat()
+    /// A Loro cursor at UTF-16 offset `local` of the block with view key
+    /// `key`: on the text run there (`None` beside an inline node with no
+    /// text around it, or in a figure).
+    pub fn cursor_at(&self, key: &str, local: usize) -> Option<loro::cursor::Cursor> {
+        let flat = self.flat();
+        let (located, _) = flat
             .iter()
-            .find(|(_, view)| view.key == key && view.editable)
-            .and_then(|(located, _)| tree::sole_text(&located.node).flatten())
+            .find(|(_, view)| view.key == key && view.editable)?;
+        let segments = tree::segments(&located.node);
+        let texts = || {
+            segments.iter().filter_map(|p| match &p.segment {
+                Segment::Text(t) => Some((p, t)),
+                Segment::Inline(_) => None,
+            })
+        };
+        let (placed, text) = texts()
+            .find(|(p, _)| p.start <= local && local < p.start + p.len)
+            .or_else(|| texts().find(|(p, _)| p.start <= local && local <= p.start + p.len))?;
+        let s = text.to_string();
+        let chars = s[..utf16::to_utf8(&s, local - placed.start)]
+            .chars()
+            .count();
+        text.get_cursor(chars, loro::cursor::Side::Middle)
     }
 
-    /// The index of the block whose text is `text`.
-    pub fn block_with_text(&self, text: &loro::ContainerID) -> Option<usize> {
-        self.flat().iter().position(|(located, view)| {
-            view.editable
-                && tree::sole_text(&located.node)
-                    .flatten()
-                    .is_some_and(|t| &t.id() == text)
+    /// Where char position `pos` of the text container `text` is in the
+    /// view: `(block index, UTF-16 offset in the block)`.
+    pub fn offset_in_text(&self, text: &loro::ContainerID, pos: usize) -> Option<(usize, usize)> {
+        let flat = self.flat();
+        flat.iter().enumerate().find_map(|(i, (located, view))| {
+            if !view.editable {
+                return None;
+            }
+            tree::segments(&located.node)
+                .into_iter()
+                .find_map(|p| match p.segment {
+                    Segment::Text(t) if &t.id() == text => {
+                        let s = t.to_string();
+                        let units = utf16::len(&s.chars().take(pos).collect::<String>());
+                        Some((i, p.start + units))
+                    }
+                    _ => None,
+                })
         })
     }
 
@@ -327,7 +358,7 @@ impl Document {
                         prev.as_ref(),
                         t.kind.unwrap_or(BlockKind::Paragraph),
                     );
-                    write_text(&tree::ensure_text(&located.node), &t.text, &t.spans);
+                    write_content(&located.node, t);
                     flat.push((located.clone(), tree::located_view(&located)));
                     prev = Some(located);
                 }
@@ -839,9 +870,10 @@ fn first_change(
 }
 
 fn block_differs(view: &ViewBlock, t: &TargetBlock) -> bool {
-    let len = utf16::len(&t.text);
-    view.text != t.text
-        || view.spans != crate::model::normalize_spans(len, &t.spans)
+    let (text, spans, inlines) = clean_target(t);
+    view.text != text
+        || view.spans != spans
+        || !same_inlines(&view.inlines, &inlines)
         || t.kind
             .is_some_and(|k| k != view.kind && kind_allowed(view, k))
 }
@@ -863,7 +895,7 @@ fn update_block(located: &Located, view: &ViewBlock, t: &TargetBlock) {
     {
         tree::set_kind(&located.node, kind);
     }
-    write_text(&tree::ensure_text(&located.node), &t.text, &t.spans);
+    write_content(&located.node, t);
 }
 
 /// Makes `text` read `target` with `spans`, touching only what differs.
@@ -881,9 +913,15 @@ fn write_text(text: &LoroText, target: &str, spans: &[Span]) {
             .expect("insert text");
     }
 
-    let len = new.len();
+    let (want, want_href) = masks(new.len(), spans);
+    apply_marks(text, &want, &want_href);
+}
+
+/// Marks `text` (already holding the right characters) as `want` says, one
+/// mask (and link href) per UTF-16 unit.
+fn apply_marks(text: &LoroText, want: &[u32], want_href: &[Option<String>]) {
+    let len = want.len();
     let (have, have_href) = masks(len, &tree::text_spans(text));
-    let (want, want_href) = masks(len, spans);
     for (bit_index, name) in MARKS.iter().enumerate() {
         let bit = 1u32 << bit_index;
         let mut i = 0;
@@ -912,6 +950,214 @@ fn write_text(text: &LoroText, target: &str, spans: &[Span]) {
                 text.unmark_utf16(start..i, name).expect("unmark");
             }
         }
+    }
+}
+
+/// A target's text, spans and inline nodes as a block would store them:
+/// placeholders without a node dropped, no marks on inline nodes.
+fn clean_target(t: &TargetBlock) -> (String, Vec<Span>, Vec<InlineNode>) {
+    let units = utf16::units(&t.text);
+    let has_placeholder = units.contains(&INLINE_UNIT);
+    if !has_placeholder && t.inlines.is_empty() {
+        return (
+            t.text.clone(),
+            crate::model::normalize_spans(units.len(), &t.spans),
+            vec![],
+        );
+    }
+    let (marks, hrefs) = masks(units.len(), &t.spans);
+    let mut text = Vec::with_capacity(units.len());
+    let (mut m, mut h) = (Vec::new(), Vec::new());
+    let mut inlines = Vec::new();
+    for (i, &u) in units.iter().enumerate() {
+        if u == INLINE_UNIT {
+            let Some(node) = t.inlines.iter().find(|n| n.at as usize == i) else {
+                continue;
+            };
+            inlines.push(InlineNode {
+                at: text.len() as u32,
+                ..node.clone()
+            });
+            text.push(u);
+            m.push(0);
+            h.push(None);
+            continue;
+        }
+        text.push(u);
+        m.push(marks[i]);
+        h.push(hrefs[i].clone());
+    }
+    (
+        String::from_utf16_lossy(&text),
+        spans_from_masks(&m, &h),
+        inlines,
+    )
+}
+
+fn same_inlines(a: &[InlineNode], b: &[InlineNode]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| x.at == y.at && x.name == y.name && x.attrs == y.attrs)
+}
+
+/// Makes a textblock read `t`: its text runs and inline nodes (the children
+/// `loro-prosemirror` keeps: text, then a node map, then text…), touching
+/// only what differs.
+fn write_content(node: &LoroMap, t: &TargetBlock) {
+    let (target, spans, inlines) = clean_target(t);
+    let segments = tree::segments(node);
+    let mixed = segments
+        .iter()
+        .any(|p| matches!(p.segment, Segment::Inline(_)));
+    if !mixed && inlines.is_empty() {
+        write_text(&tree::ensure_text(node), &target, &spans);
+        return;
+    }
+    let (old_text, _, old_inlines) = tree::content(node);
+    let old = utf16::units(&old_text);
+    let new = utf16::units(&target);
+    let (mut p, mut s) = utf16::common_affixes(&old, &new);
+    // A kept placeholder must stay the same kind of node.
+    let name_at = |list: &[InlineNode], at: usize| {
+        list.iter()
+            .find(|n| n.at as usize == at)
+            .map(|n| n.name.clone())
+    };
+    if let Some(i) = (0..p).find(|&i| name_at(&old_inlines, i) != name_at(&inlines, i)) {
+        p = i;
+    }
+    if let Some(k) = (0..s)
+        .find(|&k| name_at(&old_inlines, old.len() - 1 - k) != name_at(&inlines, new.len() - 1 - k))
+    {
+        s = k;
+    }
+    delete_content(node, p..old.len() - s);
+    let mut i = p;
+    while i < new.len() - s {
+        if new[i] == INLINE_UNIT {
+            let n = inlines
+                .iter()
+                .find(|n| n.at as usize == i)
+                .expect("clean placeholders have nodes");
+            insert_inline(node, i, n);
+            i += 1;
+        } else {
+            let mut j = i;
+            while j < new.len() - s && new[j] != INLINE_UNIT {
+                j += 1;
+            }
+            insert_content_text(node, i, &String::from_utf16_lossy(&new[i..j]));
+            i = j;
+        }
+    }
+    merge_texts(node);
+    let (want, want_href) = masks(new.len(), &spans);
+    for placed in tree::segments(node) {
+        match &placed.segment {
+            Segment::Inline(map) => {
+                if let Some(n) = inlines.iter().find(|n| n.at as usize == placed.start) {
+                    tree::update_inline_attrs(map, n);
+                }
+            }
+            Segment::Text(text) => {
+                let range = placed.start..placed.start + placed.len;
+                apply_marks(text, &want[range.clone()], &want_href[range]);
+            }
+        }
+    }
+}
+
+/// Deletes the UTF-16 `range` of a textblock's content.
+fn delete_content(node: &LoroMap, range: std::ops::Range<usize>) {
+    if range.is_empty() {
+        return;
+    }
+    let list = tree::children(node);
+    for placed in tree::segments(node).iter().rev() {
+        let a = placed.start.max(range.start);
+        let b = (placed.start + placed.len).min(range.end);
+        if a >= b {
+            continue;
+        }
+        match &placed.segment {
+            Segment::Text(t) => t
+                .delete_utf16(a - placed.start, b - a)
+                .expect("delete text"),
+            Segment::Inline(_) => list.delete(placed.index, 1).expect("delete inline node"),
+        }
+    }
+}
+
+/// Where new content at `at` goes in the children list: before the first
+/// child that starts at or after it.
+fn child_index_at(segments: &[tree::Placed], at: usize, list: &LoroList) -> usize {
+    segments
+        .iter()
+        .find(|p| p.start >= at)
+        .map_or(list.len(), |p| p.index)
+}
+
+fn insert_content_text(node: &LoroMap, at: usize, text: &str) {
+    let segments = tree::segments(node);
+    let found = segments.iter().find_map(|p| match &p.segment {
+        Segment::Text(t) if p.start <= at && at <= p.start + p.len => Some((p.start, t.clone())),
+        _ => None,
+    });
+    if let Some((start, t)) = found {
+        t.insert_utf16(at - start, text).expect("insert text");
+        return;
+    }
+    let list = tree::children(node);
+    let index = child_index_at(&segments, at, &list);
+    let t = list
+        .insert_container(index, LoroText::new())
+        .expect("insert text run");
+    t.insert_utf16(0, text).expect("insert text");
+}
+
+fn insert_inline(node: &LoroMap, at: usize, inline: &InlineNode) {
+    let segments = tree::segments(node);
+    let list = tree::children(node);
+    // Inside a text run: split it around the node.
+    let inside = segments.iter().find_map(|p| match &p.segment {
+        Segment::Text(t) if p.start < at && at < p.start + p.len => Some((p.clone(), t.clone())),
+        _ => None,
+    });
+    if let Some((placed, text)) = inside {
+        let off = at - placed.start;
+        let tail = structure::runs_after(&structure::text_runs(&text), off);
+        text.delete_utf16(off, placed.len - off)
+            .expect("cut text run");
+        let rest = list
+            .insert_container(placed.index + 1, LoroText::new())
+            .expect("insert text run");
+        structure::write_runs(&rest, 0, &tail);
+        tree::create_inline(&list, placed.index + 1, inline);
+        return;
+    }
+    let index = child_index_at(&segments, at, &list);
+    tree::create_inline(&list, index, inline);
+}
+
+/// Joins text runs that ended up side by side (a node between them went).
+fn merge_texts(node: &LoroMap) {
+    let list = tree::children(node);
+    loop {
+        let segments = tree::segments(node);
+        let pair = segments
+            .windows(2)
+            .find_map(|w| match (&w[0].segment, &w[1].segment) {
+                (Segment::Text(a), Segment::Text(b)) if w[1].index == w[0].index + 1 => {
+                    Some((a.clone(), b.clone(), w[1].index))
+                }
+                _ => None,
+            });
+        let Some((a, b, index)) = pair else {
+            return;
+        };
+        structure::write_runs(&a, a.len_unicode(), &structure::text_runs(&b));
+        list.delete(index, 1).expect("delete merged run");
     }
 }
 

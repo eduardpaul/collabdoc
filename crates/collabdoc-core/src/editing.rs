@@ -9,15 +9,17 @@
 
 use std::ops::Range;
 
-use loro::cursor::{Cursor, Side};
+use loro::cursor::Cursor;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::document::Document;
 use crate::html;
 use crate::markdown;
-use crate::model::{BlockKind, ListKind, TargetBlock, ViewBlock, masks, spans_from_masks};
+use crate::model::{
+    BlockKind, INLINE_UNIT, InlineNode, ListKind, TargetBlock, ViewBlock, masks, spans_from_masks,
+};
 use crate::schema::{LINK_BIT, mark_bit};
-use crate::structure::NodeSnap;
+use crate::structure::{ChildSnap, NodeSnap};
 use crate::utf16;
 use loro::LoroValue;
 
@@ -37,18 +39,38 @@ struct Piece {
     units: Vec<u16>,
     marks: Vec<u32>,
     hrefs: Vec<Option<String>>,
+    /// The inline node of each [`INLINE_UNIT`].
+    nodes: Vec<Option<InlineNode>>,
 }
 
 impl Piece {
+    fn empty(kind: BlockKind) -> Self {
+        Self {
+            key: None,
+            kind,
+            units: vec![],
+            marks: vec![],
+            hrefs: vec![],
+            nodes: vec![],
+        }
+    }
+
     fn of(view: &ViewBlock) -> Self {
         let units = utf16::units(&view.text);
         let (marks, hrefs) = masks(units.len(), &view.spans);
+        let mut nodes = vec![None; units.len()];
+        for node in &view.inlines {
+            if let Some(slot) = nodes.get_mut(node.at as usize) {
+                *slot = Some(node.clone());
+            }
+        }
         Self {
             key: Some(view.key.clone()),
             kind: view.kind,
             units,
             marks,
             hrefs,
+            nodes,
         }
     }
 
@@ -58,7 +80,8 @@ impl Piece {
             kind: self.kind,
             units: self.units[range.clone()].to_vec(),
             marks: self.marks[range.clone()].to_vec(),
-            hrefs: self.hrefs[range].to_vec(),
+            hrefs: self.hrefs[range.clone()].to_vec(),
+            nodes: self.nodes[range].to_vec(),
         }
     }
 
@@ -66,10 +89,12 @@ impl Piece {
         self.units.extend_from_slice(&other.units);
         self.marks.extend_from_slice(&other.marks);
         self.hrefs.extend_from_slice(&other.hrefs);
+        self.nodes.extend_from_slice(&other.nodes);
     }
 
+    /// Typed or pasted text; a stray [`INLINE_UNIT`] is not a node, so it goes.
     fn push_text(&mut self, text: &str, marks: u32, href: &Option<String>) {
-        for u in text.encode_utf16() {
+        for u in text.encode_utf16().filter(|&u| u != INLINE_UNIT) {
             self.units.push(u);
             self.marks.push(marks);
             self.hrefs.push(if marks & LINK_BIT != 0 {
@@ -77,15 +102,40 @@ impl Piece {
             } else {
                 None
             });
+            self.nodes.push(None);
+        }
+    }
+
+    fn push_run(&mut self, run: &Run) {
+        match &run.node {
+            Some(node) => {
+                self.units.push(INLINE_UNIT);
+                self.marks.push(0);
+                self.hrefs.push(None);
+                self.nodes.push(Some(node.clone()));
+            }
+            None => self.push_text(&run.text, run.marks, &run.href),
         }
     }
 
     fn target(&self) -> TargetBlock {
+        let inlines = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                n.as_ref().map(|n| InlineNode {
+                    at: i as u32,
+                    ..n.clone()
+                })
+            })
+            .collect();
         TargetBlock {
             key: self.key.clone(),
             kind: Some(self.kind),
             text: String::from_utf16_lossy(&self.units),
             spans: spans_from_masks(&self.marks, &self.hrefs),
+            inlines,
         }
     }
 }
@@ -398,6 +448,37 @@ impl Editor {
         self.blocks[self.locate(self.head).0].kind
     }
 
+    /// Shift+Enter: a hard break in the line (a plain newline in code).
+    pub fn hard_break(&mut self) -> bool {
+        if self.kind_at_cursor() == BlockKind::CodeBlock {
+            return self.insert_text("\n");
+        }
+        self.insert_inline(&[Run::node(InlineNode::hard_break())])
+    }
+
+    /// A mention chip over the selection, then a space (as the `@` picker
+    /// inserts one). `attrs` are the chip's: `kind`, `id`, `handle`, `label`.
+    /// Not in code.
+    pub fn insert_mention(&mut self, attrs: serde_json::Map<String, serde_json::Value>) -> bool {
+        if self.kind_at_cursor() == BlockKind::CodeBlock {
+            return false;
+        }
+        let node = InlineNode {
+            at: 0,
+            name: "mention".into(),
+            attrs,
+        };
+        self.insert_inline(&[Run::node(node), Run::text(" ", 0, None)])
+    }
+
+    fn insert_inline(&mut self, runs: &[Run]) -> bool {
+        let range = self.selection();
+        if !self.blocks[self.locate(range.start).0].editable {
+            return false;
+        }
+        self.replace_with(range, "", Some(runs))
+    }
+
     /// Types `text` over the selection. `\n` starts a new block, except in a
     /// code block, where it is a line break.
     pub fn insert_text(&mut self, text: &str) -> bool {
@@ -488,8 +569,8 @@ impl Editor {
         };
         let changed = self.apply(&targets);
         let inserted = match rich {
-            Some(runs) => runs.iter().map(|(t, _, _)| utf16::len(t)).sum(),
-            None => utf16::len(text),
+            Some(runs) => runs.iter().map(Run::len).sum(),
+            None => text.encode_utf16().filter(|&u| u != INLINE_UNIT).count(),
         };
         let caret = (range.start + inserted).min(self.len());
         self.anchor = caret;
@@ -511,7 +592,7 @@ impl Editor {
     ) -> bool {
         let runs: Vec<Run> = match rich {
             Some(runs) => runs.to_vec(),
-            None => vec![(text.to_owned(), 0, None)],
+            None => vec![Run::text(text, 0, None)],
         };
         let mut lines = split_lines(&runs);
         // The break between the figure and the new line is implied.
@@ -523,15 +604,9 @@ impl Editor {
         let pieces: Vec<TargetBlock> = lines
             .iter()
             .map(|line| {
-                let mut p = Piece {
-                    key: None,
-                    kind: BlockKind::Paragraph,
-                    units: vec![],
-                    marks: vec![],
-                    hrefs: vec![],
-                };
-                for (t, m, h) in line {
-                    p.push_text(t, *m, h);
+                let mut p = Piece::empty(BlockKind::Paragraph);
+                for run in line {
+                    p.push_run(run);
                 }
                 p.target()
             })
@@ -598,7 +673,7 @@ impl Editor {
         let code = head_editable && first.kind == BlockKind::CodeBlock;
         let runs: Vec<Run> = match rich {
             Some(runs) => runs.to_vec(),
-            None => vec![(text.to_owned(), marks, href.clone())],
+            None => vec![Run::text(text, marks, href.clone())],
         };
         let lines: Vec<Vec<Run>> = if code { vec![runs] } else { split_lines(&runs) };
 
@@ -607,13 +682,7 @@ impl Editor {
             p.key = first.key.clone();
             p
         } else {
-            Piece {
-                key: None,
-                kind: BlockKind::Paragraph,
-                units: vec![],
-                marks: vec![],
-                hrefs: vec![],
-            }
+            Piece::empty(BlockKind::Paragraph)
         };
         let tail = if tail_editable {
             last.slice(oe..last.units.len())
@@ -626,8 +695,8 @@ impl Editor {
         }
 
         let mut pieces = Vec::new();
-        for (t, m, h) in &lines[0] {
-            head.push_text(t, *m, h);
+        for run in &lines[0] {
+            head.push_run(run);
         }
         if lines.len() == 1 {
             head.append(&tail);
@@ -640,15 +709,9 @@ impl Editor {
             };
             pieces.push(head);
             for (n, line) in lines[1..].iter().enumerate() {
-                let mut p = Piece {
-                    key: None,
-                    kind: next_kind,
-                    units: vec![],
-                    marks: vec![],
-                    hrefs: vec![],
-                };
-                for (t, m, h) in line {
-                    p.push_text(t, *m, h);
+                let mut p = Piece::empty(next_kind);
+                for run in line {
+                    p.push_run(run);
                 }
                 if n == lines.len() - 2 {
                     p.append(&tail);
@@ -935,9 +998,10 @@ impl Editor {
                     let piece = Piece::of(&view);
                     let start = if i == bs { os } else { 0 };
                     let end = if i == be { oe } else { piece.units.len() };
-                    let part = piece.slice(start..end);
-                    view.text = String::from_utf16_lossy(&part.units);
-                    view.spans = spans_from_masks(&part.marks, &part.hrefs);
+                    let part = piece.slice(start..end).target();
+                    view.text = part.text;
+                    view.spans = part.spans;
+                    view.inlines = part.inlines;
                 }
                 view
             })
@@ -971,24 +1035,37 @@ impl Editor {
     }
 
     fn paste_nodes(&mut self, nodes: &[NodeSnap], text: &str) -> bool {
-        if let Some(runs) = markdown::single_paragraph(nodes) {
-            let runs: Vec<Run> = runs
-                .iter()
-                .map(|(t, marks)| {
-                    let mut bits = 0;
-                    let mut href = None;
-                    for (name, value) in marks {
-                        bits |= mark_bit(name).unwrap_or(0);
-                        if name == "link"
-                            && let LoroValue::Map(m) = value
-                            && let Some(LoroValue::String(h)) = m.get("href")
-                        {
-                            href = Some(h.to_string());
-                        }
+        if let Some(children) = markdown::single_paragraph(nodes) {
+            let mut runs: Vec<Run> = Vec::new();
+            for child in children {
+                match child {
+                    ChildSnap::Text(text_runs) => {
+                        runs.extend(text_runs.iter().map(|(t, marks)| {
+                            let mut bits = 0;
+                            let mut href = None;
+                            for (name, value) in marks {
+                                bits |= mark_bit(name).unwrap_or(0);
+                                if name == "link"
+                                    && let LoroValue::Map(m) = value
+                                    && let Some(LoroValue::String(h)) = m.get("href")
+                                {
+                                    href = Some(h.to_string());
+                                }
+                            }
+                            Run::text(t, bits, href)
+                        }))
                     }
-                    (t.clone(), bits, href)
-                })
-                .collect();
+                    ChildSnap::Node(n) => runs.push(Run::node(InlineNode {
+                        at: 0,
+                        name: n.name.clone(),
+                        attrs: n
+                            .attrs
+                            .iter()
+                            .map(|(k, v)| (k.clone(), crate::tree::to_json(v)))
+                            .collect(),
+                    })),
+                }
+            }
             let range = self.selection();
             return self.replace_with(range, "", Some(&runs));
         }
@@ -1144,11 +1221,7 @@ impl Editor {
     fn point_at(&self, offset: usize) -> Anchor {
         let (i, local) = self.locate(offset);
         let block = &self.blocks[i];
-        let char_pos = char_count(&block.text, local);
-        let cursor = self
-            .doc
-            .text_of(&block.key)
-            .and_then(|t| t.get_cursor(char_pos, Side::Middle));
+        let cursor = self.doc.cursor_at(&block.key, local);
         Anchor {
             key: block.key.clone(),
             local,
@@ -1170,9 +1243,7 @@ impl Editor {
         let cursor = Cursor::decode(bytes).ok()?;
         let found = self.doc.loro().get_cursor_pos(&cursor).ok()?;
         let container = found.update.as_ref().unwrap_or(&cursor).container.clone();
-        let index = self.doc.block_with_text(&container)?;
-        let text = &self.blocks[index].text;
-        let local = utf16::len(&text.chars().take(found.current.pos).collect::<String>());
+        let (index, local) = self.doc.offset_in_text(&container, found.current.pos)?;
         Some(self.snap(self.starts[index] + local))
     }
 
@@ -1181,16 +1252,16 @@ impl Editor {
             return fallback;
         };
         let text = &self.blocks[index].text;
-        let local = match point
+        let local = point
             .cursor
             .as_ref()
-            .map(|c| self.doc.loro().get_cursor_pos(c))
-        {
-            Some(Ok(found)) => {
-                utf16::len(&text.chars().take(found.current.pos).collect::<String>())
-            }
-            _ => point.local,
-        };
+            .and_then(|c| {
+                let found = self.doc.loro().get_cursor_pos(c).ok()?;
+                let container = found.update.as_ref().unwrap_or(c).container.clone();
+                let (i, local) = self.doc.offset_in_text(&container, found.current.pos)?;
+                (i == index).then_some(local)
+            })
+            .unwrap_or(point.local);
         self.starts[index] + local.min(utf16::len(text))
     }
 
@@ -1213,19 +1284,57 @@ fn is_word(segment: &str) -> bool {
     segment.chars().any(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// Characters (Unicode scalar values) in the first `utf16_offset` units of `text`.
-fn char_count(text: &str, utf16_offset: usize) -> usize {
-    text[..utf16::to_utf8(text, utf16_offset)].chars().count()
+/// Inserted text with its marks: `(text, mark bits, link href)`.
+/// Text to insert with its marks, or (with `node`) one inline node.
+#[derive(Clone, Debug)]
+struct Run {
+    text: String,
+    marks: u32,
+    href: Option<String>,
+    node: Option<InlineNode>,
 }
 
-/// Inserted text with its marks: `(text, mark bits, link href)`.
-type Run = (String, u32, Option<String>);
+impl Run {
+    fn text(text: &str, marks: u32, href: Option<String>) -> Self {
+        Self {
+            text: text.to_owned(),
+            marks,
+            href,
+            node: None,
+        }
+    }
+
+    fn node(node: InlineNode) -> Self {
+        Self {
+            text: crate::model::INLINE_CHAR.to_string(),
+            marks: 0,
+            href: None,
+            node: Some(node),
+        }
+    }
+
+    /// UTF-16 units it takes once inserted.
+    fn len(&self) -> usize {
+        if self.node.is_some() {
+            1
+        } else {
+            self.text
+                .encode_utf16()
+                .filter(|&u| u != INLINE_UNIT)
+                .count()
+        }
+    }
+}
 
 /// Splits runs at `\n` into lines (each a list of runs).
 fn split_lines(runs: &[Run]) -> Vec<Vec<Run>> {
     let mut lines: Vec<Vec<Run>> = vec![vec![]];
-    for (text, marks, href) in runs {
-        for (i, part) in text.split('\n').enumerate() {
+    for run in runs {
+        if run.node.is_some() {
+            lines.last_mut().unwrap().push(run.clone());
+            continue;
+        }
+        for (i, part) in run.text.split('\n').enumerate() {
             if i > 0 {
                 lines.push(vec![]);
             }
@@ -1233,7 +1342,7 @@ fn split_lines(runs: &[Run]) -> Vec<Vec<Run>> {
                 lines
                     .last_mut()
                     .unwrap()
-                    .push((part.to_owned(), *marks, href.clone()));
+                    .push(Run::text(part, run.marks, run.href.clone()));
             }
         }
     }

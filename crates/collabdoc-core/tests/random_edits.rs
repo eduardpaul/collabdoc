@@ -79,7 +79,7 @@ fn check_shape(doc: &Document) -> Result<(), String> {
 
 fn step(e: &mut Editor, rng: &mut Rng) {
     let len = e.len();
-    let op = rng.below(19);
+    let op = rng.below(22);
     if std::env::var("FUZZ_TRACE").is_ok() {
         eprintln!(
             "op {op} sel {:?} blocks {:?}",
@@ -156,6 +156,27 @@ fn step(e: &mut Editor, rng: &mut Rng) {
             // Copy and paste back what is selected, as Markdown.
             let md = e.selection_markdown();
             e.paste(&md);
+        }
+        19 => {
+            e.hard_break();
+        }
+        20 => {
+            let mut attrs = serde_json::Map::new();
+            for (k, v) in [
+                ("kind", "person"),
+                ("id", "p1"),
+                ("handle", "ana"),
+                ("label", "Ana"),
+            ] {
+                attrs.insert(k.into(), v.into());
+            }
+            e.insert_mention(attrs);
+        }
+        21 => {
+            // Copy and paste back what is selected, as HTML.
+            let html = e.selection_html();
+            let text = e.selection_markdown();
+            e.paste_html(&html, &text);
         }
         _ => {
             let snippets = [

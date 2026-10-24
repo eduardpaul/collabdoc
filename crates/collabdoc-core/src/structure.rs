@@ -467,24 +467,82 @@ pub fn split_item_with_children(line: &Located, at: usize) -> Option<String> {
     if following.is_empty() {
         return None;
     }
-    let text = tree::ensure_text(&line.node);
-    let len = text.len_utf16();
-    let current = text.to_string();
-    // Never split inside a surrogate pair.
-    let at = crate::utf16::from_utf8(&current, crate::utf16::to_utf8(&current, at.min(len)));
-    let tail = runs_after(&text_runs(&text), at);
-    if at < len {
-        text.delete_utf16(at, len - at).expect("cut tail");
-    }
+    let tail = cut_content(&line.node, at);
 
     let item_at = tree::index_in(&list, &item).map_or(0, |i| i + 1);
     let (new_item, paragraph) = tree::create_item(&list, item_at, &tree::node_name(&item));
-    write_runs(&tree::ensure_text(&paragraph), 0, &tail);
+    append_content(&paragraph, &tail);
     for f in &following {
         let end = tree::children(&new_item).len();
         move_node(f, &item, &new_item, end);
     }
     Some(tree::block_id(&paragraph))
+}
+
+/// Cuts a textblock's content from UTF-16 offset `at` on (never inside a
+/// surrogate pair) and returns it: text runs and inline nodes. Empty text
+/// is left out.
+pub(crate) fn cut_content(node: &LoroMap, at: usize) -> Vec<ChildSnap> {
+    let segments = tree::segments(node);
+    let list = tree::children(node);
+    let mut out = Vec::new();
+    let mut doomed = Vec::new();
+    for placed in &segments {
+        let end = placed.start + placed.len;
+        if end <= at {
+            continue;
+        }
+        match &placed.segment {
+            tree::Segment::Text(text) => {
+                let s = text.to_string();
+                let off = at.saturating_sub(placed.start).min(placed.len);
+                let off = crate::utf16::from_utf8(&s, crate::utf16::to_utf8(&s, off));
+                let tail = runs_after(&text_runs(text), off);
+                if !tail.is_empty() {
+                    out.push(ChildSnap::Text(tail));
+                }
+                if off == 0 && placed.start > 0 {
+                    doomed.push(placed.index);
+                } else if off < placed.len {
+                    text.delete_utf16(off, placed.len - off).expect("cut tail");
+                }
+            }
+            tree::Segment::Inline(map) => {
+                out.push(ChildSnap::Node(snapshot(map)));
+                doomed.push(placed.index);
+            }
+        }
+    }
+    for index in doomed.into_iter().rev() {
+        list.delete(index, 1).expect("cut child");
+    }
+    out
+}
+
+/// Appends `content` (from [`cut_content`]) to a textblock.
+pub(crate) fn append_content(node: &LoroMap, content: &[ChildSnap]) {
+    let kids = tree::children(node);
+    for child in content {
+        match child {
+            ChildSnap::Text(runs) => {
+                let last = tree::segments(node).pop();
+                match last.map(|p| p.segment) {
+                    Some(tree::Segment::Text(text)) => {
+                        write_runs(&text, text.len_unicode(), runs);
+                    }
+                    _ => {
+                        let text = kids
+                            .insert_container(kids.len(), LoroText::new())
+                            .expect("text");
+                        write_runs(&text, 0, runs);
+                    }
+                }
+            }
+            ChildSnap::Node(n) => {
+                materialize_in(&kids, kids.len(), n);
+            }
+        }
+    }
 }
 
 /// The runs from UTF-16 offset `at` on.
@@ -612,14 +670,7 @@ pub fn paste_blocks(line: &Located, at: usize, nodes: &[NodeSnap]) -> Option<Str
         return None;
     }
     let index = tree::index_in(&parent, &line.node)?;
-    let text = tree::ensure_text(&line.node);
-    let current = text.to_string();
-    let len = text.len_utf16();
-    let at = crate::utf16::from_utf8(&current, crate::utf16::to_utf8(&current, at.min(len)));
-    let tail = runs_after(&text_runs(&text), at);
-    if at < len {
-        text.delete_utf16(at, len - at).expect("cut tail");
-    }
+    let tail = cut_content(&line.node, at);
     let mut pos = index + 1;
     let mut last = None;
     for snap in nodes {
@@ -629,9 +680,9 @@ pub fn paste_blocks(line: &Located, at: usize, nodes: &[NodeSnap]) -> Option<Str
     }
     if !tail.is_empty() {
         let rest = tree::create_textblock(&parent, pos, BlockKind::Paragraph);
-        write_runs(&tree::ensure_text(&rest), 0, &tail);
+        append_content(&rest, &tail);
     }
-    if text.len_utf16() == 0 && !nodes.is_empty() {
+    if tree::segments(&line.node).iter().all(|p| p.len == 0) && !nodes.is_empty() {
         tree::children(&parent)
             .delete(index, 1)
             .expect("drop empty head");

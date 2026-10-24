@@ -12,7 +12,7 @@ use html5gum::{DefaultEmitter, Token, Tokenizer};
 use loro::LoroValue;
 
 use crate::markdown::{Builder, container, mark, node};
-use crate::model::{BlockKind, ListKind, ViewBlock, masks};
+use crate::model::{BlockKind, InlineNode, ListKind, ViewBlock, masks};
 use crate::schema::*;
 use crate::structure::{ChildSnap, NodeSnap};
 use crate::utf16;
@@ -107,9 +107,18 @@ fn inline(block: &ViewBlock) -> String {
     let mut out = String::new();
     let mut start = 0;
     while start < units.len() {
+        if let Some(node) = block.inline_at(start) {
+            out.push_str(&inline_node(node));
+            start += 1;
+            continue;
+        }
         let m = marks[start];
         let mut end = start + 1;
-        while end < units.len() && marks[end] == m && hrefs[end] == hrefs[start] {
+        while end < units.len()
+            && marks[end] == m
+            && hrefs[end] == hrefs[start]
+            && block.inline_at(end).is_none()
+        {
             end += 1;
         }
         let mut run = escape(&String::from_utf16_lossy(&units[start..end]));
@@ -139,6 +148,31 @@ fn inline(block: &ViewBlock) -> String {
     out
 }
 
+/// A hard break or a mention chip as the Tiptap app renders them.
+fn inline_node(node: &InlineNode) -> String {
+    match node.name.as_str() {
+        "hardBreak" => "<br>".into(),
+        "mention" => {
+            let shown = match node.attr("label") {
+                "" => node.attr("handle"),
+                label => label,
+            };
+            format!(
+                "<span data-type=\"mention\" data-kind=\"{}\" data-id=\"{}\" data-handle=\"{}\" data-label=\"{}\" class=\"mention\">@{}</span>",
+                escape(match node.attr("kind") {
+                    "" => "person",
+                    kind => kind,
+                }),
+                escape(node.attr("id")),
+                escape(node.attr("handle")),
+                escape(node.attr("label")),
+                escape(shown)
+            )
+        }
+        _ => String::new(),
+    }
+}
+
 fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -160,6 +194,8 @@ pub fn parse(html: &str) -> Vec<NodeSnap> {
     let mut r = Reader {
         b: Builder::new(false),
         skip: 0,
+        mention: None,
+        pending_break: false,
         pre: 0,
         inline: Vec::new(),
         spaced: Vec::new(),
@@ -195,6 +231,10 @@ pub fn parse(html: &str) -> Vec<NodeSnap> {
 
 struct Reader {
     b: Builder,
+    /// Inside a mention chip: how many spans deep (its text is not content).
+    mention: Option<usize>,
+    /// A `<br>` not written yet: it is dropped if its block ends there.
+    pending_break: bool,
     /// Inside `script`, `style`, `head`…: ignored.
     skip: usize,
     /// Inside `pre`: whitespace is kept.
@@ -235,6 +275,12 @@ const BLOCKS: &[&str] = &[
 
 impl Reader {
     fn start(&mut self, name: &str, attr: &dyn Fn(&str) -> Option<String>) {
+        if let Some(depth) = self.mention.as_mut() {
+            if name == "span" {
+                *depth += 1;
+            }
+            return;
+        }
         if SKIPPED.contains(&name) {
             self.skip += 1;
             return;
@@ -332,9 +378,31 @@ impl Reader {
                 if self.pre > 0 {
                     self.b.text("\n");
                 } else {
-                    // No hard breaks in the model: the line goes on as a new block.
-                    self.end_textblock();
+                    // A hard break, unless it ends its block (ProseMirror drops
+                    // those): it is written when more of the line follows.
+                    self.pending_break = true;
                 }
+            }
+            "span" if attr("data-type").as_deref() == Some("mention") => {
+                self.flush_break();
+                let attrs = ["kind", "id", "handle", "label"]
+                    .iter()
+                    .map(|k| {
+                        let value = attr(&format!("data-{k}")).unwrap_or_default();
+                        let value = if *k == "kind" && value.is_empty() {
+                            "person".to_owned()
+                        } else {
+                            value
+                        };
+                        (k.to_string(), LoroValue::from(value))
+                    })
+                    .collect();
+                self.b.inline_node("mention", attrs);
+                // Its text (`@label`) is the chip's look, not content.
+                if let Some(d) = self.open.get_mut("span") {
+                    *d = d.saturating_sub(1);
+                }
+                self.mention = Some(0);
             }
             "hr" => {
                 self.end_textblock();
@@ -352,6 +420,16 @@ impl Reader {
     }
 
     fn end(&mut self, name: &str) {
+        if let Some(depth) = self.mention.as_mut() {
+            if name == "span" {
+                if *depth == 0 {
+                    self.mention = None;
+                } else {
+                    *depth -= 1;
+                }
+            }
+            return;
+        }
         if SKIPPED.contains(&name) {
             self.skip = self.skip.saturating_sub(1);
             return;
@@ -396,8 +474,11 @@ impl Reader {
     }
 
     fn text(&mut self, raw: &str) {
-        if self.skip > 0 {
+        if self.skip > 0 || self.mention.is_some() {
             return;
+        }
+        if self.pending_break && !raw.trim().is_empty() {
+            self.flush_break();
         }
         if self.pre > 0 || !self.spaced.is_empty() {
             // Line breaks inside a spaced block (not `pre`) end the line.
@@ -444,20 +525,30 @@ impl Reader {
     }
 
     fn last_char(&mut self) -> Option<char> {
-        match self.b.top().children.first() {
+        match self.b.top().children.last() {
             Some(ChildSnap::Text(runs)) => runs.last().and_then(|(t, _)| t.chars().last()),
-            _ => None,
+            // After a hard break a line starts; after a chip the text goes on.
+            Some(ChildSnap::Node(n)) if n.name == "hardBreak" => Some(' '),
+            Some(ChildSnap::Node(_)) => Some('\u{FFFC}'),
+            None => None,
+        }
+    }
+
+    fn flush_break(&mut self) {
+        if std::mem::take(&mut self.pending_break) {
+            self.b.inline_node("hardBreak", vec![]);
         }
     }
 
     /// Ends an open paragraph or heading, without its trailing space.
     fn end_textblock(&mut self) {
+        self.pending_break = false;
         if self.pre > 0 {
             return;
         }
         let top = self.b.top();
         if top.name == "paragraph" || top.name == "heading" {
-            if let Some(ChildSnap::Text(runs)) = top.children.first_mut() {
+            if let Some(ChildSnap::Text(runs)) = top.children.last_mut() {
                 if let Some((last, _)) = runs.last_mut() {
                     let trimmed = last.trim_end().len();
                     last.truncate(trimmed);

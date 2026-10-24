@@ -5,7 +5,7 @@ use loro::{
 };
 
 use crate::ids::new_block_id;
-use crate::model::{BlockKind, ListKind, Span, ViewBlock};
+use crate::model::{BlockKind, INLINE_CHAR, InlineNode, ListKind, Span, ViewBlock};
 use crate::schema::*;
 use crate::utf16;
 
@@ -140,29 +140,166 @@ pub fn ensure_text(node: &LoroMap) -> LoroText {
         .expect("insert text")
 }
 
-/// Visible text of a textblock with inline nodes, for read-only display.
-fn mixed_plain_text(node: &LoroMap) -> String {
-    let mut out = String::new();
-    for item in child_items(node) {
-        match item {
-            Container::Text(t) => out.push_str(&t.to_string()),
-            Container::Map(m) => match node_name(&m).as_str() {
-                "mention" => {
-                    let a = attrs(&m);
-                    let handle =
-                        value_string(a.get("handle")).or_else(|| value_string(a.get("label")));
-                    if let Some(h) = handle {
-                        out.push('@');
-                        out.push_str(&h);
-                    }
-                }
-                "hardBreak" => out.push('\n'),
-                _ => {}
-            },
-            _ => {}
-        }
+/// One child of a textblock: a run of text, or an inline node (one unit).
+#[derive(Clone)]
+pub enum Segment {
+    Text(LoroText),
+    Inline(LoroMap),
+}
+
+/// A textblock's children with where each starts in the block's text and
+/// its length (UTF-16), and its index in the `children` list.
+#[derive(Clone)]
+pub struct Placed {
+    pub segment: Segment,
+    pub start: usize,
+    pub len: usize,
+    pub index: usize,
+}
+
+pub fn segments(node: &LoroMap) -> Vec<Placed> {
+    let Some(ValueOrContainer::Container(Container::List(list))) = node.get(CHILDREN_KEY) else {
+        return vec![];
+    };
+    let mut out = Vec::new();
+    let mut start = 0;
+    for index in 0..list.len() {
+        let segment = match list.get(index) {
+            Some(ValueOrContainer::Container(Container::Text(t))) => Segment::Text(t),
+            Some(ValueOrContainer::Container(Container::Map(m))) => Segment::Inline(m),
+            _ => continue,
+        };
+        let len = match &segment {
+            Segment::Text(t) => t.len_utf16(),
+            Segment::Inline(_) => 1,
+        };
+        out.push(Placed {
+            segment,
+            start,
+            len,
+            index,
+        });
+        start += len;
     }
     out
+}
+
+/// The attributes of an inline node as JSON.
+pub fn inline_of(map: &LoroMap, at: usize) -> InlineNode {
+    let attrs = match map.get(ATTRIBUTES_KEY) {
+        Some(ValueOrContainer::Container(Container::Map(a))) => match a.get_deep_value() {
+            LoroValue::Map(m) => m
+                .iter()
+                .filter(|(_, v)| !matches!(v, LoroValue::Null))
+                .map(|(k, v)| (k.to_string(), to_json(v)))
+                .collect(),
+            _ => Default::default(),
+        },
+        _ => Default::default(),
+    };
+    InlineNode {
+        at: at as u32,
+        name: node_name(map),
+        attrs,
+    }
+}
+
+pub fn to_json(value: &LoroValue) -> serde_json::Value {
+    use serde_json::Value as J;
+    match value {
+        LoroValue::Null => J::Null,
+        LoroValue::Bool(b) => J::Bool(*b),
+        LoroValue::Double(d) => serde_json::Number::from_f64(*d).map_or(J::Null, J::Number),
+        LoroValue::I64(i) => J::from(*i),
+        LoroValue::String(s) => J::String(s.to_string()),
+        LoroValue::List(l) => J::Array(l.iter().map(to_json).collect()),
+        LoroValue::Map(m) => {
+            J::Object(m.iter().map(|(k, v)| (k.to_string(), to_json(v))).collect())
+        }
+        _ => J::Null,
+    }
+}
+
+pub fn from_json(value: &serde_json::Value) -> LoroValue {
+    use serde_json::Value as J;
+    match value {
+        J::Null => LoroValue::Null,
+        J::Bool(b) => (*b).into(),
+        // Numbers are doubles on the TS side (JSON numbers in loro-crdt JS).
+        J::Number(n) => n.as_f64().unwrap_or_default().into(),
+        J::String(s) => s.as_str().into(),
+        J::Array(a) => a.iter().map(from_json).collect::<Vec<_>>().into(),
+        J::Object(o) => o
+            .iter()
+            .map(|(k, v)| (k.clone(), from_json(v)))
+            .collect::<std::collections::HashMap<_, _>>()
+            .into(),
+    }
+}
+
+/// Writes an inline node into `list` at `index`, shaped as `loro-prosemirror`
+/// writes one (`nodeName`, `attributes`, empty `children`).
+pub fn create_inline(list: &LoroList, index: usize, node: &InlineNode) -> LoroMap {
+    let map = list
+        .insert_container(index, LoroMap::new())
+        .expect("insert inline node");
+    map.insert(NODE_NAME_KEY, node.name.as_str())
+        .expect("set nodeName");
+    let a = attrs(&map);
+    for (key, value) in &node.attrs {
+        if !value.is_null() {
+            a.insert(key, from_json(value)).expect("set attribute");
+        }
+    }
+    children(&map);
+    map
+}
+
+/// Makes an inline node's attributes read `node.attrs`.
+pub fn update_inline_attrs(map: &LoroMap, node: &InlineNode) {
+    let a = attrs(map);
+    for key in a.keys().map(|k| k.to_string()).collect::<Vec<_>>() {
+        if node.attrs.get(&key).is_none_or(|v| v.is_null()) {
+            a.delete(&key).expect("delete attribute");
+        }
+    }
+    for (key, value) in &node.attrs {
+        if value.is_null() {
+            continue;
+        }
+        let want = from_json(value);
+        let have = match a.get(key) {
+            Some(ValueOrContainer::Value(v)) => Some(v),
+            _ => None,
+        };
+        if have.as_ref() != Some(&want) {
+            a.insert(key, want).expect("set attribute");
+        }
+    }
+}
+
+/// A textblock's text, spans and inline nodes.
+pub fn content(node: &LoroMap) -> (String, Vec<Span>, Vec<InlineNode>) {
+    let mut text = String::new();
+    let mut spans = Vec::new();
+    let mut inlines = Vec::new();
+    for placed in segments(node) {
+        match &placed.segment {
+            Segment::Text(t) => {
+                text.push_str(&t.to_string());
+                spans.extend(text_spans(t).into_iter().map(|mut s| {
+                    s.start += placed.start as u32;
+                    s.end += placed.start as u32;
+                    s
+                }));
+            }
+            Segment::Inline(m) => {
+                text.push(INLINE_CHAR);
+                inlines.push(inline_of(m, placed.start));
+            }
+        }
+    }
+    (text, spans, inlines)
 }
 
 pub fn text_spans(text: &LoroText) -> Vec<Span> {
@@ -231,10 +368,7 @@ fn kind_of(node: &LoroMap, name: &str) -> BlockKind {
 }
 
 fn atom_label(node: &LoroMap, name: &str) -> String {
-    let caption = sole_text(node)
-        .flatten()
-        .map(|t| t.to_string())
-        .unwrap_or_default();
+    let caption = content(node).0;
     let label = match name {
         "horizontalRule" => return "───".to_owned(),
         "imageFigure" => "Image",
@@ -299,14 +433,11 @@ fn view_of(node: &LoroMap, name: &str, ancestors: &[LoroMap]) -> ViewBlock {
             _ => {}
         }
     }
-    let (editable, text, spans) = if kind == BlockKind::Atom {
-        (false, atom_label(node, name), vec![])
+    let (editable, text, spans, inlines) = if kind == BlockKind::Atom {
+        (false, atom_label(node, name), vec![], vec![])
     } else {
-        match sole_text(node) {
-            Some(Some(t)) => (true, t.to_string(), text_spans(&t)),
-            Some(None) => (true, String::new(), vec![]),
-            None => (false, mixed_plain_text(node), vec![]),
-        }
+        let (text, spans, inlines) = content(node);
+        (true, text, spans, inlines)
     };
     ViewBlock {
         key: node.id().to_string(),
@@ -320,6 +451,7 @@ fn view_of(node: &LoroMap, name: &str, ancestors: &[LoroMap]) -> ViewBlock {
         editable,
         text,
         spans,
+        inlines,
     }
 }
 

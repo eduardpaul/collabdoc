@@ -180,10 +180,15 @@ impl Session {
                     .iter()
                     .map(|s| json!([s.start, s.end, s.marks, s.href]))
                     .collect();
+                let inlines: Vec<Value> = b
+                    .inlines
+                    .iter()
+                    .map(|n| json!({ "at": n.at, "name": n.name, "attrs": n.attrs }))
+                    .collect();
                 json!({
                     "key": b.key, "kind": kind, "level": level, "list": list,
                     "listDepth": b.list_depth, "quoteDepth": b.quote_depth, "checked": b.checked,
-                    "editable": b.editable, "text": b.text, "spans": spans,
+                    "editable": b.editable, "text": b.text, "spans": spans, "inlines": inlines,
                 })
             })
             .collect();
@@ -239,6 +244,11 @@ impl Session {
             }
             "replace" => e.replace(n("start")..n("end"), s("text")),
             "newline" => e.newline(),
+            "hardBreak" => e.hard_break(),
+            "insertMention" => match cmd["attrs"].as_object() {
+                Some(attrs) => e.insert_mention(attrs.clone()),
+                None => return json!({ "ok": false, "error": "attrs must be an object" }),
+            },
             "backspace" => e.backspace(),
             "delete" => e.delete_forward(),
             "undo" => e.undo(),

@@ -210,13 +210,40 @@ fn code_blocks_keep_their_lines_and_mermaid_becomes_a_diagram() {
 
 #[test]
 fn breaks_and_rules() {
-    let e = pasted("<p>one<br>two</p><hr><p>three</p>");
+    let e = pasted("<p>one<br>two</p><hr><p>three<br></p>");
     let names: Vec<_> = e.blocks().iter().map(|b| b.node_name.as_str()).collect();
-    assert_eq!(
-        names,
-        ["paragraph", "paragraph", "horizontalRule", "paragraph"]
-    );
-    assert_eq!(e.blocks()[1].text, "two");
+    assert_eq!(names, ["paragraph", "horizontalRule", "paragraph"]);
+    // A `<br>` is a hard break, except at the end of its block.
+    assert_eq!(e.blocks()[0].text, "one\u{FFFC}two");
+    assert_eq!(e.blocks()[0].inlines[0].name, "hardBreak");
+    assert_eq!(e.blocks()[2].text, "three");
+    assert!(e.blocks()[2].inlines.is_empty());
+}
+
+#[test]
+fn mention_chips_paste_and_copy_as_tiptap_spans() {
+    let html = "<p>Ask <span data-type=\"mention\" data-kind=\"agent\" data-id=\"a1\" \
+                data-handle=\"writer\" data-label=\"Writer\" class=\"mention\">\
+                <span class=\"mention__text\">@Writer</span></span> now</p>";
+    let mut e = pasted(html);
+    let b = &e.blocks()[0];
+    assert_eq!(b.text, "Ask \u{FFFC} now");
+    assert_eq!(b.inlines.len(), 1);
+    let m = &b.inlines[0];
+    assert_eq!((m.at, m.name.as_str()), (4, "mention"));
+    assert_eq!(m.attr("handle"), "writer");
+    assert_eq!(m.attr("kind"), "agent");
+    assert_eq!(b.plain_text(), "Ask @writer now");
+
+    e.select_all();
+    let copied = e.selection_html();
+    assert!(copied.contains("data-type=\"mention\""), "{copied}");
+    assert!(copied.contains("data-handle=\"writer\""), "{copied}");
+    assert_eq!(e.selection_markdown(), "Ask @writer now");
+
+    // Pasted back into a fresh document, the chip survives.
+    let again = pasted(&copied);
+    assert_eq!(again.blocks()[0].inlines, e.blocks()[0].inlines);
 }
 
 #[test]

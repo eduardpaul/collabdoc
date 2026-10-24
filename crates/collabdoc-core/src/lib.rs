@@ -21,4 +21,4 @@ pub mod utf16;
 
 pub use document::{DocError, Document};
 pub use editing::Editor;
-pub use model::{BlockKind, ListKind, Span, TargetBlock, ViewBlock};
+pub use model::{BlockKind, InlineNode, ListKind, Span, TargetBlock, ViewBlock};

@@ -45,6 +45,56 @@ pub struct Span {
     pub href: String,
 }
 
+/// The character an inline node (mention, hard break) takes in a block's
+/// text: one UTF-16 unit, as Flutter's `WidgetSpan` does.
+pub const INLINE_CHAR: char = '\u{FFFC}';
+pub const INLINE_UNIT: u16 = 0xFFFC;
+
+/// An inline node inside a textblock, at its [`INLINE_CHAR`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct InlineNode {
+    /// UTF-16 offset in the block's text.
+    pub at: u32,
+    /// `mention`, `hardBreak`, or a node this editor only keeps.
+    pub name: String,
+    /// Its ProseMirror attrs (`kind`, `id`, `handle`, `label`… for mentions).
+    pub attrs: serde_json::Map<String, serde_json::Value>,
+}
+
+impl InlineNode {
+    pub fn hard_break() -> Self {
+        Self {
+            at: 0,
+            name: "hardBreak".into(),
+            attrs: Default::default(),
+        }
+    }
+
+    pub fn attr(&self, key: &str) -> &str {
+        self.attrs.get(key).and_then(|v| v.as_str()).unwrap_or("")
+    }
+
+    /// How it reads as plain text: `@handle` for a mention, a newline for a
+    /// hard break.
+    pub fn plain_text(&self) -> String {
+        match self.name.as_str() {
+            "hardBreak" => "\n".into(),
+            "mention" => {
+                let handle = self.attr("handle");
+                format!(
+                    "@{}",
+                    if handle.is_empty() {
+                        self.attr("label")
+                    } else {
+                        handle
+                    }
+                )
+            }
+            _ => String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewBlock {
     /// Stable for the block's lifetime in this session (the Loro container id).
@@ -60,12 +110,43 @@ pub struct ViewBlock {
     pub quote_depth: u8,
     /// For task items: whether it is ticked.
     pub checked: bool,
-    /// False for atoms and for textblocks holding inline nodes (mentions, hard
-    /// breaks) this editor does not edit yet.
+    /// False for atoms (figures, rules).
     pub editable: bool,
-    /// Code blocks use `\n` between lines.
+    /// Code blocks use `\n` between lines; each inline node is one
+    /// [`INLINE_CHAR`].
     pub text: String,
     pub spans: Vec<Span>,
+    /// The inline nodes, in order.
+    pub inlines: Vec<InlineNode>,
+}
+
+impl ViewBlock {
+    /// The inline node at UTF-16 offset `at`, if one is there.
+    pub fn inline_at(&self, at: usize) -> Option<&InlineNode> {
+        self.inlines.iter().find(|n| n.at as usize == at)
+    }
+
+    /// The text with inline nodes spelled out (`@handle`, newlines).
+    pub fn plain_text(&self) -> String {
+        plain_text(&self.text, &self.inlines)
+    }
+}
+
+/// `text` with each [`INLINE_CHAR`] that is an inline node spelled out.
+pub fn plain_text(text: &str, inlines: &[InlineNode]) -> String {
+    if inlines.is_empty() {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0u32;
+    for c in text.chars() {
+        match inlines.iter().find(|n| n.at == at) {
+            Some(node) if c == INLINE_CHAR => out.push_str(&node.plain_text()),
+            _ => out.push(c),
+        }
+        at += c.len_utf16() as u32;
+    }
+    out
 }
 
 /// One block of the editor's content after a local edit.
@@ -77,6 +158,9 @@ pub struct TargetBlock {
     pub kind: Option<BlockKind>,
     pub text: String,
     pub spans: Vec<Span>,
+    /// One per [`INLINE_CHAR`] in `text` (by `at`); a placeholder without one
+    /// is dropped.
+    pub inlines: Vec<InlineNode>,
 }
 
 impl TargetBlock {
@@ -86,11 +170,17 @@ impl TargetBlock {
             kind: Some(kind),
             text: text.to_owned(),
             spans: vec![],
+            inlines: vec![],
         }
     }
 
     pub fn with_spans(mut self, spans: Vec<Span>) -> Self {
         self.spans = spans;
+        self
+    }
+
+    pub fn with_inlines(mut self, inlines: Vec<InlineNode>) -> Self {
+        self.inlines = inlines;
         self
     }
 }
@@ -102,6 +192,7 @@ impl From<&ViewBlock> for TargetBlock {
             kind: Some(view.kind),
             text: view.text.clone(),
             spans: view.spans.clone(),
+            inlines: view.inlines.clone(),
         }
     }
 }
@@ -151,5 +242,19 @@ pub(crate) fn spans_from_masks(marks: &[u32], hrefs: &[Option<String>]) -> Vec<S
 /// Normalises spans: clipped, merged, unmarked runs dropped.
 pub fn normalize_spans(len: usize, spans: &[Span]) -> Vec<Span> {
     let (m, h) = masks(len, spans);
+    spans_from_masks(&m, &h)
+}
+
+/// Spans as a block stores them: normalised, and none over inline nodes
+/// (marks live on text only).
+pub fn block_spans(text: &str, inlines: &[InlineNode], spans: &[Span]) -> Vec<Span> {
+    let len = crate::utf16::len(text);
+    let (mut m, mut h) = masks(len, spans);
+    for node in inlines {
+        if let Some(i) = m.get_mut(node.at as usize) {
+            *i = 0;
+            h[node.at as usize] = None;
+        }
+    }
     spans_from_masks(&m, &h)
 }

@@ -131,16 +131,29 @@ pub fn render(blocks: &[ViewBlock]) -> String {
     out
 }
 
-/// A block's text with its marks written as Markdown.
+/// A block's text with its marks written as Markdown; a mention reads
+/// `@handle` and a hard break is two spaces and a newline, as Tiptap writes.
 fn inline(block: &ViewBlock) -> String {
     let units = utf16::units(&block.text);
     let (marks, hrefs) = crate::model::masks(units.len(), &block.spans);
     let mut out = String::new();
     let mut start = 0;
     while start < units.len() {
+        if let Some(node) = block.inline_at(start) {
+            out.push_str(&match node.name.as_str() {
+                "hardBreak" => "  \n".to_owned(),
+                _ => node.plain_text(),
+            });
+            start += 1;
+            continue;
+        }
         let m = marks[start];
         let mut end = start + 1;
-        while end < units.len() && marks[end] == m && hrefs[end] == hrefs[start] {
+        while end < units.len()
+            && marks[end] == m
+            && hrefs[end] == hrefs[start]
+            && block.inline_at(end).is_none()
+        {
             end += 1;
         }
         let mut run = String::from_utf16_lossy(&units[start..end]);
@@ -298,7 +311,7 @@ impl Builder {
     }
 
     pub(crate) fn trim_trailing_newline(&mut self) {
-        if let Some(ChildSnap::Text(runs)) = self.top().children.first_mut()
+        if let Some(ChildSnap::Text(runs)) = self.top().children.last_mut()
             && let Some((last, _)) = runs.last_mut()
             && last.ends_with('\n')
         {
@@ -309,14 +322,30 @@ impl Builder {
         }
     }
 
+    /// The text runs being written: the textblock's last text child (a new
+    /// one after an inline node), in a new paragraph when none is open.
     pub(crate) fn runs(&mut self) -> &mut Runs {
         if !is_textblock(&self.top().name.clone()) {
             self.stack.push(node("paragraph", vec![]));
         }
-        match self.top().children.first_mut() {
-            Some(ChildSnap::Text(runs)) => runs,
-            _ => unreachable!("textblocks start with their text"),
+        let children = &mut self.top().children;
+        if !matches!(children.last(), Some(ChildSnap::Text(_))) {
+            children.push(ChildSnap::Text(vec![]));
         }
+        match children.last_mut() {
+            Some(ChildSnap::Text(runs)) => runs,
+            _ => unreachable!("a text child was just ensured"),
+        }
+    }
+
+    /// An inline node (mention, hard break) in the open textblock.
+    pub(crate) fn inline_node(&mut self, name: &str, attrs: Vec<(String, LoroValue)>) {
+        self.runs();
+        self.top().children.push(ChildSnap::Node(NodeSnap {
+            name: name.to_owned(),
+            attrs,
+            children: vec![],
+        }));
     }
 
     pub(crate) fn text(&mut self, text: &str) {
@@ -490,7 +519,14 @@ pub fn parse(text: &str) -> Vec<NodeSnap> {
                 other => b.text(other),
             },
             Event::Html(html) => b.text(html.trim_end()),
-            Event::SoftBreak | Event::HardBreak => b.text(" "),
+            Event::SoftBreak => b.text(" "),
+            Event::HardBreak => {
+                if b.top().name == "codeBlock" {
+                    b.text("\n");
+                } else {
+                    b.inline_node("hardBreak", vec![]);
+                }
+            }
             Event::Rule => {
                 b.close_textblock();
                 let rule = node("horizontalRule", vec![]);
@@ -512,13 +548,11 @@ pub fn parse(text: &str) -> Vec<NodeSnap> {
     b.finish()
 }
 
-/// When pasted Markdown is a single paragraph, its runs (to insert inline).
-pub fn single_paragraph(nodes: &[NodeSnap]) -> Option<&Runs> {
+/// When pasted content is a single paragraph, its text runs and inline
+/// nodes (to insert inline).
+pub fn single_paragraph(nodes: &[NodeSnap]) -> Option<&[ChildSnap]> {
     match nodes {
-        [only] if only.name == "paragraph" => match only.children.first() {
-            Some(ChildSnap::Text(runs)) => Some(runs),
-            _ => None,
-        },
+        [only] if only.name == "paragraph" => Some(&only.children),
         _ => None,
     }
 }
