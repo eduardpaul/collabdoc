@@ -8,6 +8,7 @@ pub mod editing;
 pub mod file;
 pub mod ids;
 pub mod model;
+pub mod persist;
 pub mod schema;
 pub mod sync;
 pub mod tree;

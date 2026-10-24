@@ -1031,6 +1031,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "collabdoc-ffi"
+version = "0.1.0"
+dependencies = [
+ "collabdoc-core",
+ "serde_json",
+]
+
+[[package]]
 name = "collabdoc-gpui"
 version = "0.1.0"
 dependencies = [

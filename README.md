@@ -149,6 +149,19 @@ In the editor, **Ctrl+Shift+N** opens a second participant window synced through
 
 `scripts/gpui-smoke.sh` drives the real binary on a virtual display (Xvfb + xdotool) and saves screenshots. `COLLABDOC_TS_COMPAT=1 cargo test -p collabdoc-core --test ts_compat` also checks that the TypeScript core reads what the Rust editor writes (needs Bun and `loro-crdt` installed).
 
+### Flutter front end (experiment)
+
+Branch `flutter` also has a Flutter UI over the same Rust core, for comparison: [specs/24-flutter-ui-experiment.md](specs/24-flutter-ui-experiment.md).
+
+```bash
+sudo apt install ninja-build libgtk-3-dev          # plus Flutter 3.47+ on PATH
+cd flutter_app
+flutter run -d linux -a notes.collabdoc            # CMake builds crates/collabdoc-ffi with cargo
+cargo build -p collabdoc-ffi && COLLABDOC_FFI_LIB=$PWD/../target/debug/libcollabdoc_ffi.so flutter test
+```
+
+`scripts/flutter-smoke.sh` drives the built app on a virtual display and saves screenshots.
+
 ## Layout
 
 ```
@@ -159,7 +172,9 @@ src/
 crates/
   collabdoc-core/  Rust document core (Loro), toolkit-independent editing
   collabdoc-gpui/  Rust desktop editor (GPUI), the `collabdoc` binary
-scripts/         Dev launcher (WSL / Windows), GPUI smoke test
+  collabdoc-ffi/   C ABI over the core for the Flutter front end
+flutter_app/     Flutter desktop editor over collabdoc-ffi (experiment)
+scripts/         Dev launcher (WSL / Windows), GPUI and Flutter smoke tests
 electron.vite.config.ts
 electron-builder.yml
 ```
