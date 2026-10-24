@@ -85,7 +85,7 @@ Two fixes came out of the fuzz test (`random_edits.rs`, now with list commands a
 - When two participants move the same block at once, each leaves a copy with the same `blockId`. `normalize` now gives the later copy a fresh id, so lookups by id stay unambiguous.
 
 **Tests:**
-- 23 Flutter widget and unit tests.
+- 19 Flutter widget and unit tests (plus one opt-in perf test).
 - 8 bridge tests and 5 launcher tests.
 - 98 core tests, including the seeded fuzz, now with quotes and Markdown paste (2000 seeds × 2 scenarios).
 - The TS round trips, and the TS parity test in `npm test` (309 tests pass).
