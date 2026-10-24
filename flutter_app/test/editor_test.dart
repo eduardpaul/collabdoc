@@ -6,9 +6,10 @@
 
 import 'dart:io';
 
+import 'package:collabdoc/app.dart';
 import 'package:collabdoc/editor.dart';
 import 'package:collabdoc/find_bar.dart';
-import 'package:collabdoc/main.dart';
+import 'package:collabdoc/native.dart';
 import 'package:collabdoc/model.dart';
 import 'package:collabdoc/settings.dart';
 import 'package:collabdoc/workspace.dart';
@@ -51,22 +52,42 @@ Future<void> chord(
   await tester.pump();
 }
 
-Future<Workspace> launch(WidgetTester tester) async {
+/// A temporary folder for settings, drafts, the journal and recents (never
+/// the user's), with the store pointed at it.
+Directory scratch({int idleMs = 0}) {
+  final dir = Directory.systemTemp.createTempSync('collabdoc-test');
+  addTearDown(() => dir.deleteSync(recursive: true));
+  CoreStore.configure(
+    userData: '${dir.path}/user',
+    documentsDir: '${dir.path}/docs',
+    // By default autosave at the next tick (the core's clock is real time).
+    idleMs: idleMs,
+  );
+  return dir;
+}
+
+Future<AppController> launchApp(
+  WidgetTester tester, {
+  Directory? dir,
+  bool withDocument = true,
+}) async {
   tester.view.physicalSize = const Size(1600, 900);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
-  // Settings in a temporary folder, never the user's.
-  final config = Directory.systemTemp.createTempSync('collabdoc-test');
-  addTearDown(() => config.deleteSync(recursive: true));
-  final ws = Workspace.open(
-    null,
-    settings: Settings(File('${config.path}/settings.ini')),
+  final config = dir ?? scratch();
+  final settings = Settings(File('${config.path}/settings.ini'));
+  final app = AppController(
+    workspace: withDocument ? Workspace.create(settings: settings) : null,
+    settings: settings,
   );
-  addTearDown(ws.dispose);
-  await tester.pumpWidget(CollabDocApp(workspace: ws));
+  addTearDown(() => app.workspace?.dispose());
+  await tester.pumpWidget(CollabDocApp(app: app));
   await tester.pump();
-  return ws;
+  return app;
 }
+
+Future<Workspace> launch(WidgetTester tester) async =>
+    (await launchApp(tester)).workspace!;
 
 void main() {
   testWidgets('typing, Enter, Backspace and shortcuts', (tester) async {
@@ -621,5 +642,131 @@ void main() {
     await tester.pumpAndSettle();
     expect(pane.view.blocks.any((b) => b.kind == 'atom'), isTrue);
     expect(pane.focus.hasFocus, isTrue);
+  });
+
+  testWidgets('the start screen: new, autosave, leaving a draft asks', (
+    tester,
+  ) async {
+    final dir = scratch();
+    final app = await launchApp(tester, dir: dir, withDocument: false);
+    expect(
+      find.text('No documents yet. Create one or open a file from disk.'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('start-new')));
+    await tester.pumpAndSettle();
+    final pane = tester.state<EditorPaneState>(find.byType(EditorPane));
+    type(pane, 'Kept by autosave');
+    await tester.pump(const Duration(milliseconds: 600)); // a tick
+    String status() =>
+        tester.widget<Text>(find.byKey(const ValueKey('persist-status'))).data!;
+    expect(status(), 'Draft · saved automatically');
+
+    // Home: a draft with content asks; Save as… picks a place.
+    final file = '${dir.path}/docs/Kept.collabdoc';
+    app.pickSavePath = ({suggested, markdown = false}) async => file;
+    await tester.tap(find.text('Home'));
+    await tester.pumpAndSettle();
+    expect(find.text('Discard this draft?'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('leave-save-as')));
+    await tester.pumpAndSettle();
+    expect(find.byType(EditorPane), findsNothing, reason: 'back at the start');
+    expect(File(file).existsSync(), isTrue);
+    final recent = app.listing.recents.single;
+    expect((recent.title, recent.path), ('Kept', file));
+    expect(recent.preview, 'Kept by autosave');
+
+    // A saved file opens from the recents without asking when left.
+    await tester.tap(find.byKey(ValueKey('recent-${recent.docId}')));
+    await tester.pumpAndSettle();
+    final again = tester.state<EditorPaneState>(find.byType(EditorPane));
+    expect(texts(again), ['Kept by autosave']);
+    expect(status(), 'Saved · $file');
+    await tester.tap(find.text('Home'));
+    await tester.pumpAndSettle();
+    expect(find.text('Discard this draft?'), findsNothing);
+
+    // A new draft left with "Don't save" is gone.
+    await tester.tap(find.byKey(const ValueKey('start-new')));
+    await tester.pumpAndSettle();
+    type(tester.state<EditorPaneState>(find.byType(EditorPane)), 'scrap');
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.tap(find.text('Home'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('leave-discard')));
+    await tester.pumpAndSettle();
+    expect(app.listing.recents.map((r) => r.title), ['Kept']);
+  });
+
+  testWidgets('after a crash the start screen offers the draft back', (
+    tester,
+  ) async {
+    // Autosave 2 s after the edit, which the crash beats: only the journal
+    // has the text.
+    final dir = scratch(idleMs: 2000);
+    final first = await launchApp(tester, dir: dir);
+    final pane = tester.state<EditorPaneState>(find.byType(EditorPane));
+    type(pane, 'typed just before the crash');
+    await tester.pump(); // journaled with the edit, before any autosave
+
+    // The next run: a new store over the same folders, the start screen.
+    CoreStore.configure(
+      userData: '${dir.path}/user',
+      documentsDir: '${dir.path}/docs',
+    );
+    final app = AppController(settings: first.settings);
+    addTearDown(() => app.workspace?.dispose());
+    await tester.pumpWidget(CollabDocApp(app: app));
+    await tester.pumpAndSettle();
+    final offer = app.listing.recoveries.single;
+    expect(offer.preview, 'typed just before the crash');
+    expect(find.text('Recover “Untitled”'), findsOneWidget);
+    await tester.tap(find.text('Recover').last);
+    await tester.pumpAndSettle();
+    final back = tester.state<EditorPaneState>(find.byType(EditorPane));
+    expect(texts(back), ['typed just before the crash']);
+    expect(app.workspace!.status, 'Recovered edits made after the last save');
+  });
+
+  testWidgets('Markdown opens as a new document and exports back', (
+    tester,
+  ) async {
+    final dir = scratch();
+    final md = File('${dir.path}/notes.md')
+      ..writeAsStringSync('# Notes\n\nHello **there**\n\n- one\n');
+    final app = await launchApp(tester, dir: dir, withDocument: false);
+    app.pickOpenPath = ({suggested, markdown = false}) async => md.path;
+    await tester.tap(find.byKey(const ValueKey('start-open')));
+    await tester.pumpAndSettle();
+    final pane = tester.state<EditorPaneState>(find.byType(EditorPane));
+    expect(texts(pane), ['Hello there', 'one']);
+    expect(pane.view.title, 'Notes');
+    expect(app.workspace!.suggestedPath, '${dir.path}/notes.collabdoc');
+
+    final out = '${dir.path}/exported.md';
+    app.pickSavePath = ({suggested, markdown = false}) async => out;
+    await tester.tap(find.text('Export .md'));
+    await tester.pumpAndSettle();
+    expect(
+      File(out).readAsStringSync(),
+      '# Notes\n\nHello **there**\n\n- one\n',
+    );
+    expect(md.readAsStringSync(), '# Notes\n\nHello **there**\n\n- one\n');
+  });
+
+  testWidgets('a moved file says so and can be removed', (tester) async {
+    final dir = scratch();
+    final file = File('${dir.path}/gone.collabdoc');
+    // Make a saved document, then lose its file.
+    final ws = Workspace.openPath(file.path);
+    ws.close();
+    ws.dispose();
+    file.deleteSync();
+    final app = await launchApp(tester, dir: dir, withDocument: false);
+    expect(find.textContaining('Moved or deleted'), findsOneWidget);
+    await tester.tap(find.text('Remove'));
+    await tester.pumpAndSettle();
+    expect(app.listing.recents, isEmpty);
   });
 }

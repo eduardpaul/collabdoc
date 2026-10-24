@@ -76,7 +76,9 @@ class ViewState {
       canUndo: j['canUndo'] as bool,
       canRedo: j['canRedo'] as bool,
       title: j['title'] as String,
-      path: j['path'] as String?,
+      persist: j['persist'] == null
+          ? null
+          : PersistState.fromJson(j['persist'] as Map<String, dynamic>),
     );
   }
 
@@ -91,7 +93,7 @@ class ViewState {
     required this.canUndo,
     required this.canRedo,
     required this.title,
-    required this.path,
+    required this.persist,
   }) : _byKey = byKey,
        blocks = [for (final k in order) byKey[k]!] {
     var at = 0;
@@ -113,7 +115,10 @@ class ViewState {
   final bool canUndo;
   final bool canRedo;
   final String title;
-  final String? path;
+
+  /// Where the document is kept and whether it is saved; null in tests
+  /// without a store.
+  final PersistState? persist;
 
   int get length => starts.last + blocks.last.text.length;
   int get selectionStart => anchor < head ? anchor : head;
@@ -165,4 +170,87 @@ int parseHexColor(String? hex) {
       ? int.tryParse(digits, radix: 16)
       : null;
   return 0xFF000000 | (rgb ?? 0x8B8B93);
+}
+
+/// Where a document is kept and whether everything is written.
+class PersistState {
+  PersistState.fromJson(Map<String, dynamic> j)
+    : docId = j['docId'] as String,
+      title = j['title'] as String,
+      path = j['path'] as String?,
+      isDraft = j['isDraft'] as bool,
+      dirty = j['dirty'] as bool;
+
+  final String docId;
+  final String title;
+
+  /// Null for a draft (never saved anywhere).
+  final String? path;
+  final bool isDraft;
+  final bool dirty;
+
+  @override
+  bool operator ==(Object other) =>
+      other is PersistState &&
+      other.docId == docId &&
+      other.title == title &&
+      other.path == path &&
+      other.isDraft == isDraft &&
+      other.dirty == dirty;
+
+  @override
+  int get hashCode => Object.hash(docId, title, path, isDraft, dirty);
+}
+
+/// A document in the recents.
+class RecentEntry {
+  RecentEntry.fromJson(Map<String, dynamic> j)
+    : docId = j['docId'] as String,
+      title = j['title'] as String,
+      path = j['path'] as String?,
+      updatedAt = DateTime.tryParse(j['updatedAt'] as String? ?? ''),
+      preview = j['preview'] as String? ?? '',
+      missing = j['missing'] as bool? ?? false;
+
+  final String docId;
+  final String title;
+
+  /// Null for a draft.
+  final String? path;
+  final DateTime? updatedAt;
+  final String preview;
+
+  /// The file was moved or deleted.
+  final bool missing;
+}
+
+/// A draft a crash left behind.
+class RecoveryOffer {
+  RecoveryOffer.fromJson(Map<String, dynamic> j)
+    : docId = j['docId'] as String,
+      title = j['title'] as String,
+      updatedAt = DateTime.tryParse(j['updatedAt'] as String? ?? ''),
+      preview = j['preview'] as String? ?? '';
+
+  final String docId;
+  final String title;
+  final DateTime? updatedAt;
+  final String preview;
+}
+
+class Listing {
+  Listing.fromJson(Map<String, dynamic> j)
+    : recents = [
+        for (final r in j['recents'] as List)
+          RecentEntry.fromJson(r as Map<String, dynamic>),
+      ],
+      recoveries = [
+        for (final r in j['recoveries'] as List)
+          RecoveryOffer.fromJson(r as Map<String, dynamic>),
+      ];
+
+  const Listing.empty() : recents = const [], recoveries = const [];
+
+  final List<RecentEntry> recents;
+  final List<RecoveryOffer> recoveries;
 }

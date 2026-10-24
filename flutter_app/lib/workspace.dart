@@ -4,11 +4,17 @@
 // edit the pane pushes to the shared hub and every other pane pulls — the
 // same shape as the GPUI build's windows and the TS SyncHub. Carets travel
 // the same way, as presence beside the document.
+//
+// The hub's document is kept on disk by the core's store: every edit goes to
+// its journal at once, and [Workspace.tick], every half second (the app
+// widget's timer), lets it autosave: 2 s after the last edit, at most 30 s
+// after the first unsaved one.
 
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import 'model.dart';
 import 'native.dart';
 import 'settings.dart';
 
@@ -38,18 +44,123 @@ class Participant {
   final ValueNotifier<int> presenceVersion = ValueNotifier(0);
 }
 
+/// What Ctrl+S did.
+enum SaveResult { saved, needsSaveAs, failed }
+
 class Workspace extends ChangeNotifier {
-  Workspace.open(String? path, {Settings? settings})
+  Workspace._(Session session, {Settings? settings})
     : settings = settings ?? Settings.forUser() {
-    participants.add(
-      Participant('You', participantColors[0], Session.open(path)),
-    );
+    participants.add(Participant('You', participantColors[0], session));
+    final info = session.call({'op': 'openInfo'});
+    if (info['recoveredEdits'] == true) {
+      status = 'Recovered edits made after the last save';
+    } else if ((info['warnings'] as List? ?? const []).isNotEmpty) {
+      status = 'Some images in this file are damaged';
+    }
+    _readPersist(session.call({'op': 'tick'}));
   }
+
+  /// A new, untitled document (a draft until saved somewhere).
+  factory Workspace.create({Settings? settings}) =>
+      Workspace._(Session.openWith({'new': true}), settings: settings);
+
+  /// A `.collabdoc`, or a Markdown file to import; a path that does not
+  /// exist yet is a new document saved there.
+  factory Workspace.openPath(String path, {Settings? settings}) =>
+      Workspace._(Session.openWith({'path': path}), settings: settings);
+
+  /// A draft from the recents, or one a crash left behind.
+  factory Workspace.recover(String docId, {Settings? settings}) =>
+      Workspace._(Session.openWith({'draft': docId}), settings: settings);
 
   final Settings settings;
   final List<Participant> participants = [];
-  bool dirty = false;
   String status = '';
+  PersistState? persist;
+  bool _closed = false;
+
+  bool get dirty => persist?.dirty ?? false;
+  bool get isDraft => persist?.isDraft ?? true;
+  Session get _main => participants.first.session;
+
+  /// Lets the store sync its journal and autosave when due.
+  void tick() {
+    if (_closed) return;
+    _readPersist(_main.call({'op': 'tick'}));
+  }
+
+  void _readPersist(Map<String, dynamic> reply) {
+    final json = reply['persist'];
+    final next = json == null
+        ? null
+        : PersistState.fromJson(json as Map<String, dynamic>);
+    if (next != persist) {
+      persist = next;
+      notifyListeners();
+    }
+  }
+
+  /// Whether leaving this document should ask first: a draft with content
+  /// ("Don't save" deletes it). Saved files never ask; they are autosaved.
+  bool get leavingAsks =>
+      isDraft && _main.call({'op': 'hasContent'})['hasContent'] == true;
+
+  /// Ctrl+S: writes now, or the caller asks where ([suggestedPath]).
+  SaveResult save() {
+    final reply = _main.call({'op': 'save'});
+    if (reply['needsSaveAs'] == true) return SaveResult.needsSaveAs;
+    if (reply['ok'] != true) {
+      status = 'Save failed: ${reply['error']}';
+      notifyListeners();
+      return SaveResult.failed;
+    }
+    status = 'Saved ${reply['path']}';
+    tick();
+    notifyListeners();
+    return SaveResult.saved;
+  }
+
+  String get suggestedPath =>
+      _main.call({'op': 'suggestedPath'})['path'] as String;
+
+  /// Save As: the document lives at `path` from now on.
+  bool saveAs(String path) {
+    final reply = _main.call({'op': 'saveAs', 'path': path});
+    status = reply['ok'] == true
+        ? 'Saved ${reply['path']}'
+        : 'Save failed: ${reply['error']}';
+    // The title may have changed: every pane re-reads.
+    for (final p in participants.skip(1)) {
+      if (p.session.call({'op': 'pull'})['changed'] == true) {
+        p.remoteVersion.value++;
+      }
+    }
+    participants.first.remoteVersion.value++;
+    tick();
+    notifyListeners();
+    return reply['ok'] == true;
+  }
+
+  bool exportMarkdown(String path) {
+    final reply = _main.call({'op': 'exportMarkdown', 'path': path});
+    status = reply['ok'] == true
+        ? 'Exported ${reply['path']}'
+        : 'Export failed: ${reply['error']}';
+    notifyListeners();
+    return reply['ok'] == true;
+  }
+
+  /// Leaves the document: unsaved edits are written (or, with `discard`,
+  /// the draft is deleted), and every pane closes.
+  void close({bool discard = false}) {
+    if (_closed) return;
+    _closed = true;
+    _main.call({'op': 'close', 'discard': discard});
+    for (final p in participants) {
+      p.session.dispose();
+    }
+    participants.clear();
+  }
 
   /// A new participant on the same document.
   void addPeer() {
@@ -106,49 +217,12 @@ class Workspace extends ChangeNotifier {
       final reply = p.session.call({'op': 'pull'});
       if (reply['changed'] == true) p.remoteVersion.value++;
     }
-    if (!dirty) {
-      dirty = true;
-      notifyListeners();
-    }
-  }
-
-  void save(Participant who, {String? path}) {
-    final reply = who.session.call({'op': 'save', 'path': ?path});
-    if (reply['ok'] == true) {
-      dirty = false;
-      status = 'Saved ${reply['path']}';
-    } else {
-      status = 'Save failed: ${reply['error']}';
-    }
-    notifyListeners();
-  }
-
-  /// Replaces the document; every pane closes but one, on the new file.
-  void open(String path) {
-    final Session session;
-    try {
-      session = Session.open(path);
-    } on CoreException catch (e) {
-      status = e.message;
-      notifyListeners();
-      return;
-    }
-    for (final p in participants) {
-      p.session.dispose();
-    }
-    participants
-      ..clear()
-      ..add(Participant('You', participantColors[0], session));
-    dirty = false;
-    status = 'Opened $path';
-    notifyListeners();
+    tick();
   }
 
   @override
   void dispose() {
-    for (final p in participants) {
-      p.session.dispose();
-    }
+    close();
     super.dispose();
   }
 }

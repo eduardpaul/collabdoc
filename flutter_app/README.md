@@ -26,4 +26,5 @@ COLLABDOC_FFI_LIB=$PWD/../target/debug/libcollabdoc_ffi.so flutter test
 | Ctrl+C / X / V, Ctrl+Shift+V | Copy and cut as Markdown text plus HTML; paste HTML, Markdown or text (Mermaid source asks); paste plain text |
 | Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z | Undo, redo (per participant) |
 | Ctrl+Shift+N | Add a participant pane |
-| Ctrl+S, Ctrl+O | Save, open |
+| Ctrl+N, Ctrl+O | New document, open a `.collabdoc` or Markdown file |
+| Ctrl+S, Ctrl+Shift+S | Save now (a draft asks where), Save As; everything is also autosaved |

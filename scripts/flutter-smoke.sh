@@ -12,6 +12,9 @@ mkdir -p "$OUT"
 OUT=$(realpath "$OUT")
 rm -f "$OUT"/*.png "$OUT/demo.collabdoc"
 
+# Drafts, the journal and recents stay in the output folder.
+export COLLABDOC_USER_DATA="$OUT/userdata" COLLABDOC_DOCUMENTS_DIR="$OUT/documents"
+rm -rf "$COLLABDOC_USER_DATA" "$COLLABDOC_DOCUMENTS_DIR"
 export DISPLAY=${SMOKE_DISPLAY:-:99}
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-$(mktemp -d)}
 if ! xdpyinfo >/dev/null 2>&1; then

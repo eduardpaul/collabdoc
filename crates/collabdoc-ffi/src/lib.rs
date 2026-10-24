@@ -472,6 +472,14 @@ impl Session {
                     Err(err) => json!({ "ok": false, "error": err.to_string() }),
                 };
             }
+            // Whether leaving needs asking (a draft with something in it).
+            "hasContent" => {
+                let any = e
+                    .blocks()
+                    .iter()
+                    .any(|b| !b.editable || !b.text.trim().is_empty());
+                return json!({ "ok": true, "hasContent": any });
+            }
             "openInfo" => {
                 let shared = self.shared.borrow();
                 return json!({

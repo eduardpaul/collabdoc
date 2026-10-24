@@ -8,7 +8,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -17,6 +16,7 @@ import 'package:flutter/services.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'app.dart';
 import 'clipboard.dart';
 import 'find_bar.dart';
 import 'model.dart';
@@ -28,11 +28,13 @@ import 'workspace.dart';
 class EditorPane extends StatefulWidget {
   const EditorPane({
     super.key,
+    required this.app,
     required this.workspace,
     required this.participant,
     this.autofocus = false,
   });
 
+  final AppController app;
   final Workspace workspace;
   final Participant participant;
   final bool autofocus;
@@ -400,15 +402,6 @@ class EditorPaneState extends State<EditorPane>
     return true;
   }
 
-  Future<void> _open() async {
-    final file = await openFile(
-      acceptedTypeGroups: [
-        const XTypeGroup(label: 'CollabDoc', extensions: ['collabdoc']),
-      ],
-    );
-    if (file != null) widget.workspace.open(file.path);
-  }
-
   // ── Keyboard ─────────────────────────────────────────────────────────
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
@@ -475,9 +468,11 @@ class EditorPaneState extends State<EditorPane>
         if (!shift) LogicalKeyboardKey.keyH: () => _openFind(replace: true),
         if (shift) LogicalKeyboardKey.keyH: () => mark('highlight'),
         LogicalKeyboardKey.keyS: () =>
-            widget.workspace.save(widget.participant),
-        LogicalKeyboardKey.keyO: _open,
-        if (shift) LogicalKeyboardKey.keyN: widget.workspace.addPeer,
+            shift ? widget.app.saveAs(context) : widget.app.save(context),
+        LogicalKeyboardKey.keyO: () => widget.app.openFile(context),
+        LogicalKeyboardKey.keyN: () => shift
+            ? widget.workspace.addPeer()
+            : widget.app.newFromEditor(context),
         LogicalKeyboardKey.home: () => _select(0, 0),
         LogicalKeyboardKey.end: () => _select(view.length, view.length),
         LogicalKeyboardKey.arrowLeft: () => op('wordLeft', {'extend': shift}),
@@ -1304,8 +1299,10 @@ class EditorPaneState extends State<EditorPane>
               false,
               () => widget.workspace.removePeer(widget.participant),
             ),
-          _tool('Open', false, _open),
-          _tool('Save', false, () => widget.workspace.save(widget.participant)),
+          _tool('Home', false, () => widget.app.home(context)),
+          _tool('Open', false, () => widget.app.openFile(context)),
+          _tool('Save', false, () => widget.app.save(context)),
+          _tool('Export .md', false, () => widget.app.exportMarkdown(context)),
         ],
       ),
     );
@@ -1314,7 +1311,14 @@ class EditorPaneState extends State<EditorPane>
   Widget _statusBar() {
     final ws = widget.workspace;
     final n = ws.participants.length;
-    final saved = ws.dirty ? '● unsaved' : (view.path ?? 'not saved yet');
+    final persist = ws.persist;
+    final saved = persist == null
+        ? ''
+        : persist.dirty
+        ? '● Unsaved'
+        : persist.isDraft
+        ? 'Draft · saved automatically'
+        : 'Saved · ${persist.path}';
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       decoration: const BoxDecoration(
@@ -1340,7 +1344,13 @@ class EditorPaneState extends State<EditorPane>
             const SizedBox(width: 16),
             Text('${view.blocks.length} blocks'),
             const SizedBox(width: 16),
-            Flexible(child: Text(saved, overflow: TextOverflow.ellipsis)),
+            Flexible(
+              child: Text(
+                saved,
+                key: const ValueKey('persist-status'),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
             const Spacer(),
             Flexible(child: Text(ws.status, overflow: TextOverflow.ellipsis)),
             // The renderer is the app's, not a participant's: shown once.

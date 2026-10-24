@@ -13,6 +13,7 @@ import 'package:ffi/ffi.dart';
 import 'model.dart';
 
 typedef _OpenC = Pointer<Void> Function(Pointer<Utf8>, Pointer<Pointer<Utf8>>);
+typedef _StoreC = Pointer<Utf8> Function(Pointer<Utf8>);
 typedef _ForkC = Pointer<Void> Function(Pointer<Void>);
 typedef _FreeC = Void Function(Pointer<Void>);
 typedef _FreeDart = void Function(Pointer<Void>);
@@ -24,6 +25,8 @@ typedef _StringFreeDart = void Function(Pointer<Utf8>);
 class _Lib {
   _Lib(DynamicLibrary lib)
     : open = lib.lookupFunction<_OpenC, _OpenC>('cd_open'),
+      openWith = lib.lookupFunction<_OpenC, _OpenC>('cd_open_with'),
+      store = lib.lookupFunction<_StoreC, _StoreC>('cd_store'),
       fork = lib.lookupFunction<_ForkC, _ForkC>('cd_fork'),
       free = lib.lookupFunction<_FreeC, _FreeDart>('cd_free'),
       call = lib.lookupFunction<_CallC, _CallC>('cd_call'),
@@ -33,6 +36,8 @@ class _Lib {
       );
 
   final _OpenC open;
+  final _OpenC openWith;
+  final _StoreC store;
   final _ForkC fork;
   final _FreeDart free;
   final _CallC call;
@@ -91,6 +96,23 @@ class Session {
     }
   }
 
+  /// Opens per `spec`: `{'new': true}`, `{'path': …}` (a `.collabdoc`, or
+  /// Markdown to import) or `{'draft': docId}` (recover a draft).
+  static Session openWith(Map<String, Object?> spec) {
+    final error = calloc<Pointer<Utf8>>();
+    final cSpec = jsonEncode(spec).toNativeUtf8();
+    try {
+      final ptr = _lib.openWith(cSpec, error);
+      if (ptr == nullptr) {
+        throw CoreException(_lib.take(error.value));
+      }
+      return Session._(ptr);
+    } finally {
+      calloc.free(cSpec);
+      calloc.free(error);
+    }
+  }
+
   /// Another participant on the same document, synced through the shared hub.
   Session fork() => Session._(_lib.fork(_ptr));
 
@@ -134,4 +156,44 @@ class Session {
       _ptr = nullptr;
     }
   }
+}
+
+/// The document store, without an open document: recents, recoveries, and
+/// where it keeps things.
+class CoreStore {
+  static Map<String, dynamic> call(Map<String, Object?> command) {
+    final cmd = jsonEncode(command).toNativeUtf8();
+    try {
+      return jsonDecode(_lib.take(_lib.store(cmd))) as Map<String, dynamic>;
+    } finally {
+      calloc.free(cmd);
+    }
+  }
+
+  /// Puts drafts, the journal and recents in `userData` (tests).
+  static void configure({
+    required String userData,
+    String? documentsDir,
+    int? idleMs,
+  }) => call({
+    'op': 'configure',
+    'userData': userData,
+    'documentsDir': ?documentsDir,
+    'idleMs': ?idleMs,
+  });
+
+  static Listing listing() {
+    final reply = call({'op': 'listing'});
+    if (reply['ok'] != true) return const Listing.empty();
+    return Listing.fromJson(reply['listing'] as Map<String, dynamic>);
+  }
+
+  static void removeRecent(String docId) =>
+      call({'op': 'removeRecent', 'docId': docId});
+
+  static void discardDraft(String docId) =>
+      call({'op': 'discardDraft', 'docId': docId});
+
+  static String documentsDir() =>
+      call({'op': 'documentsDir'})['path'] as String;
 }
