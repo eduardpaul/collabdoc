@@ -57,16 +57,55 @@ Phase 1 makes the editor usable for real documents with several participants. Ev
   - Home/End go to the edges of the line on screen in a wrapped paragraph.
   - Dragging a selection past the top or bottom of the list scrolls.
 
+The rest of spec 23's Phase 1 followed:
+- **Quotes:** Ctrl+Shift+B or the Quote button toggles a quote, as Tiptap's `toggleBlockquote` does.
+  - If the lines are all quoted, they leave their innermost quote, and the rest of that quote stays around them.
+  - Otherwise they are wrapped. A line in a list brings the whole list, because an item cannot start with a quote.
+  - Enter on an empty quoted line, or Backspace at the start of a quote, lifts the line out.
+- **Word moves:** Ctrl+←/→ (Shift to select) move by word as Chromium does on Linux, and Ctrl+Backspace/Delete delete a word. Word bounds come from Unicode segmentation.
+- **Find and replace:** Ctrl+F / Ctrl+H open a bar like the TS one: match case, n/N, previous/next, replace one or all.
+  - Replace all is one undo step.
+  - The new text keeps the marks the replaced text shared (ProseMirror's `insertText`).
+- **HTML clipboard:** copy offers HTML beside the Markdown text. Paste prefers HTML, as ProseMirror does. Flutter's clipboard is text-only, so the GTK runner has a `collabdoc/clipboard` channel.
+  - Copy writes Tiptap's tags, so the TS app reads task lists back.
+  - The reader takes the styles other editors write: Google Docs' font-weight spans inside a normal-weight `<b>`, `text-decoration`, `vertical-align`.
+  - It also handles VS Code's `white-space: pre` code, `<pre><code class=language-…>` and Mermaid, task checkboxes, and omitted `</li>`.
+- **Mermaid paste:** pasted Mermaid source asks "Insert as Mermaid diagram?", as in the TS app.
+- **Parity:** `crates/collabdoc-core/tests/fixtures/from-rust.collabdoc` holds every block kind, list, quote and mark the Rust editor makes, made through editor commands.
+  - The vitest `editor/rust-parity.test.ts` loads it with the real Tiptap schema through `loro-prosemirror`. It checks the document is valid and has the same types, marks, link targets, task ticks, code language, Mermaid source and unique blockIds.
+  - The app's own `DocumentStore` opens it without warnings.
+
+Fixes found along the way:
+- Undo after a merge could leave containers empty or the document blockless; undo and redo now run the same tidy-up as an import.
+- Typing, Enter or paste on a figure did nothing, so a figure at the end of a document trapped the caret. They now start a line after the figure (from its end) or before it (from its start).
+- Enter in the find field also reached the document. Keys that a field in the pane leaves unhandled are no longer the document's.
+
 Two fixes came out of the fuzz test (`random_edits.rs`, now with list commands and Markdown paste, 2000 seeds × 2 scenarios):
 - After a merge, `normalize` removes containers that concurrent deletes left empty.
 - When two participants move the same block at once, each leaves a copy with the same `blockId`. `normalize` now gives the later copy a fresh id, so lookups by id stay unambiguous.
 
-**Tests:** 9 widget tests (lists, links, clipboard, carets, Home/End, drag-scroll, among others), 8 bridge tests, 70 core tests, the seeded fuzz and the TS round trips.
+**Tests:**
+- 23 Flutter widget and unit tests.
+- 8 bridge tests and 5 launcher tests.
+- 98 core tests, including the seeded fuzz, now with quotes and Markdown paste (2000 seeds × 2 scenarios).
+- The TS round trips, and the TS parity test in `npm test` (309 tests pass).
 
 **Known limits:**
-- Moving blocks (list commands) copies them, as `loro-prosemirror` does. Someone else's concurrent typing inside a moved block can be lost.
-- Pasting Markdown blocks inside a list or quote inserts them as plain text.
-- Figures copy as their label.
+- Moving blocks (list and quote commands) copies them, as `loro-prosemirror` does. Someone else's concurrent typing inside a moved block can be lost.
+- Pasting blocks inside a list or quote inserts them as plain text.
+- Figures copy as their label. Pasted images wait for assets (Phase 3). Hard breaks (`<br>`) start a new block, because the model has no hard-break node yet.
+
+**Against Electron**, on the same machine and 50-page document. Flutter's keystroke time is the sum of its measured parts: core edit 2.7 ms, bridge 0.8 ms, frame build, raster.
+
+| | Electron | Flutter, GPU renderer | Flutter, software renderer | GPUI (spec 23) |
+| --- | --- | --- | --- | --- |
+| Ships as | 283 MB runtime plus the app | 10.9 MB, one file | same file | 20 MB, one file |
+| Processes | 6 | 1 | 1 | 1 |
+| Memory, document open | 447 MB PSS (810 MB RSS summed) | 237 MB PSS (259 RSS) | 139 MB PSS (162 RSS) | 130 MB PSS (150 RSS) |
+| After 60 keystrokes | 489 MB PSS | 246 MB PSS | 145 MB PSS | — |
+| Keystroke to frame, p50 | 17.6 ms (p95 35) | ≈ 15 ms (raster 9.1 on llvmpipe) | ≈ 9 ms (raster 3.5, p95 6.9) | — |
+
+Flutter on its software renderer uses about a third of Electron's memory. It meets Phase 1's 16 ms typing target on this document; Electron does not.
 
 ## Measured against the GPUI build
 
