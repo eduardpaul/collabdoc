@@ -7,6 +7,7 @@
 import 'package:collabdoc/editor.dart';
 import 'package:collabdoc/main.dart';
 import 'package:collabdoc/workspace.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -131,6 +132,50 @@ void main() {
     ], LogicalKeyboardKey.keyZ);
     expect(texts(mine), ['', 'From the peer']);
     expect(texts(theirs), ['', 'From the peer']);
+  });
+
+  testWidgets('list shortcuts, Tab and task ticks', (tester) async {
+    await launch(tester);
+    final pane = tester.state<EditorPaneState>(find.byType(EditorPane));
+    type(pane, 'one');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    type(pane, 'two');
+    await chord(tester, [
+      LogicalKeyboardKey.controlLeft,
+    ], LogicalKeyboardKey.keyA);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyEvent(
+      LogicalKeyboardKey.asterisk,
+      physicalKey: PhysicalKeyboardKey.digit8,
+    );
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    expect([for (final b in pane.view.blocks) b.list], ['bullet', 'bullet']);
+
+    // Tab on the second line nests it under the first.
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    expect([for (final b in pane.view.blocks) b.listDepth], [1, 2]);
+    await chord(tester, [LogicalKeyboardKey.shiftLeft], LogicalKeyboardKey.tab);
+    expect([for (final b in pane.view.blocks) b.listDepth], [1, 1]);
+
+    // Task list; clicking the box ticks it.
+    await chord(tester, [
+      LogicalKeyboardKey.controlLeft,
+    ], LogicalKeyboardKey.keyA);
+    pane.run({'op': 'toggleList', 'kind': 'task'});
+    await tester.pump();
+    expect(pane.view.blocks.first.list, 'task');
+    await tester.tap(find.byKey(const ValueKey('task-box-1')));
+    await tester.pump();
+    expect(
+      [for (final b in pane.view.blocks) b.checked].contains(true),
+      isTrue,
+    );
   });
 
   testWidgets('input made against text we no longer show lands at the caret', (

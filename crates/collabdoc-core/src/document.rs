@@ -7,13 +7,15 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use loro::{
-    CommitOptions, ExportMode, Frontiers, LoroDoc, LoroText, LoroValue, UndoManager, VersionVector,
+    CommitOptions, ContainerTrait, ExportMode, Frontiers, LoroDoc, LoroText, LoroValue,
+    UndoManager, VersionVector,
 };
 
 use crate::file::{self, Asset, FileError};
 use crate::ids::new_doc_id;
-use crate::model::{BlockKind, Span, TargetBlock, ViewBlock, masks};
+use crate::model::{BlockKind, ListKind, Span, TargetBlock, ViewBlock, masks};
 use crate::schema::*;
+use crate::structure;
 use crate::tree::{self, Located};
 use crate::utf16;
 
@@ -242,11 +244,31 @@ impl Document {
         for c in assigned.iter().flatten() {
             retained[*c] = true;
         }
-        for (i, (located, _)) in current.iter().enumerate() {
-            if !retained[i] {
-                tree::delete_leaf(located);
+        let mut restructured = false;
+        for (i, (located, view)) in current.iter().enumerate() {
+            if retained[i] {
+                continue;
+            }
+            if restructured {
+                // An earlier deletion moved blocks; this one may be among them.
+                let id = if view.block_id.is_empty() {
+                    &view.key
+                } else {
+                    &view.block_id
+                };
+                if let Some(fresh) = structure::find(&self.doc, id) {
+                    restructured |= tree::delete_leaf(&fresh);
+                }
+            } else {
+                restructured |= tree::delete_leaf(located);
             }
         }
+        // Deleting moved blocks (see `delete_leaf`): find them again by id.
+        let current = if restructured {
+            relocate(&self.doc, &current)
+        } else {
+            current
+        };
         // The new flat view, built as we go: untouched blocks keep their view,
         // touched and new ones are read back from Loro.
         let mut flat = Vec::with_capacity(target.len());
@@ -278,7 +300,7 @@ impl Document {
                 }
             }
         }
-        let rebuilt = flat.is_empty();
+        let rebuilt = restructured || flat.is_empty();
         if rebuilt {
             tree::create_textblock(&tree::root(&self.doc), 0, BlockKind::Paragraph);
         }
@@ -290,6 +312,144 @@ impl Document {
         };
         *self.flat.borrow_mut() = Some((self.doc.state_frontiers(), Rc::new(flat)));
         true
+    }
+
+    /// A structural edit (lists, indent): its own history entry and undo step.
+    fn structural(&mut self, message: &str, f: impl FnOnce(&LoroDoc) -> bool) -> bool {
+        let changed = f(&self.doc);
+        if changed {
+            self.commit_boundary(message);
+        }
+        changed
+    }
+
+    /// Bullet, numbered or task list for the blocks `ids` (`blockId`s or view
+    /// keys), like the toolbar toggles: blocks already in such a list leave
+    /// it, blocks in another kind of list switch kind, others are wrapped.
+    pub fn toggle_list(&mut self, ids: &[String], kind: ListKind) -> bool {
+        let flat = tree::flatten(&self.doc);
+        let chosen: Vec<&(Located, ViewBlock)> = ids
+            .iter()
+            .filter_map(|id| flat.iter().find(|(_, v)| v.block_id == *id || v.key == *id))
+            .filter(|(_, v)| v.kind != BlockKind::Atom)
+            .collect();
+        if chosen.is_empty() {
+            return false;
+        }
+        let stable: Vec<String> = chosen
+            .iter()
+            .map(|(_, v)| {
+                if v.block_id.is_empty() {
+                    v.key.clone()
+                } else {
+                    v.block_id.clone()
+                }
+            })
+            .collect();
+        if chosen.iter().all(|(_, v)| v.list == Some(kind)) {
+            return self.structural("leave list", |doc| {
+                let mut changed = false;
+                for id in &stable {
+                    while let Some(located) = structure::find(doc, id) {
+                        if !structure::outdent(&located) {
+                            break;
+                        }
+                        changed = true;
+                    }
+                }
+                changed
+            });
+        }
+        if chosen.iter().all(|(_, v)| v.list.is_some()) {
+            return self.structural("change list", |doc| {
+                let mut changed = false;
+                for id in &stable {
+                    if let Some(located) = structure::find(doc, id) {
+                        changed |= structure::set_list_kind(&located, kind);
+                    }
+                }
+                changed
+            });
+        }
+        self.structural("make list", |doc| {
+            // Runs of neighbouring blocks with one parent become one list each.
+            let mut changed = false;
+            let mut i = 0;
+            while i < stable.len() {
+                let Some(first) = structure::find(doc, &stable[i]) else {
+                    i += 1;
+                    continue;
+                };
+                if tree::located_view(&first).list.is_some() {
+                    i += 1;
+                    continue;
+                }
+                let mut run = vec![first];
+                while i + run.len() < stable.len() {
+                    let Some(next) = structure::find(doc, &stable[i + run.len()]) else {
+                        break;
+                    };
+                    let last = run.last().unwrap();
+                    let same_parent = next.parent().id() == last.parent().id();
+                    let adjacent = tree::index_in(last.parent(), &last.node)
+                        .zip(tree::index_in(next.parent(), &next.node))
+                        .is_some_and(|(a, b)| b == a + 1);
+                    if !same_parent || !adjacent || tree::located_view(&next).list.is_some() {
+                        break;
+                    }
+                    run.push(next);
+                }
+                i += run.len();
+                changed |= structure::wrap_in_list(&run, kind);
+            }
+            changed
+        })
+    }
+
+    pub fn indent(&mut self, ids: &[String]) -> bool {
+        let ids = ids.to_vec();
+        self.structural("indent", |doc| {
+            let mut changed = false;
+            for id in &ids {
+                if let Some(located) = structure::find(doc, id) {
+                    changed |= structure::indent(&located);
+                }
+            }
+            changed
+        })
+    }
+
+    pub fn outdent(&mut self, ids: &[String]) -> bool {
+        let ids = ids.to_vec();
+        self.structural("outdent", |doc| {
+            let mut changed = false;
+            for id in &ids {
+                if let Some(located) = structure::find(doc, id) {
+                    changed |= structure::outdent(&located);
+                }
+            }
+            changed
+        })
+    }
+
+    pub fn set_checked(&mut self, id: &str, checked: bool) -> bool {
+        self.structural(if checked { "tick task" } else { "untick task" }, |doc| {
+            structure::find(doc, id)
+                .is_some_and(|located| structure::set_checked(&located, checked))
+        })
+    }
+
+    /// Enter in a list line with a sub-list after it; see
+    /// [`structure::split_item_with_children`]. Returns the new line's id.
+    pub fn split_list_item(&mut self, id: &str, at: usize) -> Option<String> {
+        let mut created = None;
+        self.structural("split list item", |doc| {
+            created = structure::find(doc, id)
+                .filter(structure::has_content_after)
+                .and_then(|line| structure::split_item_with_children(&line, at));
+            created.is_some()
+        });
+        created
     }
 
     /// A command (bold, heading, …): its own history entry and undo step,
@@ -371,8 +531,40 @@ impl Document {
         self.doc
             .import(bytes)
             .map_err(|e| DocError::Loro(e.to_string()))?;
+        // Merged concurrent edits can leave empty containers; tidy them as
+        // bookkeeping (never an undo step).
+        if structure::normalize(&self.doc) {
+            self.doc.commit_with(
+                CommitOptions::new()
+                    .origin("sys:normalize")
+                    .timestamp(now_ms()),
+            );
+        }
         Ok(self.doc.oplog_vv() != before)
     }
+}
+
+/// `current` with every block found again by `blockId` after blocks moved.
+fn relocate(doc: &LoroDoc, current: &[(Located, ViewBlock)]) -> Flat {
+    let fresh = tree::flatten(doc);
+    Rc::new(
+        current
+            .iter()
+            .map(|(located, view)| {
+                fresh
+                    .iter()
+                    .find(|(_, v)| {
+                        if view.block_id.is_empty() {
+                            v.key == view.key
+                        } else {
+                            v.block_id == view.block_id
+                        }
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| (located.clone(), view.clone()))
+            })
+            .collect(),
+    )
 }
 
 /// Gives every text-bearing block an empty `LoroText` up front, under a `sys:`

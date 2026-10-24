@@ -137,6 +137,17 @@ impl Session {
                 };
                 e.set_kind(kind)
             }
+            "toggleList" => {
+                let kind = match s("kind") {
+                    "ordered" => ListKind::Ordered,
+                    "task" => ListKind::Task,
+                    _ => ListKind::Bullet,
+                };
+                e.toggle_list(kind)
+            }
+            "indent" => e.indent(),
+            "outdent" => e.outdent(),
+            "toggleTask" => e.toggle_task(n("block")),
             "select" => {
                 e.set_selection(n("anchor"), n("head"));
                 false
@@ -333,6 +344,27 @@ mod tests {
             cd_free(fork);
             cd_free(session);
         }
+    }
+
+    #[test]
+    fn list_commands() {
+        let mut s = Session::open(None).unwrap();
+        call(&mut s, json!({"op": "insert", "text": "one\ntwo"}));
+        call(&mut s, json!({"op": "selectAll"}));
+        assert_eq!(
+            call(&mut s, json!({"op": "toggleList", "kind": "task"}))["changed"],
+            true
+        );
+        assert_eq!(
+            call(&mut s, json!({"op": "toggleTask", "block": 1}))["changed"],
+            true
+        );
+        call(&mut s, json!({"op": "select", "anchor": 4, "head": 4}));
+        assert_eq!(call(&mut s, json!({"op": "indent"}))["changed"], true);
+        let view = s.view();
+        assert_eq!(view["blocks"][1]["list"], "task");
+        assert_eq!(view["blocks"][1]["listDepth"], 2);
+        assert_eq!(view["blocks"][1]["checked"], true);
     }
 
     #[test]

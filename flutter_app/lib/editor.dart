@@ -177,6 +177,21 @@ class EditorPaneState extends State<EditorPane>
         op('setKind', {'kind': k, 'level': level});
     void mark(String m) => op('toggleMark', {'mark': m});
 
+    // Ctrl+Shift+8/7/9 (Tiptap's list shortcuts): match the physical key,
+    // since Shift turns the digit into a symbol on most layouts.
+    if (ctrl && shift && !alt) {
+      final list = switch (event.physicalKey) {
+        PhysicalKeyboardKey.digit8 => 'bullet',
+        PhysicalKeyboardKey.digit7 => 'ordered',
+        PhysicalKeyboardKey.digit9 => 'task',
+        _ => null,
+      };
+      if (list != null) {
+        op('toggleList', {'kind': list});
+        return KeyEventResult.handled;
+      }
+    }
+
     final Map<LogicalKeyboardKey, void Function()> table;
     if (ctrl && alt) {
       table = {
@@ -213,6 +228,7 @@ class EditorPaneState extends State<EditorPane>
     } else {
       table = {
         LogicalKeyboardKey.backspace: () => op('backspace'),
+        LogicalKeyboardKey.tab: () => op(shift ? 'outdent' : 'indent'),
         LogicalKeyboardKey.delete: () => op('delete'),
         LogicalKeyboardKey.enter: () => op('newline'),
         LogicalKeyboardKey.numpadEnter: () => op('newline'),
@@ -609,9 +625,13 @@ class EditorPaneState extends State<EditorPane>
       height: 1.55,
       fontWeight: bold ? FontWeight.w700 : FontWeight.w400,
       fontStyle: b.editable ? FontStyle.normal : FontStyle.italic,
-      color: b.editable
+      color: b.editable && !(b.list == 'task' && b.checked)
           ? (b.quoteDepth > 0 ? AppColors.muted : AppColors.text)
           : AppColors.muted,
+      // A ticked task reads as done.
+      decoration: b.list == 'task' && b.checked
+          ? TextDecoration.lineThrough
+          : null,
     );
   }
 
@@ -701,14 +721,24 @@ class EditorPaneState extends State<EditorPane>
     Widget? marker = switch (b.list) {
       'bullet' => Text(b.listDepth.isOdd ? '•' : '◦'),
       'ordered' => Text('$number.'),
-      'task' => Container(
-        margin: const EdgeInsets.only(top: 5),
-        width: 12,
-        height: 12,
-        decoration: BoxDecoration(
-          color: b.checked ? AppColors.accent : null,
-          border: Border.all(color: AppColors.muted),
-          borderRadius: BorderRadius.circular(2),
+      'task' => Align(
+        alignment: Alignment.topLeft,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            key: ValueKey('task-box-$i'),
+            onTap: () => run({'op': 'toggleTask', 'block': i}),
+            child: Container(
+              margin: const EdgeInsets.only(top: 5),
+              width: 12,
+              height: 12,
+              decoration: BoxDecoration(
+                color: b.checked ? AppColors.accent : null,
+                border: Border.all(color: AppColors.muted),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
         ),
       ),
       _ => null,
@@ -792,6 +822,7 @@ class EditorPaneState extends State<EditorPane>
 
   Widget _toolbar() {
     bool on(int bit) => view.marks & bit != 0;
+    final listHere = view.blocks[view.blockAt(view.head)].list;
     void op(String name, [Map<String, Object?> args = const {}]) =>
         run({'op': name, ...args});
     final sep = Container(
@@ -869,6 +900,22 @@ class EditorPaneState extends State<EditorPane>
                     'Mark',
                     on(Marks.highlight),
                     () => op('toggleMark', {'mark': 'highlight'}),
+                  ),
+                  sep,
+                  _tool(
+                    '• List',
+                    listHere == 'bullet',
+                    () => op('toggleList', {'kind': 'bullet'}),
+                  ),
+                  _tool(
+                    '1. List',
+                    listHere == 'ordered',
+                    () => op('toggleList', {'kind': 'ordered'}),
+                  ),
+                  _tool(
+                    'Tasks',
+                    listHere == 'task',
+                    () => op('toggleList', {'kind': 'task'}),
                   ),
                   sep,
                   _tool('Undo', false, () => op('undo')),

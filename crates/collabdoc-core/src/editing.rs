@@ -13,7 +13,7 @@ use loro::cursor::{Cursor, Side};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::document::Document;
-use crate::model::{BlockKind, TargetBlock, ViewBlock, masks, spans_from_masks};
+use crate::model::{BlockKind, ListKind, TargetBlock, ViewBlock, masks, spans_from_masks};
 use crate::schema::{LINK_BIT, mark_bit};
 use crate::utf16;
 
@@ -146,9 +146,8 @@ impl Editor {
             self.starts.push(at);
             at += utf16::len(&block.text) + 1;
         }
-        let len = self.len();
-        self.anchor = self.anchor.min(len);
-        self.head = self.head.min(len);
+        self.anchor = self.snap(self.anchor);
+        self.head = self.snap(self.head);
     }
 
     /// `(block index, offset in block)` of a global offset.
@@ -320,13 +319,39 @@ impl Editor {
         self.replace(range, text)
     }
 
+    /// Enter. In a list: an empty line leaves the list (one level), and a
+    /// line with a sub-list under it hands the sub-list to the new item.
     pub fn newline(&mut self) -> bool {
+        if self.anchor == self.head {
+            let (index, local) = self.locate(self.head);
+            let block = &self.blocks[index];
+            if block.list.is_some() && block.editable {
+                if block.text.is_empty() {
+                    return self.outdent();
+                }
+                let id = stable_id(block);
+                if let Some(new_id) = self.doc.split_list_item(&id, local) {
+                    self.reload();
+                    if let Some(i) = self.blocks.iter().position(|b| stable_id(b) == new_id) {
+                        let at = self.starts[i];
+                        self.move_to(at);
+                    }
+                    return true;
+                }
+            }
+        }
         self.insert_text("\n")
     }
 
+    /// Backspace. At the very start of a list line it lifts the line out one
+    /// level instead of joining it to the line above.
     pub fn backspace(&mut self) -> bool {
         let mut range = self.selection();
         if range.is_empty() {
+            let (index, local) = self.locate(range.start);
+            if local == 0 && self.blocks[index].list.is_some() && self.blocks[index].editable {
+                return self.outdent();
+            }
             range.start = self.previous_boundary(range.start);
         }
         self.replace(range, "")
@@ -526,6 +551,74 @@ impl Editor {
         changed
     }
 
+    /// Bullet, numbered or task list on or off for the selected blocks.
+    pub fn toggle_list(&mut self, kind: ListKind) -> bool {
+        self.structural(|doc, ids| doc.toggle_list(ids, kind))
+    }
+
+    /// Tab in a list: the selected items become children of the item above.
+    pub fn indent(&mut self) -> bool {
+        self.structural(|doc, ids| doc.indent(ids))
+    }
+
+    /// Shift+Tab in a list: one level up (or out of the list).
+    pub fn outdent(&mut self) -> bool {
+        self.structural(|doc, ids| doc.outdent(ids))
+    }
+
+    /// Ticks or unticks the task line at block `index`.
+    pub fn toggle_task(&mut self, index: usize) -> bool {
+        let Some(block) = self.blocks.get(index) else {
+            return false;
+        };
+        if block.list != Some(ListKind::Task) {
+            return false;
+        }
+        let (id, checked) = (stable_id(block), block.checked);
+        let points = self.stable_points();
+        let changed = self.doc.set_checked(&id, !checked);
+        self.reload();
+        self.restore_stable(points);
+        changed
+    }
+
+    /// Runs a structural edit on the selected blocks. Blocks may be copied to
+    /// new places (new view keys), so the selection follows `blockId`s.
+    fn structural(&mut self, f: impl FnOnce(&mut Document, &[String]) -> bool) -> bool {
+        let range = self.selection();
+        let (bs, _) = self.locate(range.start);
+        let (be, _) = self.locate(range.end);
+        let ids: Vec<String> = self.blocks[bs..=be].iter().map(stable_id).collect();
+        let points = self.stable_points();
+        let changed = f(&mut self.doc, &ids);
+        self.reload();
+        self.restore_stable(points);
+        self.stored_marks = None;
+        changed
+    }
+
+    fn stable_points(&self) -> ((String, usize), (String, usize)) {
+        let point = |offset: usize| {
+            let (i, local) = self.locate(offset);
+            (stable_id(&self.blocks[i]), local)
+        };
+        (point(self.anchor), point(self.head))
+    }
+
+    fn restore_stable(&mut self, (anchor, head): ((String, usize), (String, usize))) {
+        let find = |(id, local): &(String, usize), fallback: usize| {
+            self.blocks
+                .iter()
+                .position(|b| stable_id(b) == *id)
+                .map(|i| self.starts[i] + (*local).min(utf16::len(&self.blocks[i].text)))
+                .unwrap_or(fallback)
+        };
+        let a = find(&anchor, self.anchor);
+        let h = find(&head, self.head);
+        self.anchor = self.snap(a);
+        self.head = self.snap(h);
+    }
+
     fn caret_key(&self) -> String {
         self.blocks[self.locate(self.head).0].key.clone()
     }
@@ -610,9 +703,8 @@ impl Editor {
     fn restore(&mut self, (anchor, head): (Anchor, Anchor)) {
         let a = self.resolve(&anchor, self.anchor);
         let h = self.resolve(&head, self.head);
-        let len = self.len();
-        self.anchor = a.min(len);
-        self.head = h.min(len);
+        self.anchor = self.snap(a);
+        self.head = self.snap(h);
     }
 }
 
@@ -625,6 +717,15 @@ struct Anchor {
 /// Characters (Unicode scalar values) in the first `utf16_offset` units of `text`.
 fn char_count(text: &str, utf16_offset: usize) -> usize {
     text[..utf16::to_utf8(text, utf16_offset)].chars().count()
+}
+
+/// A block's `blockId`, or its view key in files that lack ids.
+fn stable_id(block: &ViewBlock) -> String {
+    if block.block_id.is_empty() {
+        block.key.clone()
+    } else {
+        block.block_id.clone()
+    }
 }
 
 /// Marks for text typed at `at` in `piece`, mirroring Loro: inside a run the

@@ -10,6 +10,7 @@ pub mod ids;
 pub mod model;
 pub mod persist;
 pub mod schema;
+pub mod structure;
 pub mod sync;
 pub mod tree;
 pub mod utf16;

@@ -369,16 +369,29 @@ pub fn set_kind(node: &LoroMap, kind: BlockKind) {
 }
 
 /// Removes `node` from `ancestors.last()`, then any container left empty.
-pub fn delete_leaf(located: &Located) {
+/// Returns true when blocks were moved to keep the tree valid (an item that
+/// lost its first line hands its sub-lists to its list): callers holding
+/// `Located`s must look them up again.
+pub fn delete_leaf(located: &Located) -> bool {
     let mut node = located.node.clone();
-    for parent in located.ancestors.iter().rev() {
+    let last = located.ancestors.len() - 1;
+    for (depth, parent) in located.ancestors.iter().enumerate().rev() {
         if let Some(i) = index_in(parent, &node) {
             children(parent).delete(i, 1).expect("delete block");
         }
-        let is_root = node_name(parent) == "doc";
-        if is_root || !child_maps(parent).is_empty() {
+        if node_name(parent) == "doc" {
+            break;
+        }
+        if !child_maps(parent).is_empty() {
+            if depth == last && depth > 0 && crate::schema::is_item_type(&node_name(parent)) {
+                return crate::structure::repair_headless_item(
+                    parent,
+                    &located.ancestors[depth - 1],
+                );
+            }
             break;
         }
         node = parent.clone();
     }
+    false
 }
