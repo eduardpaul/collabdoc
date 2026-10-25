@@ -1,6 +1,6 @@
 # 24 · Flutter UI experiment: same Rust core, Flutter front end
 
-**Phase:** platform (experiment) · **Depends on:** 23 Phase 0 · **Status:** Phases 1–3 of spec 23 done on branch `flutter`
+**Phase:** platform (experiment) · **Depends on:** 23 Phase 0 · **Status:** Phases 1–4 of spec 23 done on branch `flutter`
 
 Written 2026-10-24. Flutter 3.47.8 (Dart 3.13.7), Linux desktop.
 
@@ -242,6 +242,60 @@ The release profile now unwinds panics instead of aborting, so a panic in the Me
 - **Mentions** pick from the people in this window; the roster with agents comes with spec 23's Phase 6.
 - **Clipboard on other platforms:** the image and HTML clipboard is the GTK runner's; Windows and macOS paste plain text.
 - **GPUI** (`collabdoc-gpui`, this branch) still paints a block's text, so a figure shows as the U+FFFC glyph there.
+
+## Phase 4 result: history and attribution
+
+Spec 23's Phase 4 (spec 05), in the core (`collabdoc_core::history`, ported from `history.ts`, `history-index.ts`, `history-diff.ts`, `checkpoints.ts`, `authors.ts`) with the History tab in Flutter.
+
+- **Attribution (AC-05.2).**
+  - Every participant writes `{actorId, name, color, role}` into the document's `authors` map under its Loro peer id, as the TS app does. It is written as its own `sys:author` commit, which undo never removes and history hides.
+  - The record goes in just before the participant's first edit, so opening a document never marks it unsaved; a rename rewrites it.
+  - A peer that never identified itself shows as "Unknown peer …", never guessed human.
+- **The list (AC-05.1, 05.3).** One entry per Loro change, described from its ops in the TS app's words (`+25  added paragraph`, `inserted “…”`, `applied bold`, `removed 1 block`, `set the title to “…”`), with the commit message.
+  - The panel has author chips with counts (which add up to the total), a search, entries newest first, and re-reads 400 ms after edits settle.
+- **The index (AC-05.10).** Only changes new since the last refresh are described; a change that grew (merged typing) replaces its entry. Each block's last author is kept for the gutter. 1 000 commits onto 10 000: 45 ms in a release build (the bar is 1 s).
+- **Diffs (AC-05.4).** Word-level per block (added, removed, changed, with one block of context each side), with whitespace kept, as `diffWordsWithSpace`.
+  - The last 32 are cached; a change that grew is diffed again.
+  - The diff forks the document once at the change and checks the fork out to its parent: about 200 ms for a change in a 2 000-block document, against a 300 ms bar. Two forks took 317 ms.
+- **Checkpoints (AC-05.5).** Rows of the TS `checkpoints` list (frontiers as a JSON string), as a `sys:checkpoint` commit. They sync, survive a reload, and are pinned in the panel.
+- **View this version (AC-05.6).** `cd_open_version` opens the document at a version as a read-only session. It answers moving, selecting, copying and finding, ignores edits, and never touches the store.
+  - The pane shows it with the real editor (figures and chips included) under a banner: "Viewing Checkpoint “Draft 1” · read-only · Restore · Close".
+  - Closing brings the live pane back; its caret lives in the core, so it is where it was.
+- **Restore (AC-05.7).** The live tree is made to read like the version as one commit by the current participant ("Restore version"), undoable with Ctrl+Z.
+  - Children are matched by `blockId` (lists by their first line), in order. Kept blocks change only where they differ, through the same writer as typing, so their ids and the text around a collaborator's caret survive. Missing blocks are recreated from the version and extra ones removed.
+  - History keeps everything after the restored point.
+- **Gutter (AC-05.9).** The Authors toggle paints each block's last author's color in the margin. It follows edits live.
+
+**Parity.**
+- Both cores tell the same history of both fixtures, checked live with `COLLABDOC_TS_COMPAT=1` through a new `ts-compat.ts history` mode: the same entry ids, summaries, messages and authors, and the same checkpoints with their previews.
+- The Rust fixture now carries an author record and a checkpoint.
+
+**Found along the way:**
+- **Backspace on a selected figure** left an empty paragraph in its place; it now removes the figure, as ProseMirror's node selection does.
+- **Several text runs side by side** (left by concurrent edits) were rewritten only in the first run, so the rest survived an edit that should have replaced it. The fuzzer found this once it started restoring random versions and checking the result equals the version. Blocks with several runs now go through the mixed-content writer, which also joins the runs.
+
+**Tests:**
+- Core: 18 history tests (ports of `history.test.ts` and `history-index.test.ts`, restore, lazy authors, both benchmarks). The fuzzer now also restores random versions (1000 seeds × 2 scenarios).
+- Bridge: 13.
+- Flutter: 29 widget tests, 2 of them new. One covers two participants, filters, a diff, a checkpoint, a read-only view where typing changes nothing, restore, and undo of the restore. The other covers the gutter.
+- `scripts/flutter-history.sh` drives the real app and prints the saved file's history (`--example history`):
+
+```
+You        set the title to “demo”  [create document]
+You        +12  inserted “Release plan”
+You        added heading
+You        +25  added paragraph
+Peer 2     +33  added paragraph
+You        checkpoint: Draft 1  [checkpoint: Draft 1]
+Peer 2     +38 −24  deleted 24 characters
+You        +5 −19  deleted 19 characters  [Restore version]
+checkpoint “Draft 1”: ["Release plan", "Ship the editor in March.", "Peer 2 adds: and the history tab."]
+now: ["Release plan", "Ship the editor in March.", "Peer 2 adds: and the history tab."]
+```
+
+**Not yet:**
+- **AC-05.8, agent tool commits:** each tool call is its own commit whose message is the tool summary. That comes with the agent tools (spec 23 Phases 7–8); human typing is already cut at 1 s idle or a block switch.
+- **Checkpoints in the export menu** (spec 05's design) wait for export choices beyond Markdown.
 
 ## Single file and lower memory with Flutter (measured 2026-10-24)
 

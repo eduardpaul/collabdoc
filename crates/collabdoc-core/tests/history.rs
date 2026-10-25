@@ -374,6 +374,7 @@ fn the_index_appends_1000_commits_onto_10000_quickly() {
     // The bar is for an optimised build; a debug build gets more room.
     let limit = if cfg!(debug_assertions) { 10 } else { 1 };
     assert!(elapsed.as_secs_f64() < limit as f64, "{elapsed:?}");
+    eprintln!("1 000 commits onto 10 000: {elapsed:?}");
 }
 
 #[test]

@@ -27,6 +27,7 @@ COLLABDOC_FFI_LIB=$PWD/../target/debug/libcollabdoc_ffi.so flutter test
 | Shift+Enter, @ | Line break inside the paragraph; mention someone (a chip) |
 | Ctrl+Alt+M / I / P | Insert a Mermaid diagram, an infographic, an image (or the toolbar: Image, Diagram, @) |
 | Click a figure | Its bar: Caption…, Source… (diagrams), width Auto/50/75/100 %, Left/Center/Right |
+| History, Authors | The History tab (entries by author, search, diff, checkpoints, View this version, Restore); the last-author gutter |
 | Ctrl+←/→ (with Shift), Ctrl+Backspace/Delete | Move or select by word; delete a word |
 | Ctrl+K, Ctrl+click | Edit link, open link |
 | Ctrl+F, Ctrl+H | Find, replace (Enter / Shift+Enter: next / previous; Esc closes) |
