@@ -11,7 +11,9 @@
 import { readFileSync, writeFileSync } from 'fs'
 import { createHash } from 'crypto'
 import { Cursor, EphemeralStore, LoroList, LoroMap, LoroText } from 'loro-crdt'
+import { listCheckpoints } from '../../../../src/core/checkpoints'
 import { decodeCollabdoc, encodeCollabdoc } from '../../../../src/core/collabdoc-file'
+import { listHistory, previewAt } from '../../../../src/core/history'
 import {
   commitBoundary,
   createDocument,
@@ -121,7 +123,23 @@ if (mode === 'write') {
     anchor: state.anchor ? blockIdFromCursor(doc, Cursor.decode(state.anchor)) : null
   }))
   console.log(JSON.stringify(carets))
+} else if (mode === 'history') {
+  // How the TS core describes a file's history and checkpoints.
+  const doc = openDocument(decodeCollabdoc(new Uint8Array(readFileSync(file))).snapshot)
+  const entries = listHistory(doc).map((e) => ({
+    id: e.id,
+    summary: e.summary,
+    message: e.message,
+    author: e.author.name,
+    role: e.author.role ?? null
+  }))
+  const checkpoints = listCheckpoints(doc).map((c) => ({
+    name: c.name,
+    actorId: c.actorId,
+    blocks: previewAt(doc, c.frontiers).map((b) => b.text)
+  }))
+  console.log(JSON.stringify({ entries, checkpoints }))
 } else {
-  console.error('usage: ts-compat.ts write|read|presence <file> [presence.bin]')
+  console.error('usage: ts-compat.ts write|read|presence|history <file> [presence.bin]')
   process.exit(2)
 }

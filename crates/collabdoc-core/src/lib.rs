@@ -7,6 +7,7 @@ pub mod document;
 pub mod editing;
 pub mod figures;
 pub mod file;
+pub mod history;
 pub mod html;
 pub mod ids;
 pub mod markdown;

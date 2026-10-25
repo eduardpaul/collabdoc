@@ -242,6 +242,13 @@ fn typescript_reads_a_caret_rust_publishes() {
 /// pasted Markdown and HTML, toolbar commands, typing.
 fn every_kind() -> Editor {
     let mut e = Editor::new(Document::create("Made by the Rust editor", "rust"));
+    e.set_author(collabdoc_core::history::AuthorRecord {
+        actor_id: "rust".into(),
+        name: "Rust editor".into(),
+        color: "#c45c26".into(),
+        role: "human".into(),
+        handle: None,
+    });
     e.paste(
         "# Heading one\n\n## Heading two\n\n### Heading three\n\n#### Heading four\n\n\
          Marks: **bold** *italic* <u>underline</u> ~~strike~~ `code` ==highlight== ^sup^ ~sub~ \
@@ -318,6 +325,7 @@ fn every_kind() -> Editor {
         .position(|b| b.node_name == "mermaidFigure")
         .unwrap();
     e.set_caption(diagram, "Flow");
+    e.add_checkpoint("All kinds");
     e
 }
 
@@ -368,4 +376,49 @@ fn the_rust_fixture_is_what_the_editor_makes_today() {
     // The image's bytes travel in the file.
     assert_eq!(fixture.assets(), made.document().assets());
     assert_eq!(fixture.assets().len(), 1);
+}
+
+/// Both cores describe a file's history the same way: the same entries
+/// (one per change), summaries, authors and checkpoints.
+#[test]
+fn both_cores_tell_the_same_history() {
+    for name in ["from-ts.collabdoc", "from-rust.collabdoc"] {
+        let path = fixtures().join(name);
+        let Some(json) = run_ts(&[Path::new("history"), &path]) else {
+            return;
+        };
+        let doc = Document::from_collabdoc(&std::fs::read(&path).unwrap(), "reader").unwrap();
+        let rust: Vec<serde_json::Value> = collabdoc_core::history::list_history(doc.loro())
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "id": e.id,
+                    "summary": e.summary,
+                    "message": e.message,
+                    "author": e.author.name,
+                    "role": e.author.role,
+                })
+            })
+            .collect();
+        assert_eq!(json["entries"].as_array().unwrap(), &rust, "{name}");
+        let checkpoints: Vec<serde_json::Value> =
+            collabdoc_core::history::list_checkpoints(doc.loro())
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "name": c.name,
+                        "actorId": c.actor_id,
+                        "blocks": collabdoc_core::history::preview_at(doc.loro(), &c.frontiers)
+                            .into_iter()
+                            .map(|b| b.text)
+                            .collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+        assert_eq!(
+            json["checkpoints"].as_array().unwrap(),
+            &checkpoints,
+            "{name}"
+        );
+    }
 }

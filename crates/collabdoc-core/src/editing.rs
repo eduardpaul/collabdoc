@@ -653,6 +653,23 @@ impl Editor {
         }
         let head_editable = self.blocks[bs].editable;
         let tail_editable = self.blocks[be].editable;
+        // Whole figures and nothing else, deleted: they go, with no empty
+        // line left in their place (ProseMirror's node selection).
+        let deleting = text.is_empty() && rich.is_none_or(|r| r.is_empty());
+        if deleting
+            && os == 0
+            && oe == self.block_len(be)
+            && (bs..=be).all(|i| !self.blocks[i].editable)
+        {
+            return Some(
+                self.blocks
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !(bs..=be).contains(i))
+                    .map(|(_, b)| TargetBlock::from(b))
+                    .collect(),
+            );
+        }
         // A figure is replaced only as a whole.
         if !head_editable && os != 0 {
             return None;
@@ -1037,6 +1054,24 @@ impl Editor {
             vec![("src".into(), src.into()), ("alt".into(), alt.into())],
         );
         Ok(self.paste_nodes(&[figure], ""))
+    }
+
+    /// Who edits through this editor (see [`Document::set_author`]).
+    pub fn set_author(&mut self, author: crate::history::AuthorRecord) {
+        self.doc.set_author(author);
+    }
+
+    /// Marks a checkpoint at the current version.
+    pub fn add_checkpoint(&mut self, name: &str) -> crate::history::Checkpoint {
+        let checkpoint = self.doc.add_checkpoint(name);
+        self.reload();
+        checkpoint
+    }
+
+    /// Restores the version at `frontiers` as one new, undoable commit; the
+    /// caret stays on its block where that block still exists.
+    pub fn restore_version(&mut self, frontiers: &[crate::history::Frontier]) -> bool {
+        self.structural(|doc, _| doc.restore(frontiers))
     }
 
     /// Image bytes added since the last call, for the store to keep.

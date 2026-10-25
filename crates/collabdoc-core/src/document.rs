@@ -2,7 +2,7 @@
 //! reconcile step that turns an editor's content back into Loro operations.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,6 +13,7 @@ use loro::{
 
 use crate::figures::{self, AssetError};
 use crate::file::{self, Asset, FileError};
+use crate::history::{self, AuthorRecord};
 use crate::ids::new_doc_id;
 use crate::model::{
     BlockKind, INLINE_UNIT, InlineNode, ListKind, Span, TargetBlock, ViewBlock, masks,
@@ -64,6 +65,8 @@ pub struct Document {
     assets: Vec<Asset>,
     /// Assets added since [`Document::take_new_assets`], for the store.
     new_assets: Vec<Asset>,
+    /// Who edits through this document, for the `authors` map.
+    author: Option<AuthorRecord>,
     /// Block and time of the last human edit, to cut history and undo steps.
     last_edit: Option<(String, i64)>,
     /// The flattened tree, valid while the doc is at `frontiers`. Typing
@@ -145,6 +148,7 @@ impl Document {
             actor: actor.to_owned(),
             assets,
             new_assets: Vec::new(),
+            author: None,
             last_edit: None,
             flat: RefCell::new(None),
         }
@@ -166,6 +170,64 @@ impl Document {
     pub fn with_assets(mut self, assets: Vec<Asset>) -> Self {
         self.assets = assets;
         self
+    }
+
+    /// Who edits through this document. Their record goes into the
+    /// `authors` map before their first edit (never on open, which would
+    /// leave the file unsaved), or now when it changed (a rename).
+    pub fn set_author(&mut self, author: AuthorRecord) {
+        let changed = self.author.as_ref() != Some(&author);
+        self.author = Some(author);
+        if changed && history::is_author_registered(&self.doc) {
+            self.doc.commit();
+            let author = self.author.as_ref().expect("just set");
+            history::write_author(&self.doc, author);
+            self.doc.commit_with(
+                CommitOptions::new()
+                    .origin(history::AUTHOR_ORIGIN)
+                    .timestamp(now_ms()),
+            );
+        }
+    }
+
+    pub fn author(&self) -> Option<&AuthorRecord> {
+        self.author.as_ref()
+    }
+
+    fn ensure_author(&mut self) {
+        if let Some(author) = &self.author {
+            self.doc.commit();
+            history::ensure_author(&self.doc, author);
+        }
+    }
+
+    /// A named version of the document as it is now (a checkpoint).
+    pub fn add_checkpoint(&mut self, name: &str) -> history::Checkpoint {
+        let actor = self
+            .author
+            .as_ref()
+            .map_or_else(|| self.actor.clone(), |a| a.actor_id.clone());
+        history::add_checkpoint(&self.doc, name, &actor, None)
+    }
+
+    /// Makes the document read as it did at `frontiers`, as one new commit
+    /// by this participant ("Restore version"): history keeps everything
+    /// after that version, and undo takes the restore back. Blocks keep
+    /// their identity where the version has them too.
+    pub fn restore(&mut self, frontiers: &[history::Frontier]) -> bool {
+        let Some(old) = history::fork_at(&self.doc, frontiers) else {
+            return false;
+        };
+        self.ensure_author();
+        let live_root = tree::root(&self.doc);
+        let old_root = tree::root(&old);
+        restore_children(&live_root, &old_root);
+        let changed = self.doc.get_pending_txn_len() > 0;
+        if changed {
+            structure::normalize(&self.doc);
+            self.commit_boundary("Restore version");
+        }
+        changed
     }
 
     /// Images and other files the document carries (`asset:<sha256>`).
@@ -281,6 +343,7 @@ impl Document {
     }
 
     pub fn set_title(&mut self, title: &str) {
+        self.ensure_author();
         self.doc.get_map(META_KEY).insert("title", title).unwrap();
         self.commit_boundary(&format!("rename to “{title}”"));
     }
@@ -399,6 +462,7 @@ impl Document {
         let Some(changed_key) = changed_key else {
             return false;
         };
+        self.ensure_author();
 
         let mut retained = vec![false; current.len()];
         for c in assigned.iter().flatten() {
@@ -476,6 +540,7 @@ impl Document {
 
     /// A structural edit (lists, indent): its own history entry and undo step.
     fn structural(&mut self, message: &str, f: impl FnOnce(&LoroDoc) -> bool) -> bool {
+        self.ensure_author();
         let changed = f(&self.doc);
         if changed {
             self.commit_boundary(message);
@@ -1103,9 +1168,13 @@ fn same_inlines(a: &[InlineNode], b: &[InlineNode]) -> bool {
 fn write_content(node: &LoroMap, t: &TargetBlock) {
     let (target, spans, inlines) = clean_target(t);
     let segments = tree::segments(node);
-    let mixed = segments
-        .iter()
-        .any(|p| matches!(p.segment, Segment::Inline(_)));
+    // One text run (or none) is the common case. Several runs side by side
+    // happen after concurrent edits; the mixed path writes across them and
+    // joins them.
+    let mixed = segments.len() > 1
+        || segments
+            .iter()
+            .any(|p| matches!(p.segment, Segment::Inline(_)));
     if !mixed && inlines.is_empty() {
         write_text(&tree::ensure_text(node), &target, &spans);
         return;
@@ -1346,4 +1415,116 @@ fn quote_unit(located: &Located) -> (LoroMap, LoroMap) {
         }
     }
     unit
+}
+
+// ── Restore ─────────────────────────────────────────────────────────────
+
+/// What identifies a child across versions: its `blockId`, or for a list
+/// (which has none) its name and its first line's id.
+fn identity(node: &LoroMap) -> String {
+    let id = tree::block_id(node);
+    if !id.is_empty() {
+        return id;
+    }
+    let name = tree::node_name(node);
+    let first = tree::child_maps(node)
+        .first()
+        .map(identity)
+        .unwrap_or_default();
+    format!("{name}:{first}")
+}
+
+/// Makes `live`'s block children read like `old`'s (a version of them).
+fn restore_children(live: &LoroMap, old: &LoroMap) {
+    let live_kids = tree::child_maps(live);
+    let old_kids = tree::child_maps(old);
+    let live_keys: Vec<String> = live_kids.iter().map(identity).collect();
+    let mut used = vec![false; live_kids.len()];
+    let raw: Vec<Option<usize>> = old_kids
+        .iter()
+        .map(|o| {
+            let key = identity(o);
+            let i = live_keys
+                .iter()
+                .enumerate()
+                .position(|(i, k)| !used[i] && *k == key)?;
+            used[i] = true;
+            Some(i)
+        })
+        .collect();
+    let assigned = longest_increasing(&raw);
+    let kept: HashSet<usize> = assigned.iter().flatten().copied().collect();
+    let list = tree::children(live);
+    for i in (0..live_kids.len()).rev() {
+        if !kept.contains(&i)
+            && let Some(at) = tree::index_in(live, &live_kids[i])
+        {
+            list.delete(at, 1).expect("delete block");
+        }
+    }
+    let mut pos = 0;
+    for (old_kid, slot) in old_kids.iter().zip(&assigned) {
+        match slot {
+            Some(i) => {
+                let live_kid = &live_kids[*i];
+                let at = tree::index_in(live, live_kid).unwrap_or(pos);
+                restore_node(live, at, live_kid, old_kid);
+                pos = at + 1;
+            }
+            None => {
+                structure::materialize(live, pos, &structure::snapshot(old_kid));
+                pos += 1;
+            }
+        }
+    }
+}
+
+/// Makes one kept child read like its version.
+fn restore_node(parent: &LoroMap, at: usize, live: &LoroMap, old: &LoroMap) {
+    let name = tree::node_name(old);
+    if tree::node_name(live) != name {
+        tree::children(parent).delete(at, 1).expect("replace block");
+        structure::materialize(parent, at, &structure::snapshot(old));
+        return;
+    }
+    // Attributes.
+    let want = match tree::attrs(old).get_value() {
+        LoroValue::Map(m) => m,
+        _ => Default::default(),
+    };
+    let attrs = tree::attrs(live);
+    for key in attrs.keys().map(|k| k.to_string()).collect::<Vec<_>>() {
+        if !want.contains_key(&key) {
+            attrs.delete(&key).expect("delete attribute");
+        }
+    }
+    for (key, value) in want.iter() {
+        let have = match attrs.get(key) {
+            Some(loro::ValueOrContainer::Value(v)) => Some(v),
+            _ => None,
+        };
+        if have.as_ref() != Some(value) {
+            attrs.insert(key, value.clone()).expect("set attribute");
+        }
+    }
+    if is_container_type(&name) {
+        restore_children(live, old);
+        return;
+    }
+    // Text, marks and inline nodes (a figure's caption too).
+    let (text, spans, inlines) = tree::content(old);
+    let target = TargetBlock {
+        key: None,
+        kind: None,
+        text,
+        spans,
+        inlines,
+    };
+    let (have_text, have_spans, have_inlines) = tree::content(live);
+    if have_text != target.text
+        || have_spans != target.spans
+        || !same_inlines(&have_inlines, &target.inlines)
+    {
+        write_content(live, &target);
+    }
 }

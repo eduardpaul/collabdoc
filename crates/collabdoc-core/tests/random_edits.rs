@@ -79,7 +79,7 @@ fn check_shape(doc: &Document) -> Result<(), String> {
 
 fn step(e: &mut Editor, rng: &mut Rng) {
     let len = e.len();
-    let op = rng.below(25);
+    let op = rng.below(26);
     if std::env::var("FUZZ_TRACE").is_ok() {
         eprintln!(
             "op {op} sel {:?} blocks {:?}",
@@ -198,6 +198,20 @@ fn step(e: &mut Editor, rng: &mut Rng) {
             let captions = ["", "A caption", "ü 👍🏽"];
             e.set_caption(block, captions[rng.below(captions.len())]);
             e.set_figure_attr(block, "width", &serde_json::json!(50));
+        }
+        25 => {
+            // Back to some earlier version (a restore, as from the History tab).
+            let entries = collabdoc_core::history::list_history(e.document().loro());
+            if !entries.is_empty() {
+                let pick = &entries[rng.below(entries.len())];
+                e.restore_version(&pick.frontiers);
+                let doc = e.document().loro();
+                assert_eq!(
+                    collabdoc_core::history::live_preview(doc),
+                    collabdoc_core::history::preview_at(doc, &pick.frontiers),
+                    "a restore reads like its version"
+                );
+            }
         }
         _ => {
             let snippets = [
