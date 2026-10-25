@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use collabdoc_core::document::now_ms;
+use collabdoc_core::history::{self, AuthorRecord, Frontier, HistoryIndex};
 use collabdoc_core::ids::new_actor_id;
 use collabdoc_core::model::ListKind;
 use collabdoc_core::presence::{Presence, User};
@@ -31,6 +32,8 @@ use serde_json::{Value, json};
 
 struct Shared {
     hub: Hub,
+    /// The hub document's history, grown as it changes (built on first use).
+    history: Option<HistoryIndex>,
     /// What opening found: replayed edits, a damaged asset section.
     recovered_edits: bool,
     warnings: Vec<String>,
@@ -80,6 +83,8 @@ pub struct Session {
     sent: HashMap<String, ViewBlock>,
     presence: Presence,
     user: User,
+    /// A past version, for viewing: edits are ignored and nothing is saved.
+    read_only: bool,
 }
 
 impl Session {
@@ -119,6 +124,7 @@ impl Session {
         };
         let shared = Shared {
             hub: Hub::new(&opened.document),
+            history: None,
             recovered_edits: opened.recovered_edits,
             warnings: opened.warnings,
         };
@@ -140,14 +146,61 @@ impl Session {
             actor_id: editor.document().actor().to_owned(),
             role: Some("human".into()),
         };
-        Self {
+        let mut session = Self {
             presence: Presence::new(&editor),
             user,
             editor,
             shared,
             sent_order: Vec::new(),
             sent: HashMap::new(),
-        }
+            read_only: false,
+        };
+        session.register_author();
+        session
+    }
+
+    /// This participant in the document's `authors` map (written before
+    /// their first edit), so history attributes their changes.
+    fn register_author(&mut self) {
+        let record = AuthorRecord {
+            actor_id: self.user.actor_id.clone(),
+            name: self.user.name.clone(),
+            color: self.user.color.clone(),
+            role: self.user.role.clone().unwrap_or_else(|| "human".into()),
+            handle: None,
+        };
+        self.editor.set_author(record);
+    }
+
+    /// The document as it was at `frontiers`, read-only (View this version).
+    fn open_version(&self, frontiers: &[Frontier]) -> Result<Self, String> {
+        let shared = self.shared.borrow();
+        let fork = history::fork_at(shared.hub.loro(), frontiers)
+            .ok_or("This version is not in the document.")?;
+        let bytes = fork
+            .export(loro::ExportMode::Snapshot)
+            .map_err(|e| e.to_string())?;
+        let document = collabdoc_core::Document::from_snapshot(&bytes, &new_actor_id())
+            .map_err(|e| e.to_string())?
+            .with_assets(self.editor.document().assets().to_vec());
+        let version = Shared {
+            hub: Hub::new(&document),
+            history: None,
+            recovered_edits: false,
+            warnings: vec![],
+        };
+        let mut session = Self::with(Editor::new(document), Rc::new(RefCell::new(version)));
+        session.read_only = true;
+        Ok(session)
+    }
+
+    /// The hub's history index, brought up to date.
+    fn history<R>(&self, f: impl FnOnce(&mut HistoryIndex, &loro::LoroDoc) -> R) -> R {
+        let mut shared = self.shared.borrow_mut();
+        let Shared { hub, history, .. } = &mut *shared;
+        let index = history.get_or_insert_with(HistoryIndex::default);
+        index.refresh(hub.loro());
+        f(index, hub.loro())
     }
 
     /// Blocks and selection. Only blocks that changed since the last call
@@ -186,7 +239,7 @@ impl Session {
                     .map(|n| json!({ "at": n.at, "name": n.name, "attrs": n.attrs }))
                     .collect();
                 let mut block = json!({
-                    "key": b.key, "kind": kind, "level": level, "list": list,
+                    "key": b.key, "blockId": b.block_id, "kind": kind, "level": level, "list": list,
                     "listDepth": b.list_depth, "quoteDepth": b.quote_depth, "checked": b.checked,
                     "editable": b.editable, "text": b.text, "spans": spans, "inlines": inlines,
                 });
@@ -242,6 +295,31 @@ impl Session {
 
     /// Runs one command. Every reply has `ok`; edits also say `changed`.
     fn call(&mut self, cmd: &Value) -> Value {
+        // A viewed version answers reading and moving around; anything
+        // else (typing, saving, presence) does nothing.
+        const READS: &[&str] = &[
+            "select",
+            "selectAll",
+            "left",
+            "right",
+            "wordLeft",
+            "wordRight",
+            "home",
+            "end",
+            "copy",
+            "copyMarkdown",
+            "find",
+            "linkAt",
+            "textIn",
+            "looksLikeMermaid",
+            "actor",
+            "setUser",
+            "resetView",
+            "carets",
+        ];
+        if self.read_only && !READS.contains(&cmd["op"].as_str().unwrap_or("")) {
+            return json!({ "ok": true, "changed": false });
+        }
         let n = |key: &str| cmd[key].as_u64().unwrap_or(0) as usize;
         let s = |key: &str| cmd[key].as_str().unwrap_or("");
         let extend = cmd["extend"].as_bool().unwrap_or(false);
@@ -272,6 +350,7 @@ impl Session {
                 }
             }
             "setCaption" => e.set_caption(n("block"), s("text")),
+            "restore" => e.restore_version(&frontiers_arg(&cmd["frontiers"])),
             "setFigureAttr" => e.set_figure_attr(n("block"), s("key"), &cmd["value"]),
             "looksLikeMermaid" => {
                 let yes = collabdoc_core::markdown::looks_like_mermaid(s("text"));
@@ -396,7 +475,46 @@ impl Session {
                 if let Some(color) = cmd["color"].as_str() {
                     self.user.color = color.to_owned();
                 }
+                if !self.read_only {
+                    self.register_author();
+                }
                 return json!({ "ok": true });
+            }
+            // History of the document (everyone's changes, oldest first) and
+            // its checkpoints (newest first).
+            "history" => {
+                let entries = self.history(|index, _| json!(index.list()));
+                let shared = self.shared.borrow();
+                let checkpoints = history::list_checkpoints(shared.hub.loro());
+                return json!({
+                    "ok": true,
+                    "entries": entries,
+                    "checkpoints": checkpoints,
+                    "actorId": self.user.actor_id,
+                });
+            }
+            "historyDiff" => {
+                let id = s("id").to_owned();
+                return match self.history(|index, doc| index.diff(doc, &id)) {
+                    Some(hunks) => json!({ "ok": true, "hunks": hunks }),
+                    None => json!({ "ok": false, "error": "no such entry" }),
+                };
+            }
+            // What restoring `frontiers` would change, from the live document.
+            "versionDiff" => {
+                let frontiers = frontiers_arg(&cmd["frontiers"]);
+                let shared = self.shared.borrow();
+                let hunks = history::diff_against_live(shared.hub.loro(), &frontiers);
+                return json!({ "ok": true, "hunks": hunks });
+            }
+            // The last author of each block, for the attribution gutter.
+            "blockAuthors" => {
+                let authors = self.history(|index, _| json!(index.last_authors()));
+                return json!({ "ok": true, "authors": authors });
+            }
+            "addCheckpoint" => {
+                let checkpoint = self.editor.add_checkpoint(s("name"));
+                return json!({ "ok": true, "changed": true, "checkpoint": checkpoint });
             }
             "presence" => {
                 // Our caret and name, to everyone through the hub.
@@ -762,6 +880,43 @@ fn store_call(cmd: &Value) -> Value {
             json!({ "ok": true, "path": dir.display().to_string() })
         }
         other => json!({ "ok": false, "error": format!("unknown op {other:?}") }),
+    }
+}
+
+/// Frontiers as the TS app writes them: `[{peer: "123", counter: 4}]`.
+fn frontiers_arg(value: &Value) -> Vec<Frontier> {
+    value
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|f| serde_json::from_value(f.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The document at a version (`frontiers` JSON, as history entries carry
+/// them), as a read-only session: View this version. Null and `*error` when
+/// the document does not have that version.
+///
+/// # Safety
+/// `session` comes from `cd_open*`/`cd_fork`; `frontiers` is a NUL-terminated
+/// UTF-8 string; `error` is null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cd_open_version(
+    session: *const Session,
+    frontiers: *const c_char,
+    error: *mut *mut c_char,
+) -> *mut Session {
+    let session = unsafe { &*session };
+    let raw = unsafe { CStr::from_ptr(frontiers) }.to_string_lossy();
+    let parsed = serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null);
+    match session.open_version(&frontiers_arg(&parsed)) {
+        Ok(version) => Box::into_raw(Box::new(version)),
+        Err(err) => {
+            set_error(error, &err);
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -1190,6 +1345,75 @@ mod tests {
         let bad = CString::new("").unwrap();
         let ptr = unsafe { cd_render_mermaid(bad.as_ptr(), 1.0, &mut len, &mut err) };
         assert!(ptr.is_null() && !err.is_null());
+        unsafe { cd_string_free(err) };
+    }
+
+    #[test]
+    fn history_versions_and_restore_through_the_bridge() {
+        let mut me = fresh();
+        call(
+            &mut me,
+            json!({"op": "setUser", "name": "Ana", "color": "#ff0000"}),
+        );
+        call(&mut me, json!({"op": "insert", "text": "first draft"}));
+        call(&mut me, json!({"op": "push"}));
+        let cp = call(&mut me, json!({"op": "addCheckpoint", "name": "Draft 1"}));
+        assert_eq!(cp["checkpoint"]["name"], "Draft 1");
+        call(&mut me, json!({"op": "push"}));
+        call(&mut me, json!({"op": "selectAll"}));
+        call(&mut me, json!({"op": "insert", "text": "rewritten"}));
+        call(&mut me, json!({"op": "push"}));
+
+        let h = call(&mut me, json!({"op": "history"}));
+        let entries = h["entries"].as_array().unwrap();
+        let typed = entries
+            .iter()
+            .find(|e| e["details"].to_string().contains("first draft"))
+            .unwrap();
+        assert_eq!(typed["author"]["name"], "Ana");
+        assert_eq!(typed["author"]["color"], "#ff0000");
+        assert_eq!(h["checkpoints"][0]["name"], "Draft 1");
+        assert_eq!(h["actorId"], me.editor.document().actor());
+        let diff = call(&mut me, json!({"op": "historyDiff", "id": typed["id"]}));
+        assert!(diff["hunks"].to_string().contains("first draft"));
+        let authors = call(&mut me, json!({"op": "blockAuthors"}));
+        let block_id = all_blocks(&mut me)[0]["blockId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(authors["authors"][&block_id]["name"], "Ana");
+
+        // View the checkpoint: read-only, at its text.
+        let frontiers = h["checkpoints"][0]["frontiers"].to_string();
+        let c = CString::new(frontiers.clone()).unwrap();
+        let mut err = std::ptr::null_mut();
+        let version = unsafe { cd_open_version(&me, c.as_ptr(), &mut err) };
+        assert!(!version.is_null());
+        let version = unsafe { &mut *version };
+        assert_eq!(all_blocks(version)[0]["text"], "first draft");
+        let typed = call(version, json!({"op": "insert", "text": "nope"}));
+        assert_eq!(typed["changed"], false);
+        assert_eq!(all_blocks(version)[0]["text"], "first draft");
+        assert_eq!(call(version, json!({"op": "copyMarkdown"}))["ok"], true);
+        unsafe { cd_free(version) };
+
+        // Restore it: one change, undoable.
+        let r = call(
+            &mut me,
+            json!({"op": "restore", "frontiers": h["checkpoints"][0]["frontiers"]}),
+        );
+        assert_eq!(r["changed"], true);
+        assert_eq!(all_blocks(&mut me)[0]["text"], "first draft");
+        call(&mut me, json!({"op": "push"}));
+        let after = call(&mut me, json!({"op": "history"}));
+        assert!(after["entries"].to_string().contains("Restore version"));
+        call(&mut me, json!({"op": "undo"}));
+        assert_eq!(all_blocks(&mut me)[0]["text"], "rewritten");
+
+        // A version the document does not have.
+        let bad = CString::new(r#"[{"peer":"1","counter":999}]"#).unwrap();
+        let none = unsafe { cd_open_version(&me, bad.as_ptr(), &mut err) };
+        assert!(none.is_null() && !err.is_null());
         unsafe { cd_string_free(err) };
     }
 }

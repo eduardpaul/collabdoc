@@ -24,6 +24,7 @@ class Span {
 class BlockView {
   BlockView.fromJson(Map<String, dynamic> j)
     : key = j['key'] as String,
+      blockId = j['blockId'] as String? ?? '',
       kind = j['kind'] as String,
       level = j['level'] as int,
       list = j['list'] as String?,
@@ -45,6 +46,9 @@ class BlockView {
       caption = j['caption'] as String? ?? '';
 
   final String key;
+
+  /// The `blockId` history and comments name the block by.
+  final String blockId;
 
   /// `paragraph`, `heading`, `code` or `atom` (a figure: shown, not text-editable).
   final String kind;
@@ -290,4 +294,96 @@ class Listing {
 
   final List<RecentEntry> recents;
   final List<RecoveryOffer> recoveries;
+}
+
+/// Who made a change, from the document's authors map; `role` is null for a
+/// peer that never identified itself.
+class HistoryAuthor {
+  HistoryAuthor.fromJson(Map<String, dynamic> j)
+    : actorId = j['actorId'] as String,
+      name = j['name'] as String,
+      color = j['color'] as String,
+      role = j['role'] as String?;
+
+  final String actorId;
+  final String name;
+  final String color;
+  final String? role;
+}
+
+/// One commit of the document's history.
+class HistoryEntry {
+  HistoryEntry.fromJson(Map<String, dynamic> j)
+    : id = j['id'] as String,
+      timestamp = DateTime.fromMillisecondsSinceEpoch(j['timestamp'] as int),
+      message = j['message'] as String,
+      summary = j['summary'] as String,
+      details = (j['details'] as List).cast<String>(),
+      author = HistoryAuthor.fromJson(j['author'] as Map<String, dynamic>),
+      frontiers = j['frontiers'] as List,
+      blockIds = (j['blockIds'] as List).cast<String>();
+
+  final String id;
+  final DateTime timestamp;
+  final String message;
+  final String summary;
+  final List<String> details;
+  final HistoryAuthor author;
+
+  /// The version right after this change, as the core takes it back.
+  final List frontiers;
+  final List<String> blockIds;
+}
+
+/// A named version.
+class Checkpoint {
+  Checkpoint.fromJson(Map<String, dynamic> j)
+    : id = j['id'] as String,
+      name = j['name'] as String,
+      actorId = j['actorId'] as String,
+      at = DateTime.fromMillisecondsSinceEpoch((j['at'] as num).toInt()),
+      frontiers = j['frontiers'] as List;
+
+  final String id;
+  final String name;
+  final String actorId;
+  final DateTime at;
+  final List frontiers;
+}
+
+/// One block of a diff: `add`, `remove`, `change` or `same` (context), with
+/// its words as kept, added or removed parts.
+class DiffHunk {
+  DiffHunk.fromJson(Map<String, dynamic> j)
+    : kind = j['kind'] as String,
+      type = j['type'] as String,
+      parts = [
+        for (final p in j['parts'] as List)
+          (kind: p['type'] as String, text: p['text'] as String),
+      ];
+
+  final String kind;
+  final String type;
+  final List<({String kind, String text})> parts;
+}
+
+/// "Oct 25, 14:02", as the TS app shows times.
+String historyTime(DateTime at) {
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  final t = at.toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${months[t.month - 1]} ${t.day}, ${two(t.hour)}:${two(t.minute)}';
 }

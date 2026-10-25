@@ -44,6 +44,18 @@ class Participant {
   final ValueNotifier<int> presenceVersion = ValueNotifier(0);
 }
 
+/// A past version a pane shows instead of the live document (read-only).
+class VersionView {
+  VersionView(this.participant, this.frontiers, this.label);
+
+  /// A participant on a read-only session of that version.
+  final Participant participant;
+  final List frontiers;
+
+  /// "Oct 25, 14:02 by Ana", "Checkpoint Draft 1".
+  final String label;
+}
+
 /// What Ctrl+S did.
 enum SaveResult { saved, needsSaveAs, failed }
 
@@ -85,6 +97,72 @@ class Workspace extends ChangeNotifier {
 
   PersistState? persist;
   bool _closed = false;
+
+  /// The History tab, and the participant it restores and marks
+  /// checkpoints as.
+  bool historyOpen = false;
+  Participant? historyFor;
+
+  /// Bumped after every edit that reached the hub: history and the
+  /// attribution gutter read again (debounced where they listen).
+  final ValueNotifier<int> historyVersion = ValueNotifier(0);
+
+  /// The gutter showing each block's last author (AC-05.9).
+  bool attribution = false;
+
+  /// Per pane, the version it shows instead of the live document.
+  final Map<Participant, VersionView> viewing = {};
+
+  void toggleHistory(Participant from) {
+    historyOpen = !historyOpen || !identical(historyFor, from);
+    historyFor = from;
+    notifyListeners();
+  }
+
+  void toggleAttribution() {
+    attribution = !attribution;
+    notifyListeners();
+  }
+
+  /// View this version: `p`'s pane shows the document at `frontiers`,
+  /// read-only, until [closeVersion]. The live editor keeps its caret.
+  void viewVersion(Participant p, List frontiers, String label) {
+    try {
+      final session = p.session.openVersion(frontiers);
+      viewing.remove(p)?.participant.session.dispose();
+      viewing[p] = VersionView(
+        Participant('Version', p.color, session),
+        frontiers,
+        label,
+      );
+    } on CoreException catch (e) {
+      status = e.message;
+    }
+    notifyListeners();
+  }
+
+  void closeVersion(Participant p) {
+    viewing.remove(p)?.participant.session.dispose();
+    notifyListeners();
+  }
+
+  /// Restores `frontiers` as one new commit by `p`, undoable with Ctrl+Z.
+  void restore(Participant p, List frontiers) {
+    final changed = p.session.edit({'op': 'restore', 'frontiers': frontiers});
+    status = changed ? 'Restored that version' : 'Already reads like that';
+    if (changed) {
+      broadcast(p);
+      p.remoteVersion.value++;
+    }
+    notifyListeners();
+  }
+
+  /// Names the current version.
+  void addCheckpoint(Participant p, String name) {
+    p.session.call({'op': 'addCheckpoint', 'name': name});
+    broadcast(p);
+    notifyListeners();
+  }
 
   bool get dirty => persist?.dirty ?? false;
   bool get isDraft => persist?.isDraft ?? true;
@@ -162,6 +240,10 @@ class Workspace extends ChangeNotifier {
   void close({bool discard = false}) {
     if (_closed) return;
     _closed = true;
+    for (final v in viewing.values) {
+      v.participant.session.dispose();
+    }
+    viewing.clear();
     _main.call({'op': 'close', 'discard': discard});
     for (final p in participants) {
       p.session.dispose();
@@ -186,6 +268,8 @@ class Workspace extends ChangeNotifier {
   void removePeer(Participant p) {
     if (participants.length == 1) return;
     participants.remove(p);
+    viewing.remove(p)?.participant.session.dispose();
+    if (identical(historyFor, p)) historyFor = participants.first;
     p.session.dispose(); // which also takes its caret away
     _presenceChanged(null);
     notifyListeners();
@@ -224,6 +308,7 @@ class Workspace extends ChangeNotifier {
       final reply = p.session.call({'op': 'pull'});
       if (reply['changed'] == true) p.remoteVersion.value++;
     }
+    historyVersion.value++;
     tick();
   }
 

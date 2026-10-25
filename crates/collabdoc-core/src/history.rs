@@ -724,11 +724,24 @@ pub struct DiffHunk {
 }
 
 /// The word-level, per-block diff of one change.
+///
+/// One fork at the change, then checked out to its parent: moving back by
+/// one change costs what the change did, where a second fork would cost the
+/// whole document again (AC-05.4: a 2 000-block document in under 300 ms).
 pub fn diff_change(doc: &LoroDoc, entry: &HistoryEntry) -> Vec<DiffHunk> {
-    diff_blocks(
-        &preview_at(doc, &entry.parent_frontiers),
-        &preview_at(doc, &entry.frontiers),
-    )
+    let Some(fork) = fork_at(doc, &entry.frontiers) else {
+        return diff_blocks(&[], &[]);
+    };
+    let after = read_blocks(&fork);
+    let before = if entry.parent_frontiers.is_empty() {
+        vec![]
+    } else {
+        match fork.checkout(&to_frontiers(&entry.parent_frontiers)) {
+            Ok(()) => read_blocks(&fork),
+            Err(_) => preview_at(doc, &entry.parent_frontiers),
+        }
+    };
+    diff_blocks(&before, &after)
 }
 
 /// From the live document to the version at `frontiers`: what a restore

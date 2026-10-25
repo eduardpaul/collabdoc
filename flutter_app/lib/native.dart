@@ -53,6 +53,11 @@ typedef _SvgDart = Pointer<Uint8> Function(
   Pointer<Size>,
   Pointer<Pointer<Utf8>>,
 );
+typedef _VersionC = Pointer<Void> Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+  Pointer<Pointer<Utf8>>,
+);
 typedef _BytesFreeC = Void Function(Pointer<Uint8>, Size);
 typedef _BytesFreeDart = void Function(Pointer<Uint8>, int);
 
@@ -69,6 +74,7 @@ class _Lib {
         'cd_string_free',
       ),
       asset = lib.lookupFunction<_AssetC, _AssetC>('cd_asset'),
+      openVersion = lib.lookupFunction<_VersionC, _VersionC>('cd_open_version'),
       renderMermaid = lib.lookupFunction<_MermaidC, _MermaidDart>(
         'cd_render_mermaid',
       ),
@@ -86,6 +92,7 @@ class _Lib {
   final _ViewC view;
   final _StringFreeDart stringFree;
   final _AssetC asset;
+  final _VersionC openVersion;
   final _MermaidDart renderMermaid;
   final _SvgDart renderSvg;
   final _BytesFreeDart bytesFree;
@@ -176,6 +183,21 @@ class Session {
 
   /// Another participant on the same document, synced through the shared hub.
   Session fork() => Session._(_lib.fork(_ptr));
+
+  /// The document as it was at `frontiers` (a history entry's or a
+  /// checkpoint's), read-only: typing and saving do nothing.
+  Session openVersion(List frontiers) {
+    final error = calloc<Pointer<Utf8>>();
+    final cFrontiers = jsonEncode(frontiers).toNativeUtf8();
+    try {
+      final ptr = _lib.openVersion(_ptr, cFrontiers, error);
+      if (ptr == nullptr) throw CoreException(_lib.take(error.value));
+      return Session._(ptr);
+    } finally {
+      calloc.free(cFrontiers);
+      calloc.free(error);
+    }
+  }
 
   Map<String, dynamic> call(Map<String, Object?> command) {
     final cmd = jsonEncode(command).toNativeUtf8();

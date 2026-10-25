@@ -12,6 +12,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import 'editor.dart';
+import 'history_panel.dart';
 import 'model.dart';
 import 'native.dart';
 import 'settings.dart';
@@ -336,14 +337,31 @@ class _CollabDocAppState extends State<CollabDocApp> {
                   if (i > 0)
                     const VerticalDivider(width: 1, color: AppColors.border),
                   Expanded(
-                    child: EditorPane(
-                      key: ObjectKey(p),
-                      app: app,
-                      workspace: ws,
-                      participant: p,
-                      autofocus: i == ws.participants.length - 1,
-                    ),
+                    child: switch (ws.viewing[p]) {
+                      // View this version: the pane shows it read-only; the
+                      // live pane (and its caret) comes back on Close.
+                      final v? => EditorPane(
+                        key: ObjectKey(v),
+                        app: app,
+                        workspace: ws,
+                        participant: v.participant,
+                        version: v,
+                        live: p,
+                        autofocus: true,
+                      ),
+                      null => EditorPane(
+                        key: ObjectKey(p),
+                        app: app,
+                        workspace: ws,
+                        participant: p,
+                        autofocus: i == ws.participants.length - 1,
+                      ),
+                    },
                   ),
+                ],
+                if (ws.historyOpen) ...[
+                  const VerticalDivider(width: 1, color: AppColors.border),
+                  SizedBox(width: 360, child: HistoryPanel(workspace: ws)),
                 ],
               ],
             );

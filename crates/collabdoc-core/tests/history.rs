@@ -645,3 +645,35 @@ fn restore_brings_back_figures_marks_and_inline_nodes() {
         );
     }
 }
+
+#[test]
+fn a_diff_in_a_2000_block_document_is_quick() {
+    let mut e = Editor::new(Document::create("t", "ana"));
+    e.set_author(record("ana", "Ana", "human"));
+    let text: String = (0..2000)
+        .map(|i| format!("Paragraph number {i} with a few words in it."))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    e.paste(&text);
+    e.set_title("cut");
+    let at = e.block_start(1000);
+    e.replace(at..at + 9, "Section");
+    let mut index = HistoryIndex::new(e.document().loro());
+    let id = by_detail(index.list(), "inserted “Section”")
+        .unwrap()
+        .id
+        .clone();
+    let start = std::time::Instant::now();
+    let hunks = index.diff(e.document().loro(), &id).unwrap();
+    let elapsed = start.elapsed();
+    assert_eq!(hunks.iter().filter(|h| h.kind == "change").count(), 1);
+    assert_eq!(
+        hunks.len(),
+        3,
+        "the change and a block of context each side"
+    );
+    // AC-05.4's bar is for an optimised build.
+    let limit = if cfg!(debug_assertions) { 3000 } else { 300 };
+    assert!(elapsed.as_millis() < limit, "{elapsed:?}");
+    eprintln!("diff of a 2000-block document: {elapsed:?}");
+}

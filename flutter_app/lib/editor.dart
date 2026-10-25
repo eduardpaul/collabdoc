@@ -34,12 +34,20 @@ class EditorPane extends StatefulWidget {
     required this.workspace,
     required this.participant,
     this.autofocus = false,
+    this.version,
+    this.live,
   });
 
   final AppController app;
   final Workspace workspace;
   final Participant participant;
   final bool autofocus;
+
+  /// Set when this pane shows a past version (read-only) for [live].
+  final VersionView? version;
+  final Participant? live;
+
+  bool get readOnly => version != null;
 
   @override
   State<EditorPane> createState() => EditorPaneState();
@@ -104,6 +112,9 @@ class EditorPaneState extends State<EditorPane>
     super.initState();
     view = session.view();
     _readCarets();
+    widget.workspace.historyVersion.addListener(_authorsChanged);
+    widget.workspace.addListener(_attributionToggled);
+    _readAuthors();
     focus.addListener(_focusChanged);
     widget.participant.remoteVersion.addListener(_remoteChanged);
     widget.participant.presenceVersion.addListener(_caretsChanged);
@@ -143,6 +154,9 @@ class EditorPaneState extends State<EditorPane>
 
   @override
   void dispose() {
+    widget.workspace.historyVersion.removeListener(_authorsChanged);
+    widget.workspace.removeListener(_attributionToggled);
+    _authorsSettle?.cancel();
     widget.participant.remoteVersion.removeListener(_remoteChanged);
     widget.participant.presenceVersion.removeListener(_caretsChanged);
     _heartbeat?.cancel();
@@ -156,6 +170,40 @@ class EditorPaneState extends State<EditorPane>
     scroll.dispose();
     list.dispose();
     super.dispose();
+  }
+
+  // ── Attribution gutter (AC-05.9) ─────────────────────────────────────
+
+  /// Each block's last author's color, by `blockId`, while the gutter is on.
+  Map<String, Color> _authorColors = const {};
+  bool _attributionShown = false;
+  Timer? _authorsSettle;
+
+  void _readAuthors() {
+    if (!widget.workspace.attribution) {
+      _authorColors = const {};
+      return;
+    }
+    final reply = session.call({'op': 'blockAuthors'});
+    final authors = (reply['authors'] as Map?) ?? const {};
+    _authorColors = {
+      for (final MapEntry(:key, :value) in authors.entries)
+        key as String: Color(parseHexColor((value as Map)['color'] as String)),
+    };
+  }
+
+  void _authorsChanged() {
+    if (!widget.workspace.attribution) return;
+    _authorsSettle?.cancel();
+    _authorsSettle = Timer(const Duration(milliseconds: 400), () {
+      if (mounted) setState(_readAuthors);
+    });
+  }
+
+  void _attributionToggled() {
+    if (widget.workspace.attribution == _attributionShown || !mounted) return;
+    _attributionShown = widget.workspace.attribution;
+    setState(_readAuthors);
   }
 
   // ── Commands ─────────────────────────────────────────────────────────
@@ -546,7 +594,7 @@ class EditorPaneState extends State<EditorPane>
 
     // Ctrl+Shift+8/7/9 (Tiptap's list shortcuts): match the physical key,
     // since Shift turns the digit into a symbol on most layouts.
-    if (ctrl && shift && !alt) {
+    if (ctrl && shift && !alt && !widget.readOnly) {
       final list = switch (event.physicalKey) {
         PhysicalKeyboardKey.digit8 => 'bullet',
         PhysicalKeyboardKey.digit7 => 'ordered',
@@ -626,6 +674,23 @@ class EditorPaneState extends State<EditorPane>
         LogicalKeyboardKey.arrowUp: () => _vertical(false, shift),
         LogicalKeyboardKey.arrowDown: () => _vertical(true, shift),
       };
+    }
+    // A viewed version: moving, selecting, copying and finding only.
+    if (widget.readOnly) {
+      final reading = {
+        LogicalKeyboardKey.keyA,
+        LogicalKeyboardKey.keyC,
+        LogicalKeyboardKey.keyF,
+        LogicalKeyboardKey.home,
+        LogicalKeyboardKey.end,
+        LogicalKeyboardKey.arrowLeft,
+        LogicalKeyboardKey.arrowRight,
+        LogicalKeyboardKey.arrowUp,
+        LogicalKeyboardKey.arrowDown,
+      };
+      if (!reading.contains(event.logicalKey) || alt) {
+        return KeyEventResult.handled;
+      }
     }
     final action = table[event.logicalKey];
     // Printable keys go on to the platform text input (and its IME).
@@ -999,6 +1064,7 @@ class EditorPaneState extends State<EditorPane>
         last is TextEditingDeltaInsertion && last.textInserted == '@' ||
         last is TextEditingDeltaReplacement && last.replacementText == '@';
     if (typedAt &&
+        !widget.readOnly &&
         !_composing.isValid &&
         view.blocks[view.blockAt(view.head)].kind != 'code') {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1311,6 +1377,22 @@ class EditorPaneState extends State<EditorPane>
       padding: EdgeInsets.only(left: indent),
       child: row,
     );
+    if (widget.workspace.attribution) {
+      // Who wrote this block last, as a bar in the margin.
+      row = Container(
+        key: ValueKey('gutter-${b.blockId}'),
+        padding: const EdgeInsets.only(left: 10),
+        decoration: BoxDecoration(
+          border: Border(
+            left: BorderSide(
+              width: 3,
+              color: _authorColors[b.blockId] ?? Colors.transparent,
+            ),
+          ),
+        ),
+        child: row,
+      );
+    }
     if (b.quoteDepth > 0) {
       row = Container(
         padding: const EdgeInsets.only(left: 12),
@@ -1490,18 +1572,90 @@ class EditorPaneState extends State<EditorPane>
               ),
             ),
           ),
-          _tool('+ Peer', false, widget.workspace.addPeer),
-          if (widget.workspace.participants.length > 1 &&
-              widget.participant.name != 'You')
-            _tool(
-              'Close',
-              false,
-              () => widget.workspace.removePeer(widget.participant),
+          // Document actions: all shown when there is room, scrolling when
+          // panes are narrow (several participants, the History tab).
+          Flexible(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _tool(
+                    'History',
+                    widget.workspace.historyOpen &&
+                        identical(
+                          widget.workspace.historyFor,
+                          widget.participant,
+                        ),
+                    () => widget.workspace.toggleHistory(widget.participant),
+                  ),
+                  _tool(
+                    'Authors',
+                    widget.workspace.attribution,
+                    widget.workspace.toggleAttribution,
+                  ),
+                  _tool('+ Peer', false, widget.workspace.addPeer),
+                  if (widget.workspace.participants.length > 1 &&
+                      widget.participant.name != 'You')
+                    _tool(
+                      'Close',
+                      false,
+                      () => widget.workspace.removePeer(widget.participant),
+                    ),
+                  _tool('Home', false, () => widget.app.home(context)),
+                  _tool('Open', false, () => widget.app.openFile(context)),
+                  _tool('Save', false, () => widget.app.save(context)),
+                  _tool(
+                    'Export .md',
+                    false,
+                    () => widget.app.exportMarkdown(context),
+                  ),
+                ],
+              ),
             ),
-          _tool('Home', false, () => widget.app.home(context)),
-          _tool('Open', false, () => widget.app.openFile(context)),
-          _tool('Save', false, () => widget.app.save(context)),
-          _tool('Export .md', false, () => widget.app.exportMarkdown(context)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// "Viewing version from 14:02 by Ana · Restore · Close" (AC-05.6).
+  Widget _versionBanner(VersionView v) {
+    final live = widget.live!;
+    return Container(
+      key: const ValueKey('version-banner'),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: const BoxDecoration(
+        color: AppColors.buttonActive,
+        border: Border(bottom: BorderSide(color: AppColors.border)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'Viewing ${v.label} · read-only',
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontFamily: uiFont,
+                fontSize: 13,
+                color: AppColors.text,
+              ),
+            ),
+          ),
+          _ToolButton(
+            key: const ValueKey('version-restore'),
+            label: 'Restore',
+            active: false,
+            onTap: () {
+              widget.workspace.restore(live, v.frontiers);
+              widget.workspace.closeVersion(live);
+            },
+          ),
+          _ToolButton(
+            key: const ValueKey('version-close'),
+            label: 'Close',
+            active: false,
+            onTap: () => widget.workspace.closeVersion(live),
+          ),
         ],
       ),
     );
@@ -1532,16 +1686,32 @@ class EditorPaneState extends State<EditorPane>
         ),
         child: Row(
           children: [
-            Text(
-              '● ${widget.participant.name}',
-              style: TextStyle(
-                color: Color(parseHexColor(widget.participant.color)),
+            Flexible(
+              child: Text(
+                '● ${widget.participant.name}',
+                overflow: TextOverflow.ellipsis,
+                softWrap: false,
+                style: TextStyle(
+                  color: Color(parseHexColor(widget.participant.color)),
+                ),
               ),
             ),
             const SizedBox(width: 16),
-            Text(n == 1 ? '1 participant' : '$n participants'),
+            Flexible(
+              child: Text(
+                n == 1 ? '1 participant' : '$n participants',
+                overflow: TextOverflow.ellipsis,
+                softWrap: false,
+              ),
+            ),
             const SizedBox(width: 16),
-            Text('${view.blocks.length} blocks'),
+            Flexible(
+              child: Text(
+                '${view.blocks.length} blocks',
+                overflow: TextOverflow.ellipsis,
+                softWrap: false,
+              ),
+            ),
             const SizedBox(width: 16),
             Flexible(
               child: Text(
@@ -1627,7 +1797,7 @@ class EditorPaneState extends State<EditorPane>
         color: AppColors.bg,
         child: Column(
           children: [
-            _toolbar(),
+            if (widget.version case final v?) _versionBanner(v) else _toolbar(),
             if (_findOpen)
               FindBar(
                 key: _findBar,
@@ -1683,7 +1853,7 @@ class EditorPaneState extends State<EditorPane>
                 ),
               ),
             ),
-            _statusBar(),
+            if (!widget.readOnly) _statusBar(),
           ],
         ),
       ),
@@ -1693,6 +1863,7 @@ class EditorPaneState extends State<EditorPane>
 
 class _ToolButton extends StatefulWidget {
   const _ToolButton({
+    super.key,
     required this.label,
     required this.active,
     required this.onTap,
