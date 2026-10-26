@@ -188,7 +188,7 @@ void main() {
     await tester.pump();
     await chord(tester, ctrlAlt, LogicalKeyboardKey.keyL);
     await tester.pump(const Duration(milliseconds: 150));
-    expect(mine.claims[blockId]?.$1, 'Peer 2');
+    expect(mine.claims[blockId]?.$1, 'Peer 2 is editing');
     expect(texts(mine), ['Mine', 'Theirs']);
     expect(
       find.descendant(
@@ -198,7 +198,11 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Peer 2 is editing'), findsOneWidget);
-    expect(theirs.claims[blockId]?.$1, 'You', reason: 'ours shows too');
+    expect(
+      theirs.claims[blockId]?.$1,
+      'You are editing',
+      reason: 'ours shows too',
+    );
 
     // Given up: the outline goes.
     await chord(tester, ctrlAlt, LogicalKeyboardKey.keyL);
@@ -210,7 +214,7 @@ void main() {
     theirs.session.claim(seconds: 1);
     ws.publishPresence(ws.participants[1]);
     await tester.pump();
-    expect(mine.claims[blockId]?.$1, 'Peer 2');
+    expect(mine.claims[blockId]?.$1, 'Peer 2 is editing');
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 1100)),
     );

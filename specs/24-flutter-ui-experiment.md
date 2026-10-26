@@ -297,6 +297,51 @@ now: ["Release plan", "Ship the editor in March.", "Peer 2 adds: and the history
 - **AC-05.8, agent tool commits:** each tool call is its own commit whose message is the tool summary. That comes with the agent tools (spec 23 Phases 7–8); human typing is already cut at 1 s idle or a block switch.
 - **Checkpoints in the export menu** (spec 05's design) wait for export choices beyond Markdown.
 
+## Phase 5 result: identity and presence
+
+Spec 23's Phase 5 (spec 07), in the core (`collabdoc_core::identity`, ported from `shared/handles.ts`, `shared/actors.ts`, `main/profile.ts` and `core/participants.ts`; claims added to `presence`) with a profile prompt and the People tab in Flutter.
+
+- **Profile (AC-07.1).** `profile.json` in the user-data folder, as the TS app keeps it: `{userId, name, handle, color, setupComplete}`, sanitized the same way (a name of 1–40 characters, a valid handle or one made from the name, a `#` color).
+  - The first launch stores a new profile and asks for a name on the start screen; Skip keeps "You". Later launches do not ask.
+  - The handle follows the name until it is typed, and an invalid one is refused with the rule. Eight colors, `USER_COLORS`.
+  - The chip on the start screen and **Edit profile** in the People tab change it; the open pane takes the new name at once.
+  - The user writes as `userId` in every document, and their author record now carries the handle.
+- **Carets (AC-07.2).** The Phase 1 carets, unchanged: Loro cursors in Loro's `EphemeralStore`, with the profile's name and color.
+- **Timeout and rejoin (AC-07.3).** Entries expire 15 s after the last update; a heartbeat every 5 s keeps a quiet participant listed. A participant that comes back is one entry, not two. A closed pane leaves at once.
+- **In this session (AC-07.4).** The People tab lists you, everyone online and invited agents (none yet, Phase 8), each with `@handle`, a role label and a live status: `idle` or `typing in ¶3`. "Also on this document" lists authors who are offline. There is no "Waiting for peers" row.
+- **`get_presence` (AC-07.5).** The `actors` call lists every peer as the TS `readPresence` does: actor id, peer id, name, color, where the caret is (block id and offset), and the claim. `role` is there only when the peer published it, and is left out, not null, otherwise. `nearBlockId` narrows it to one block. This is ready for the MCP server (Phase 7).
+- **Claims (AC-07.6).** `{blockIds, until}` travels with the caret, `until` as an ISO time (the core reads and writes the TS format itself). A claim lasts 30 s by default, at most 120.
+  - Ctrl+Alt+L claims the blocks the selection touches, or gives them up.
+  - Claimed blocks are outlined in the claimer's color with "Bo is editing" ("You are editing" for your own).
+  - The outline goes when the claimer gives the blocks up, or on its own when `until` passes: the pane sets a timer for the first claim to run out.
+  - `claimed_by` answers "who else is working on this block", for agent tools.
+- **Never persisted (AC-07.7).** Checked on all three: after carets and claims are sent, no history entry is added, and the name is absent from the saved `.collabdoc` (the participant's and the hub's) and from the Markdown.
+- **Traffic (AC-07.8).** One entry is about 200 bytes: Loro encodes the two cursors, the keys and the whole `user` map every time. So a 20 Hz cap alone would be about 4 KB/s; the TS app sends the same entries and only tests the 20 Hz cap.
+  - The core now paces updates by size: the gap after an update is the larger of 50 ms and its size at 2 000 B/s. That comes to about 100 ms for a usual entry, which keeps within AC-07.2's 100 ms.
+  - The `presence` call returns the gap, and the pane waits that long before sending again.
+  - A test moving the caret for 10 s with a claim and a long name stays under 2 KB/s. `claim` is left out of the entry when there is none.
+- **Registry (AC-07.9).** One list of `{id, handle, name, color, role, online}` covering the local user, every author in the document (offline ones too), peers present but not yet writing, and invited agents.
+  - Handles are unique and assigned in id order. That order is JS `localeCompare` order (punctuation, then digits, then letters regardless of case), reproduced in the core, so every peer computes the same `-2` suffixes as the TS app.
+  - The `@` picker now offers everyone in the registry, offline authors included, and inserts their real id and handle.
+
+**Parity.**
+- With `COLLABDOC_TS_COMPAT=1`, the TS core reads a caret and a claim the Rust core published, and `Date.parse` accepts its `until`.
+- The ported tests: `participants.test.ts` (same suffixes on host and guest, the session rows), the handle rules, `colorForId` and the profile rules.
+
+**Tests:**
+- Core: 169, of which 6 are identity tests and 6 are new presence tests (ISO times, claims, timeout and rejoin, `actors`, nothing persisted, traffic).
+- Bridge: 15, 2 of them new (the profile as the user in a document; people, claims and actors through the hub).
+- Flutter: 33 widget tests, 4 of them new:
+  - the first launch and a restart;
+  - Skip;
+  - the People tab with an offline author and the `@` picker;
+  - a claim's outline, given up and run out.
+- `scripts/flutter-people.sh` drives the real app: the first-launch prompt, the saved profile, two participants' carets, the People tab and a claim. It prints the stored `profile.json`.
+
+**Not yet:**
+- **Two OS windows.** Flutter on Linux has one window per process, so the panes are the participants, as in Phases 1–4. Separate processes on one document arrive with P2P (Phase 9).
+- **Agents' rows** (`working`, the Agent label) are in the registry and the rows but have no agents to show until Phase 8.
+
 ## Single file and lower memory with Flutter (measured 2026-10-24)
 
 Same container as above: Linux x86-64, no GPU (Mesa llvmpipe under Xvfb), release build, the 50-page document (526 blocks), 1400×760 window unless noted. RSS is read 8 s after start.

@@ -102,8 +102,9 @@ class EditorPaneState extends State<EditorPane>
   /// Per peer: the last caret position seen, and how long its name shows.
   final Map<String, (String, Timer)> _flags = {};
 
-  /// Claimed blocks by `blockId`: who and their color (AC-07.6), ours
-  /// included; and a timer for when the first claim runs out.
+  /// Claimed blocks by `blockId`: the label ("Bo is editing") and color
+  /// (AC-07.6), ours included; and a timer for when the first claim runs
+  /// out.
   Map<String, (String, int)> _claims = const {};
   Claim? _ownClaim;
   Timer? _claimEnds;
@@ -352,14 +353,16 @@ class EditorPaneState extends State<EditorPane>
     final me = widget.participant;
     final claims = <String, (String, int)>{};
     final ends = <DateTime>[];
-    for (final (name, color, claim) in [
-      if (_ownClaim case final own?) ('You', parseHexColor(me.color), own),
+    for (final (label, color, claim) in [
+      if (_ownClaim case final own?)
+        ('You are editing', parseHexColor(me.color), own),
       for (final c in _carets)
-        if (c.claim case final claim? when claim.live) (c.name, c.color, claim),
+        if (c.claim case final claim? when claim.live)
+          ('${c.name} is editing', c.color, claim),
     ]) {
       ends.add(claim.until);
       for (final id in claim.blockIds) {
-        claims.putIfAbsent(id, () => (name, color));
+        claims.putIfAbsent(id, () => (label, color));
       }
     }
     _claims = claims;
@@ -1442,7 +1445,7 @@ class EditorPaneState extends State<EditorPane>
       padding: EdgeInsets.only(left: indent),
       child: row,
     );
-    if (_claims[b.blockId] case (final who, final color)) {
+    if (_claims[b.blockId] case (final label, final color)) {
       // Someone is working on this block: an outline with their name.
       row = Container(
         key: ValueKey('claim-${b.blockId}'),
@@ -1463,7 +1466,7 @@ class EditorPaneState extends State<EditorPane>
                 padding: const EdgeInsets.symmetric(horizontal: 5),
                 color: Color(color),
                 child: Text(
-                  '$who is editing',
+                  label,
                   style: const TextStyle(
                     fontFamily: uiFont,
                     fontSize: 10,
