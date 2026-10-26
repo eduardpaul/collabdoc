@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use collabdoc_core::presence::{Presence, User};
+use collabdoc_core::presence::{Claim, Presence, User};
 use collabdoc_core::schema::mark_bit;
 use collabdoc_core::{BlockKind, Document, Editor, ListKind};
 
@@ -213,6 +213,8 @@ fn typescript_reads_a_caret_rust_publishes() {
     let at = e.block_start(block) + local;
     e.set_selection(e.block_start(block), at);
     let presence = Presence::new(&e);
+    let claimed = e.blocks()[block].block_id.clone();
+    presence.set_claim(Some(Claim::for_seconds(vec![claimed.clone()], 30.0)));
     let user = User {
         name: "Rust".into(),
         color: "#30a46c".into(),
@@ -234,6 +236,8 @@ fn typescript_reads_a_caret_rust_publishes() {
     assert_eq!(caret["focus"]["blockId"], block_id);
     assert_eq!(caret["focus"]["offset"].as_u64(), Some(local as u64));
     assert_eq!(caret["anchor"]["offset"].as_u64(), Some(0));
+    assert_eq!(caret["claim"]["blockIds"], serde_json::json!([claimed]));
+    assert_eq!(caret["claimLive"], true, "TS parses our `until`");
     std::fs::remove_file(doc_file).ok();
     std::fs::remove_file(presence_file).ok();
 }

@@ -120,7 +120,9 @@ if (mode === 'write') {
     peer,
     user: state.user,
     focus: state.focus ? blockIdFromCursor(doc, Cursor.decode(state.focus)) : null,
-    anchor: state.anchor ? blockIdFromCursor(doc, Cursor.decode(state.anchor)) : null
+    anchor: state.anchor ? blockIdFromCursor(doc, Cursor.decode(state.anchor)) : null,
+    claim: state.claim ?? null,
+    claimLive: state.claim ? Date.parse(state.claim.until) > Date.now() : false
   }))
   console.log(JSON.stringify(carets))
 } else if (mode === 'history') {

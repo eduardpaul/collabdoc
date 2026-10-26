@@ -9,6 +9,7 @@ pub mod figures;
 pub mod file;
 pub mod history;
 pub mod html;
+pub mod identity;
 pub mod ids;
 pub mod markdown;
 pub mod model;
