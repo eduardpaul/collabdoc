@@ -1,0 +1,16 @@
+[package]
+name = "collabdoc-egui"
+description = "Feasibility spike: the CollabDoc editor as an egui widget over the Rust document core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+collabdoc-core = { path = "../collabdoc-core", default-features = false }
+# egui alone: no window, no GPU. A host app adds eframe (wgpu or glow).
+egui = { version = "0.37", default-features = false, features = ["default_fonts"] }
+
+[dev-dependencies]
+# The example window only: egui on OpenGL through winit.
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }

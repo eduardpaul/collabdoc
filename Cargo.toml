@@ -5,6 +5,7 @@ members = [
     "crates/collabdoc-gpui",
     "crates/collabdoc-ffi",
     "crates/collabdoc-launcher",
+    "crates/collabdoc-egui",
 ]
 
 [workspace.package]
