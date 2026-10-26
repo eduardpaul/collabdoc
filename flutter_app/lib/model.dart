@@ -189,7 +189,10 @@ class RemoteCaret {
       color = parseHexColor(j['color'] as String?),
       anchor = j['anchor'] as int,
       head = j['head'] as int,
-      moved = j['moved'] as String? ?? '';
+      moved = j['moved'] as String? ?? '',
+      claim = j['claim'] == null
+          ? null
+          : Claim.fromJson(j['claim'] as Map<String, dynamic>);
 
   final String peer;
   final String name;
@@ -200,8 +203,114 @@ class RemoteCaret {
   /// Changes only when the participant moves their caret.
   final String moved;
 
+  /// The blocks they are working on, while it lasts (AC-07.6).
+  final Claim? claim;
+
   int get start => anchor < head ? anchor : head;
   int get end => anchor < head ? head : anchor;
+}
+
+/// Blocks someone is working on until `until` (spec 07).
+class Claim {
+  Claim.fromJson(Map<String, dynamic> j)
+    : blockIds = [for (final id in j['blockIds'] as List) id as String],
+      until = DateTime.parse(j['until'] as String);
+
+  final List<String> blockIds;
+  final DateTime until;
+
+  bool get live => until.isAfter(DateTime.now());
+}
+
+/// Who the user is (`profile.json`): their id in every document, name,
+/// `@handle` and color.
+class Profile {
+  Profile.fromJson(Map<String, dynamic> j)
+    : userId = j['userId'] as String,
+      name = j['name'] as String,
+      handle = j['handle'] as String,
+      color = j['color'] as String,
+      setupComplete = j['setupComplete'] == true;
+
+  final String userId;
+  final String name;
+  final String handle;
+  final String color;
+
+  /// False on the first launch, until the user is asked their name.
+  final bool setupComplete;
+}
+
+/// The colors to choose from (`USER_COLORS`).
+const userColors = [
+  '#c45c26',
+  '#1f8a70',
+  '#2563eb',
+  '#7c3aed',
+  '#db2777',
+  '#d97706',
+  '#0ea5e9',
+  '#65a30d',
+];
+
+/// 2–20 of a–z, 0–9, `_` and `-` (`HANDLE_PATTERN`).
+bool isValidHandle(String handle) =>
+    RegExp(r'^[a-z0-9_-]{2,20}$').hasMatch(handle);
+
+/// Someone addressable in the document, online or not (the registry).
+class Person {
+  Person.fromJson(Map<String, dynamic> j)
+    : id = j['id'] as String,
+      handle = j['handle'] as String,
+      name = j['name'] as String,
+      color = parseHexColor(j['color'] as String?),
+      role = j['role'] as String,
+      online = j['online'] == true,
+      status = j['status'] as String? ?? '',
+      kind = j['kind'] as String? ?? '';
+
+  final String id;
+  final String handle;
+  final String name;
+  final int color;
+
+  /// `human` or `agent`.
+  final String role;
+  final bool online;
+
+  /// Session rows only: `idle`, `working`, `typing in ¶3`; `you`, `agent`
+  /// or `peer`.
+  final String status;
+  final String kind;
+}
+
+/// The "In this session" list and everyone else on the document.
+class People {
+  People.fromJson(Map<String, dynamic> j)
+    : everyone = [
+        for (final p in j['people'] as List? ?? const [])
+          Person.fromJson(p as Map<String, dynamic>),
+      ],
+      session = [
+        for (final p in j['rows'] as List? ?? const [])
+          Person.fromJson(p as Map<String, dynamic>),
+      ],
+      localHandle = j['localHandle'] as String? ?? '',
+      handleChanged = j['handleChanged'] == true;
+
+  const People.empty()
+    : everyone = const [],
+      session = const [],
+      localHandle = '',
+      handleChanged = false;
+
+  final List<Person> everyone;
+  final List<Person> session;
+
+  /// The user's handle here; another person with an earlier id may hold
+  /// the one they chose (`handleChanged`).
+  final String localHandle;
+  final bool handleChanged;
 }
 
 /// `#rrggbb` as an opaque ARGB value; grey when missing or malformed.

@@ -102,6 +102,15 @@ class EditorPaneState extends State<EditorPane>
   /// Per peer: the last caret position seen, and how long its name shows.
   final Map<String, (String, Timer)> _flags = {};
 
+  /// Claimed blocks by `blockId`: who and their color (AC-07.6), ours
+  /// included; and a timer for when the first claim runs out.
+  Map<String, (String, int)> _claims = const {};
+  Claim? _ownClaim;
+  Timer? _claimEnds;
+
+  @visibleForTesting
+  Map<String, (String, int)> get claims => _claims;
+
   Session get session => widget.participant.session;
 
   @visibleForTesting
@@ -160,6 +169,7 @@ class EditorPaneState extends State<EditorPane>
     widget.participant.remoteVersion.removeListener(_remoteChanged);
     widget.participant.presenceVersion.removeListener(_caretsChanged);
     _heartbeat?.cancel();
+    _claimEnds?.cancel();
     for (final (_, timer) in _flags.values) {
       timer.cancel();
     }
@@ -318,6 +328,7 @@ class EditorPaneState extends State<EditorPane>
   /// Re-reads the others' carets; a caret that moved shows its name for 2 s.
   void _readCarets() {
     _carets = session.carets();
+    _readClaims();
     for (final c in _carets) {
       final seen = _flags[c.peer];
       if (seen != null && seen.$1 == c.moved) continue;
@@ -335,18 +346,61 @@ class EditorPaneState extends State<EditorPane>
     if (mounted) setState(_readCarets);
   }
 
-  static const _presenceGapMs = 50; // ≤ 20 updates a second, as in TS
+  /// Who claims which block; re-read when the first claim runs out.
+  void _readClaims() {
+    _ownClaim = widget.readOnly ? null : session.myClaim();
+    final me = widget.participant;
+    final claims = <String, (String, int)>{};
+    final ends = <DateTime>[];
+    for (final (name, color, claim) in [
+      if (_ownClaim case final own?) ('You', parseHexColor(me.color), own),
+      for (final c in _carets)
+        if (c.claim case final claim? when claim.live) (c.name, c.color, claim),
+    ]) {
+      ends.add(claim.until);
+      for (final id in claim.blockIds) {
+        claims.putIfAbsent(id, () => (name, color));
+      }
+    }
+    _claims = claims;
+    _claimEnds?.cancel();
+    _claimEnds = null;
+    if (ends.isNotEmpty) {
+      final first = ends.reduce((a, b) => a.isBefore(b) ? a : b);
+      _claimEnds = Timer(
+        first.difference(DateTime.now()) + const Duration(milliseconds: 20),
+        _caretsChanged,
+      );
+    }
+  }
+
+  /// Ctrl+Alt+L: claim the blocks the selection touches for 30 s (others
+  /// see an outline with our name), or give them up.
+  void _toggleClaim() {
+    if (session.myClaim() != null) {
+      session.unclaim();
+    } else if (session.claim() == null) {
+      return;
+    }
+    _published = null;
+    _presenceCooldown?.cancel();
+    _presenceCooldown = null;
+    _schedulePresence();
+    setState(_readClaims);
+  }
+
   static const _heartbeatMs = 5000;
 
-  /// Tells the others where our caret is, at most every [_presenceGapMs].
+  /// Tells the others where our caret is, as often as the core's pace
+  /// allows: at most 20 a second and 2 KB/s (about every 100 ms).
   void _schedulePresence() {
     if (_presenceCooldown != null) {
       _presencePending = true;
       return;
     }
     _published = (view.anchor, view.head);
-    widget.workspace.publishPresence(widget.participant);
-    _presenceCooldown = Timer(const Duration(milliseconds: _presenceGapMs), () {
+    final gap = widget.workspace.publishPresence(widget.participant);
+    _presenceCooldown = Timer(Duration(milliseconds: gap), () {
       _presenceCooldown = null;
       if (_presencePending && mounted) {
         _presencePending = false;
@@ -499,8 +553,9 @@ class EditorPaneState extends State<EditorPane>
   /// @: a chip for one of the people on the document. After a typed `@`
   /// (`replacingAt`), the chip takes the `@`'s place; dismissed, it stays.
   Future<void> _mention({bool replacingAt = false}) async {
-    final people = widget.workspace.participants;
-    final picked = await showDialog<Participant>(
+    // Everyone on the document, offline collaborators too (AC-07.9).
+    final people = session.people().everyone;
+    final picked = await showDialog<Person>(
       context: context,
       builder: (context) => SimpleDialog(
         backgroundColor: AppColors.panel,
@@ -513,9 +568,19 @@ class EditorPaneState extends State<EditorPane>
             SimpleDialogOption(
               key: ValueKey('mention-${p.name}'),
               onPressed: () => Navigator.of(context).pop(p),
-              child: Text(
-                '@${p.name}',
-                style: TextStyle(color: Color(parseHexColor(p.color))),
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    TextSpan(
+                      text: p.name,
+                      style: TextStyle(color: Color(p.color)),
+                    ),
+                    TextSpan(
+                      text: '  @${p.handle}',
+                      style: const TextStyle(color: AppColors.muted),
+                    ),
+                  ],
+                ),
               ),
             ),
         ],
@@ -524,7 +589,6 @@ class EditorPaneState extends State<EditorPane>
     if (!mounted) return;
     focus.requestFocus();
     if (picked == null) return;
-    final handle = picked.name.toLowerCase().replaceAll(RegExp(r'\s+'), '-');
     final head = view.head;
     if (replacingAt &&
         view.selectionStart == view.selectionEnd &&
@@ -541,8 +605,8 @@ class EditorPaneState extends State<EditorPane>
       'op': 'insertMention',
       'attrs': {
         'kind': 'person',
-        'id': picked.session.call({'op': 'actor'})['actor'] ?? handle,
-        'handle': handle,
+        'id': picked.id,
+        'handle': picked.handle,
         'label': picked.name,
       },
     });
@@ -626,6 +690,7 @@ class EditorPaneState extends State<EditorPane>
         LogicalKeyboardKey.keyI: () =>
             op('insertFigure', {'name': 'infographicFigure'}),
         LogicalKeyboardKey.keyP: _pickImage,
+        LogicalKeyboardKey.keyL: _toggleClaim,
       };
     } else if (ctrl) {
       table = {
@@ -1377,6 +1442,42 @@ class EditorPaneState extends State<EditorPane>
       padding: EdgeInsets.only(left: indent),
       child: row,
     );
+    if (_claims[b.blockId] case (final who, final color)) {
+      // Someone is working on this block: an outline with their name.
+      row = Container(
+        key: ValueKey('claim-${b.blockId}'),
+        margin: const EdgeInsets.only(top: 14),
+        decoration: BoxDecoration(
+          border: Border.all(color: Color(color), width: 1.5),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            row,
+            Positioned(
+              top: -17,
+              right: 0,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5),
+                color: Color(color),
+                child: Text(
+                  '$who is editing',
+                  style: const TextStyle(
+                    fontFamily: uiFont,
+                    fontSize: 10,
+                    color: Colors.white,
+                    fontStyle: FontStyle.normal,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     if (widget.workspace.attribution) {
       // Who wrote this block last, as a bar in the margin.
       row = Container(
@@ -1593,9 +1694,21 @@ class EditorPaneState extends State<EditorPane>
                     widget.workspace.attribution,
                     widget.workspace.toggleAttribution,
                   ),
+                  _tool(
+                    'People',
+                    widget.workspace.peopleOpen &&
+                        identical(
+                          widget.workspace.peopleFor,
+                          widget.participant,
+                        ),
+                    () => widget.workspace.togglePeople(widget.participant),
+                  ),
                   _tool('+ Peer', false, widget.workspace.addPeer),
                   if (widget.workspace.participants.length > 1 &&
-                      widget.participant.name != 'You')
+                      !identical(
+                        widget.participant,
+                        widget.workspace.participants.first,
+                      ))
                     _tool(
                       'Close',
                       false,

@@ -336,7 +336,8 @@ void main() {
     type(mine, 'Hello world');
     ws.addPeer();
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 60));
+    // Presence is paced to about 100 ms between updates (AC-07.8).
+    await tester.pump(const Duration(milliseconds: 120));
     final theirs = tester
         .stateList<EditorPaneState>(find.byType(EditorPane))
         .last;
@@ -353,7 +354,7 @@ void main() {
 
     // The peer types at the start: my caret, as they see it, rides along.
     type(theirs, '>> ');
-    await tester.pump(const Duration(milliseconds: 60));
+    await tester.pump(const Duration(milliseconds: 120));
     expect(seen(theirs), ('You', 14, 14));
     expect(seen(mine), ('Peer 2', 3, 3));
 
@@ -364,7 +365,7 @@ void main() {
     await chord(tester, [
       LogicalKeyboardKey.shiftLeft,
     ], LogicalKeyboardKey.home);
-    await tester.pump(const Duration(milliseconds: 60));
+    await tester.pump(const Duration(milliseconds: 120));
     expect(seen(theirs), ('You', 13, 0));
 
     // A peer that leaves takes its caret along.

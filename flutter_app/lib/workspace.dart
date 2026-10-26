@@ -29,13 +29,31 @@ const participantColors = [
 ];
 
 class Participant {
-  Participant(this.name, this.color, this.session) {
-    session.call({'op': 'setUser', 'name': name, 'color': color});
+  Participant(this.name, this.color, this.session, {this.handle}) {
+    _tell();
   }
 
-  final String name;
-  final String color;
+  String name;
+  String color;
+
+  /// The `@handle` they prefer (the profile's, for the user).
+  String? handle;
   final Session session;
+
+  void _tell() => session.call({
+    'op': 'setUser',
+    'name': name,
+    'color': color,
+    'handle': ?handle,
+  });
+
+  /// Takes a new name, color and handle (the profile was edited).
+  void rename(String name, String color, String handle) {
+    this.name = name;
+    this.color = color;
+    this.handle = handle;
+    _tell();
+  }
 
   /// Bumped when a collaborator's edit arrived; the pane re-reads its view.
   final ValueNotifier<int> remoteVersion = ValueNotifier(0);
@@ -62,7 +80,11 @@ enum SaveResult { saved, needsSaveAs, failed }
 class Workspace extends ChangeNotifier {
   Workspace._(Session session, {Settings? settings})
     : settings = settings ?? Settings.forUser() {
-    participants.add(Participant('You', participantColors[0], session));
+    // The user, as their profile says (the core writes as its id).
+    final me = CoreStore.profile();
+    participants.add(
+      Participant(me.name, me.color, session, handle: me.handle),
+    );
     final info = session.call({'op': 'openInfo'});
     if (info['recoveredEdits'] == true) {
       status = 'Recovered edits made after the last save';
@@ -112,6 +134,23 @@ class Workspace extends ChangeNotifier {
 
   /// Per pane, the version it shows instead of the live document.
   final Map<Participant, VersionView> viewing = {};
+
+  /// The People tab ("In this session", AC-07.4), and whose view it shows.
+  bool peopleOpen = false;
+  Participant? peopleFor;
+
+  void togglePeople(Participant from) {
+    peopleOpen = !peopleOpen || !identical(peopleFor, from);
+    peopleFor = from;
+    notifyListeners();
+  }
+
+  /// The user's profile was edited: their pane speaks as the new one.
+  void applyProfile(Profile profile) {
+    participants.first.rename(profile.name, profile.color, profile.handle);
+    publishPresence(participants.first);
+    notifyListeners();
+  }
 
   void toggleHistory(Participant from) {
     historyOpen = !historyOpen || !identical(historyFor, from);
@@ -270,6 +309,7 @@ class Workspace extends ChangeNotifier {
     participants.remove(p);
     viewing.remove(p)?.participant.session.dispose();
     if (identical(historyFor, p)) historyFor = participants.first;
+    if (identical(peopleFor, p)) peopleFor = participants.first;
     p.session.dispose(); // which also takes its caret away
     _presenceChanged(null);
     notifyListeners();
@@ -288,10 +328,12 @@ class Workspace extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Sends `from`'s caret to everyone else.
-  void publishPresence(Participant from) {
-    from.session.call({'op': 'presence'});
+  /// Sends `from`'s caret to everyone else; returns how long to wait
+  /// before sending again.
+  int publishPresence(Participant from) {
+    final gap = from.session.publishPresence();
     _presenceChanged(from);
+    return gap;
   }
 
   void _presenceChanged(Participant? from) {

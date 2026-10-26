@@ -15,6 +15,7 @@ import 'editor.dart';
 import 'history_panel.dart';
 import 'model.dart';
 import 'native.dart';
+import 'people_panel.dart';
 import 'settings.dart';
 import 'start_screen.dart';
 import 'theme.dart';
@@ -25,12 +26,37 @@ typedef PickPath = Future<String?> Function({String? suggested, bool markdown});
 
 class AppController extends ChangeNotifier {
   AppController({Workspace? workspace, Settings? settings})
-    : settings = settings ?? Settings.forUser() {
+    : settings = settings ?? Settings.forUser(),
+      profile = CoreStore.profile() {
+    askName = !profile.setupComplete;
     _show(workspace);
     if (workspace == null) refreshListing();
   }
 
   final Settings settings;
+
+  /// Who the user is; on the first launch the start screen asks their
+  /// name (AC-07.1), which they may skip.
+  Profile profile;
+  bool askName = false;
+
+  void profileSaved(Profile saved) {
+    profile = saved;
+    askName = false;
+    workspace?.applyProfile(saved);
+    notifyListeners();
+  }
+
+  void skipName() {
+    askName = false;
+    notifyListeners();
+  }
+
+  Future<void> editProfileFrom(BuildContext context) async {
+    final saved = await editProfile(context);
+    if (saved != null) profileSaved(saved);
+  }
+
   Workspace? workspace;
   Listing listing = const Listing.empty();
 
@@ -358,6 +384,10 @@ class _CollabDocAppState extends State<CollabDocApp> {
                       ),
                     },
                   ),
+                ],
+                if (ws.peopleOpen) ...[
+                  const VerticalDivider(width: 1, color: AppColors.border),
+                  SizedBox(width: 280, child: PeoplePanel(workspace: ws)),
                 ],
                 if (ws.historyOpen) ...[
                   const VerticalDivider(width: 1, color: AppColors.border),

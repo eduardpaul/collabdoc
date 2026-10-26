@@ -216,6 +216,32 @@ class Session {
     return reply['changed'] == true;
   }
 
+  /// Sends our caret to everyone; returns how long to wait before the
+  /// next (the core paces presence under 2 KB/s).
+  int publishPresence() => (call({'op': 'presence'})['gapMs'] as int?) ?? 50;
+
+  /// Everyone on the document and who is in this session.
+  People people() {
+    final reply = call({'op': 'people'});
+    return reply['ok'] == true ? People.fromJson(reply) : const People.empty();
+  }
+
+  /// Claims the blocks the selection touches for `seconds`; null when
+  /// there are none.
+  Claim? claim({int seconds = 30}) {
+    final reply = call({'op': 'claim', 'seconds': seconds});
+    final claim = reply['claim'];
+    return claim == null ? null : Claim.fromJson(claim as Map<String, dynamic>);
+  }
+
+  void unclaim() => call({'op': 'unclaim'});
+
+  /// Our claim, while it lasts.
+  Claim? myClaim() {
+    final claim = call({'op': 'myClaim'})['claim'];
+    return claim == null ? null : Claim.fromJson(claim as Map<String, dynamic>);
+  }
+
   /// Everyone else's caret, as of the hub's latest presence.
   List<RemoteCaret> carets() {
     final reply = call({'op': 'carets'});
@@ -292,6 +318,28 @@ class CoreStore {
 
   static String documentsDir() =>
       call({'op': 'documentsDir'})['path'] as String;
+
+  /// Who the user is; `setupComplete` is false on the first launch.
+  static Profile profile() => Profile.fromJson(
+    call({'op': 'profile'})['profile'] as Map<String, dynamic>,
+  );
+
+  /// Stores a new name, handle or color; throws [CoreException] for an
+  /// invalid handle.
+  static Profile saveProfile({String? name, String? handle, String? color}) {
+    final reply = call({
+      'op': 'saveProfile',
+      'name': ?name,
+      'handle': ?handle,
+      'color': ?color,
+    });
+    if (reply['ok'] != true) throw CoreException('${reply['error']}');
+    return Profile.fromJson(reply['profile'] as Map<String, dynamic>);
+  }
+
+  /// The handle a name suggests (`handleFromName`).
+  static String handleFromName(String name) =>
+      call({'op': 'handleFromName', 'name': name})['handle'] as String;
 }
 
 /// Mermaid `source` drawn by the core as a PNG, `scale` device pixels per

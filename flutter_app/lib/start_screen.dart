@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import 'app.dart';
 import 'model.dart';
+import 'people_panel.dart';
 import 'theme.dart';
 
 class StartScreen extends StatelessWidget {
@@ -40,18 +41,66 @@ class StartScreen extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'CollabDoc',
-                      style: TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.w700,
-                      ),
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'CollabDoc',
+                            style: TextStyle(
+                              fontSize: 28,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        ProfileChip(
+                          profile: app.profile,
+                          onTap: () => app.editProfileFrom(context),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 6),
                     const Text(
                       'Every keystroke stays on this machine, saved as you type.',
                       style: TextStyle(color: AppColors.muted),
                     ),
+                    if (app.askName) ...[
+                      const SizedBox(height: 20),
+                      Container(
+                        key: const ValueKey('ask-name'),
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: AppColors.panel,
+                          border: Border.all(color: AppColors.border),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'What should others call you?',
+                              style: TextStyle(fontWeight: FontWeight.w600),
+                            ),
+                            const SizedBox(height: 4),
+                            const Text(
+                              'Your name shows on your caret and your changes. '
+                              'You can change it later.',
+                              style: TextStyle(
+                                color: AppColors.muted,
+                                fontSize: 12,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            ProfileForm(
+                              profile: app.profile,
+                              autofocus: false,
+                              cancelLabel: 'Skip',
+                              onSaved: app.profileSaved,
+                              onCancel: app.skipName,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 24),
                     Row(
                       children: [
