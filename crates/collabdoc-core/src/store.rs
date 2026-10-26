@@ -1089,16 +1089,16 @@ fn open_journal(path: &Path, file_path: Option<&Path>, keep: bool) -> io::Result
     if keep {
         return OpenOptions::new().append(true).open(path);
     }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path)?;
     let head = serde_json::to_vec(&JournalHead {
         path: file_path.map(path_string),
     })?;
-    file.write_all(&frame(&head))?;
-    drop(file);
+    // Written and closed, then reopened for appending.
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)?
+        .write_all(&frame(&head))?;
     OpenOptions::new().append(true).open(path)
 }
 

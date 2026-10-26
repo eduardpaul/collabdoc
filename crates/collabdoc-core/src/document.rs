@@ -4,7 +4,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use loro::{
     CommitOptions, ContainerTrait, ExportMode, Frontiers, LoroDoc, LoroList, LoroMap, LoroText,
@@ -42,11 +41,20 @@ pub fn meta_string(doc: &LoroDoc, key: &str) -> String {
     }
 }
 
+/// Milliseconds since the epoch: the system clock, or `Date.now()` in the
+/// browser (where `SystemTime::now` panics).
 pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        js_sys::Date::now() as i64
+    }
 }
 
 pub fn configure(doc: &LoroDoc) {

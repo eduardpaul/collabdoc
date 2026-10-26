@@ -109,7 +109,7 @@ pub struct Presence {
     store: EphemeralStore,
     peer: String,
     /// When we last wrote our entry (ms since the epoch).
-    last_write: std::cell::Cell<u128>,
+    last_write: std::cell::Cell<i64>,
     /// Ours, sent with every update until it runs out.
     claim: RefCell<Option<Claim>>,
     /// The size of our last update.
@@ -215,16 +215,10 @@ impl Presence {
     /// is newer, so two writes in one millisecond would lose the second.
     /// UIs throttle well below that; this makes it hold regardless.
     fn next_millisecond(&self) {
-        let now = || {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or_default()
-        };
-        while now() <= self.last_write.get() {
+        while now_ms() <= self.last_write.get() {
             std::thread::yield_now();
         }
-        self.last_write.set(now());
+        self.last_write.set(now_ms());
     }
 
     /// Takes in what others sent (one entry or a whole store).
@@ -376,12 +370,7 @@ fn claim_of(value: &LoroValue) -> Option<Claim> {
     .filter(Claim::is_live)
 }
 
-pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or_default()
-}
+pub use crate::document::now_ms;
 
 /// `new Date(ms).toISOString()`: `2026-10-26T09:30:00.000Z`.
 pub fn iso_time(ms: i64) -> String {

@@ -2,7 +2,11 @@
 
 fn random_bytes<const N: usize>() -> [u8; N] {
     let mut bytes = [0u8; N];
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     getrandom::fill(&mut bytes).expect("the OS random source is unavailable");
+    // In the browser: `crypto.getRandomValues`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    getrandom_js::getrandom(&mut bytes).expect("the browser random source is unavailable");
     bytes
 }
 

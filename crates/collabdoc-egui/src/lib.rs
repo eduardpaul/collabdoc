@@ -13,6 +13,13 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "demo")]
+pub mod demo;
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+mod web;
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub use web::WebHandle;
+
 use collabdoc_core::model::INLINE_CHAR;
 use collabdoc_core::schema::mark_bit;
 use collabdoc_core::{BlockKind, Editor, ListKind, ViewBlock, utf16};
@@ -198,6 +205,9 @@ impl EditorView {
         let e = &mut self.editor;
         match event {
             Event::Text(text) => {
+                // Text ends a composition too: the browser's text agent sends
+                // a finished one as plain text.
+                self.preedit.clear();
                 self.goal_x = None;
                 e.insert_text(&text)
             }
@@ -216,6 +226,35 @@ impl EditorView {
             Event::Ime(ImeEvent::Commit(text)) => {
                 self.preedit.clear();
                 e.insert_text(&text)
+            }
+            // The input method rewrites what is around the caret (autocorrect,
+            // Android's backspace): counts are characters, not UTF-16 units.
+            Event::Ime(ImeEvent::DeleteSurrounding {
+                before_chars,
+                after_chars,
+            }) => {
+                let head = e.head();
+                let (index, _) = e.locate(head);
+                let block_start = e.block_start(index);
+                let block_end = block_start + utf16::len(&e.blocks()[index].text);
+                let before: usize = e
+                    .text_in(block_start..head)
+                    .chars()
+                    .rev()
+                    .take(before_chars)
+                    .map(char::len_utf16)
+                    .sum();
+                let after: usize = e
+                    .text_in(head..block_end)
+                    .chars()
+                    .take(after_chars)
+                    .map(char::len_utf16)
+                    .sum();
+                if before + after == 0 {
+                    return false;
+                }
+                e.set_selection(head - before, head + after);
+                e.backspace()
             }
             Event::Key {
                 key,

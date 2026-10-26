@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CollabDoc egui</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0f0f10; }
+    /* eframe sizes the canvas from its CSS box. */
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    #status { position: absolute; left: 32px; top: 32px; color: #8b8b93; font: 14px system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <canvas id="collabdoc_canvas"></canvas>
+  <div id="status">Loading the editor…</div>
+  <script type="module">
+    import init, { WebHandle } from './pkg/collabdoc_egui.js';
+    const status = document.getElementById('status');
+    try {
+      await init();
+      const handle = new WebHandle();
+      await handle.start(document.getElementById('collabdoc_canvas'));
+      // For scripted checks (scripts/egui-web.sh): read the document back.
+      window.collabdoc = handle;
+      status.remove();
+    } catch (error) {
+      status.textContent = `The editor could not start: ${error}`;
+      console.error(error);
+    }
+  </script>
+</body>
+</html>

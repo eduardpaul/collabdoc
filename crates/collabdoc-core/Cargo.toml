@@ -14,7 +14,6 @@ render = ["dep:mermaid-rs-renderer", "dep:resvg"]
 loro.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-getrandom = "0.3"
 thiserror = "2"
 unicode-segmentation = "1"
 pulldown-cmark = { version = "0.13.5", default-features = false }
@@ -24,3 +23,13 @@ base64 = "0.22"
 # Native figure drawing (the `render` feature): Mermaid to SVG, SVG to PNG.
 mermaid-rs-renderer = { version = "0.3.1", default-features = false, optional = true }
 resvg = { version = "0.47", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"], optional = true }
+
+# Randomness and the clock: the OS natively; the browser in WebAssembly
+# (getrandom 0.2's `js` backend, the one Loro already uses there, and
+# `Date.now`, since `SystemTime::now` panics on wasm32-unknown-unknown).
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+getrandom = "0.3"
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom_js = { package = "getrandom", version = "0.2.15", features = ["js"] }
+js-sys = "0.3"

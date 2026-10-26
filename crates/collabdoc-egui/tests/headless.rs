@@ -253,3 +253,34 @@ fn frame_time_on_a_long_document() {
     let typing = time(&mut h, vec![Event::Text("x".into())]);
     eprintln!("2000 blocks: idle frame {idle:?}, typing frame {typing:?}");
 }
+
+#[test]
+fn the_input_method_rewrites_around_the_caret_and_text_ends_a_composition() {
+    let mut h = Harness::new(800.0);
+    h.typed("teh");
+    // Autocorrect: three characters before the caret become "the".
+    h.frame(vec![
+        Event::Ime(ImeEvent::DeleteSurrounding {
+            before_chars: 3,
+            after_chars: 0,
+        }),
+        Event::Text("the".into()),
+    ]);
+    assert_eq!(h.texts(), ["the"]);
+    // Counts are characters: one emoji is one, though UTF-16 counts two.
+    h.typed(" 👍");
+    h.frame(vec![Event::Ime(ImeEvent::DeleteSurrounding {
+        before_chars: 1,
+        after_chars: 0,
+    })]);
+    assert_eq!(h.texts(), ["the "]);
+
+    // A browser finishes a composition with plain text: the preview goes.
+    h.frame(vec![Event::Ime(ImeEvent::Preedit {
+        text: "ご".into(),
+        active_range_chars: None,
+    })]);
+    h.typed("語");
+    assert!(h.view.preedit.is_empty());
+    assert_eq!(h.texts(), ["the 語"]);
+}

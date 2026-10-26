@@ -26,7 +26,7 @@ Can the editor we have built (the Rust core under the Flutter build) become one 
 - **Row motion:** Shift+click, Up and Down across wrapped rows and blocks.
 - **IME and Unicode:** an IME preedit that never reaches the document, then its commit; the platform is told where the caret is. UTF-16 versus character offsets stay right past emoji (the core moves by grapheme).
 - **Clipboard:** Markdown paste and cut.
-- **Real window:** `cargo run -p collabdoc-egui --example window` (eframe on OpenGL) renders headings, bold, italic, code, strike, highlight, links, nested lists, a quote and a code block. Typing, Enter, a Shift+Home selection and Ctrl+B work there under Xvfb.
+- **Real window:** `cargo run -p collabdoc-egui --features native --example window` (eframe on OpenGL) renders headings, bold, italic, code, strike, highlight, links, nested lists, a quote and a code block. Typing, Enter, a Shift+Home selection and Ctrl+B work there under Xvfb.
 - **Speed:** a 2,000-block document in a release build takes 2.9 ms for an idle frame and 13 ms for a typing frame. That is without virtualization (every block is laid out each frame) and with egui's galley cache doing the work. Laying out only the visible blocks brings both well under a frame.
 
 **GPUI:** the `collabdoc-gpui` crate on this branch (Phase 0–1: blocks, marks, IME through `EntityInputHandler`) already calls `Editor` directly. It lacks lists, figures, find, history and presence. It would gain them by moving onto the component rather than by being written a second time.
@@ -45,6 +45,34 @@ Can the editor we have built (the Rust core under the Flutter build) become one 
 | Long documents | immediate mode: virtualize to the visible blocks | retained list (`uniform_list`, `list`) | `ListView.builder` |
 
 Offsets: the core counts UTF-16 units (as Dart and JS do) while egui counts characters. The spike's `Laid` converts per block, which is cheap; the component keeps UTF-16 and each host converts at its edge.
+
+## WebAssembly
+
+The egui build runs in a browser: the same widget over the same core, compiled to `wasm32-unknown-unknown`, drawn by eframe on WebGL.
+
+- **Build:** `scripts/egui-web.sh build` (or `serve`, at http://localhost:8765). It produces `target/egui-web/` with `index.html` and `pkg/`.
+- **Check:** `scripts/egui-web.sh check` drives the page in headless Chromium through Playwright (`scripts/egui-web-check.cjs`) and reads the document back from the core through `window.collabdoc.markdown()`. Everything passes:
+  - the page loads and draws in about 0.3 s from localhost;
+  - typing, and Enter splitting a block;
+  - Shift+Home and Ctrl+B make a bold line;
+  - the selection is the core's;
+  - an IME composition (sent through the DevTools protocol, as an input method would) stays out of the document until committed, and its preview goes away after;
+  - pasted Markdown becomes a list;
+  - no panic, no console errors.
+- **Size:** 9.0 MB of wasm, 3.4 MB gzipped, without `wasm-opt` (not installed here). The five bundled font faces are about 1.5 MB of that.
+- **What the core needed** (no behaviour change natively):
+  - `now_ms` reads `Date.now()` in the browser, since `SystemTime::now` panics on `wasm32-unknown-unknown`. Presence uses the same clock.
+  - Randomness for ids comes from `crypto.getRandomValues`, through getrandom 0.2's `js` backend, the one Loro already enables there. getrandom 0.3 stays the native source, so no `--cfg` rustflags are needed.
+  - The Mermaid renderer stays off: the egui crate takes the core without its `render` feature.
+- **The browser's input method** sends what the desktop one does not, and the widget handles both:
+  - a finished composition arrives as plain text, which now also ends the preview;
+  - `DeleteSurrounding` (autocorrect, Android's backspace) deletes characters around the caret. Counts are characters, so one emoji is one.
+- **Not in the browser yet:**
+  - **The store:** it writes files, so drafts, the journal and recents would need IndexedDB or OPFS behind the same interface.
+  - **Copy to the system clipboard** works only from a user gesture, as for every web app.
+  - **Figures** would need the renderer built for wasm (resvg builds; the Mermaid crate is untested there) or drawing in the page.
+
+Both builds lint clean: `cargo clippy -p collabdoc-egui --features native --all-targets` and `cargo clippy -p collabdoc-egui --lib --features web --target wasm32-unknown-unknown`.
 
 ## Proposed shape
 
@@ -167,4 +195,7 @@ Steps 1–2 are the component; 3 is parity work owed anyway; 4–6 are what "shi
 
 - `crates/collabdoc-egui/src/lib.rs`: the spike widget (`EditorView`, `install_fonts`).
 - `crates/collabdoc-egui/tests/headless.rs`: the 7 headless tests and the frame timing.
-- `crates/collabdoc-egui/examples/window.rs`: the same widget in an eframe window.
+- `crates/collabdoc-egui/src/demo.rs`: the demo app, shared by the window and the browser.
+- `crates/collabdoc-egui/examples/window.rs`: the demo in an eframe window (`--features native`).
+- `crates/collabdoc-egui/src/web.rs`, `web/index.html`: the demo in a browser (`--features web`).
+- `scripts/egui-web.sh`, `scripts/egui-web-check.cjs`: build, serve and check the browser build.

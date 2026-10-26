@@ -162,7 +162,7 @@ cargo build -p collabdoc-ffi && COLLABDOC_FFI_LIB=$PWD/../target/debug/libcollab
 
 `scripts/flutter-smoke.sh` drives the built app on a virtual display and saves screenshots; `scripts/flutter-figures.sh` does the same for figures, images, hard breaks and mentions, `scripts/flutter-history.sh` for the History tab, checkpoints and restore, and `scripts/flutter-people.sh` for the first-launch profile, the People tab and claims; `scripts/flutter-crash.sh` kills it in the middle of typing and checks nothing is lost. `scripts/flutter-onefile.sh` builds the release app as one executable (`dist/collabdoc-linux-x86_64`, about 11 MB) with `crates/collabdoc-launcher`.
 
-`crates/collabdoc-egui` is a feasibility spike for a reusable editor component (spec 25): the same core editor as an egui widget, tested headless (`cargo test -p collabdoc-egui`) and runnable in a window (`cargo run -p collabdoc-egui --example window`).
+`crates/collabdoc-egui` is a feasibility spike for a reusable editor component (spec 25): the same core editor as an egui widget, tested headless (`cargo test -p collabdoc-egui`), runnable in a window (`cargo run -p collabdoc-egui --features native --example window`) and in a browser as WebAssembly (`scripts/egui-web.sh serve`; `scripts/egui-web.sh check` drives it in headless Chromium).
 
 On Windows (Flutter 3.47+, Rust with the MSVC toolchain, Visual Studio 2022 C++ tools, Developer Mode on), from a terminal in the repo:
 
